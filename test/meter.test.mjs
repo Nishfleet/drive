@@ -1,20 +1,3 @@
-// Tests for the meter (drive issue #6, build step 5). Two halves:
-//
-// 1. The arithmetic in core/meter.js: the GB-minutes a version books into
-//    each hour, the 1-hour minimum, and the property the done-when
-//    measures - a full day of hourly rows has to add up to what the
-//    version actually cost, because that is the number compared with
-//    the storage provider's own usage report.
-// 2. The statements, against a real node:sqlite D1 adapter (the same
-//    SQL the meter sends against D1, applied to real migration files):
-//    the dedup that drops a repeated event, the version upsert, the
-//    rollup write, and the two handlers (the intake POST and the hourly
-//    trigger).
-//
-// No fake D1: the adapter is the real thing - node:sqlite is in the
-// standard library, so the repo needs no new dependency to test its
-// migrations.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

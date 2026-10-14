@@ -1,20 +1,3 @@
-// The share card (drive issue #123). public/og.png is a raster, so no test can
-// read its price; the card's source, public/og-card.html, is text, and this
-// gate reads the strings out of that source against core/pricing.js (PRICE),
-// the one price source. A repriced product, or the superseded "$20 per TB"
-// figure re-hardcoded into the card, fails here, the way
-// test/pricing-copy.test.mjs gates the page's copy. The card's palette and its
-// link to the shared stylesheet are gated by test/site-styles.test.mjs, which
-// walks every top-level public page, and its non-indexable registration by
-// test/seo.test.mjs. The raster's declared size is gated here, so a replaced
-// image cannot silently change the card's shape.
-//
-// The card's price is gated from its source, not from the PNG, because a
-// raster's pixels are not text: the source is the thing a person edits when a
-// price changes, and a re-render is the follow-up (the recipe is in the file's
-// own header). Reading the source is therefore the gate the issue asks for;
-// the PNG's bytes are checked only for the 1200x630 the og:image tags declare.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

@@ -1,16 +1,3 @@
-// The Windows installer (drive issue #154), checked here rather than trusted.
-//
-// The MSI is built on windows-latest by .github/workflows/windows-msi.yml, so nothing
-// in this file proves the MSI runs: it proves the sources still say what the
-// issue asks for. Each line below is one of the issue's promises, and each is
-// matched against the file that carries it, so a later edit that drops the
-// PATH entry or the WinFsp chain fails the suite instead of shipping an
-// installer that quietly stops doing one of them.
-//
-// What this file cannot check, and says so in the PR: that the MSI builds, that
-// msiexec /qn installs it silently, and that the drive letter round-trips a
-// write. Those are the windows-latest job's own output.
-
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";

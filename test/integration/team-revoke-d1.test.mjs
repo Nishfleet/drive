@@ -1,23 +1,3 @@
-// A removed team member's key, in the store the live Worker wires (drive#408).
-//
-// `revokeTeamKeys` used to mark only the memory store's own `devices` map and
-// never wrote the bound `deviceStore`, so the one thing that makes a member's
-// key dead everywhere — the D1 row `authenticate` reads for a key this isolate
-// did not revoke — was never written. Since #403 made `authenticate` delegate
-// to the D1 store first, a member key whose row was never revoked kept
-// authenticating on every isolate, on every request.
-//
-// This is the same two-stores-over-one-D1 composition #404's proof uses
-// (test/integration/key-revoke-d1.test.mjs): two freshly built memory stores
-// over one database, so "the next request hits another isolate" is what the
-// assertions exercise — the removal below is made through the store that did
-// NOT mint the key.
-//
-// Every assertion about the row reads it back with plain node:sqlite off the
-// same engine `devices.js` runs its statements on (test/d1-sqlite.mjs
-// `makeMeteredDB`), so nothing here is checked against a store's own answer
-// about itself.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createD1DeviceStore } from "../../core/devices.js";

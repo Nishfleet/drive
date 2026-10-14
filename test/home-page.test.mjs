@@ -1,7 +1,3 @@
-// The signed-in Home (high-end gap 2): balance, storage, devices and one next
-// step from three existing endpoints. The page's own script runs against stub
-// answers, so the words and states it lands are what a person reads.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

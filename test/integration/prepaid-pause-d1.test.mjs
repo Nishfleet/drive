@@ -1,17 +1,3 @@
-// The prepaid pause at $0 on the real D1 rows (drive#589).
-//
-// The unit proof (test/prepaid-pause.test.mjs) runs applyPrepaidPause against
-// an injected provider. This file makes the two claims the real store has to
-// make:
-//
-//   1. `devices.prepaid_paused_from` is a ROW, not a per-isolate Map, and it
-//      is not `capped_from`: a top-up restores what the pause took while the
-//      cap's own record stays the cap's.
-//   2. `settleBalances` after a draw and the signed top-up webhook both run
-//      the swap, on every real migration under migrations/drive/.
-//
-// The storage provider is a recorder, so nothing is minted at a vendor.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { READ_ONLY_CAPABILITIES } from "../../core/cap.js";

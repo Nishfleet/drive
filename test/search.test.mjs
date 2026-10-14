@@ -1,9 +1,3 @@
-// Unit tests for file-name search (drive issue #18), run against a real
-// SQLite engine — D1 is SQLite, so the numbers the issue asks for are
-// measured on the same SQL the Worker runs, with the shipped migrations
-// applied (the whole drive schema, via test/d1-sqlite.mjs, so `accounts`,
-// `file_index` and the reindex's staging table all exist).
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

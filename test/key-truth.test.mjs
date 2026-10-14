@@ -1,16 +1,3 @@
-// The docs state what the storage provider really enforces on a key, not
-// only what the api Worker's capability table grants (drive#502).
-//
-// On iDrive e2 an agent key is minted with `disable_delete_object: false`, so
-// its delete succeeds and leaves a delete marker. The hidden copy behind it is
-// kept HIDDEN_VERSION_DAYS and then removed by the bucket's lifecycle rule.
-// And iDrive limits a key to a whole bucket, never a folder, so a branch key
-// reaches the whole account. These tests tie every page sentence about agent
-// deletes and branch reach to those switches, so a page cannot say "agents
-// cannot delete" or "a branch key cannot reach your other files" while the
-// mint says otherwise, and the sentences change by themselves the day the
-// mint does.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

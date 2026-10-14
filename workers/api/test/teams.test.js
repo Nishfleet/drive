@@ -1,18 +1,3 @@
-// Teams done-when proof (drive issue #20):
-//
-//   - two real accounts share one team drive,
-//   - a read-only member's write is refused, and
-//   - the owner removes a member whose key then stops working.
-//
-// Every claim is walked over HTTP, through the real registry and the real
-// dispatcher (`dispatch`, not the handlers called directly), with two accounts
-// signed in through the real device flow (the same `signIn` the build step 4
-// acceptance uses) and the real key store underneath. A store that answered
-// from a Map would still pass the first claim; the removal claim is the one a
-// Map cannot fake, because the route itself revokes the member's device rows
-// and the storage routes refuse a revoked key through the same `authenticate`
-// an account's own `DELETE /v1/keys/:keyId` uses.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 

@@ -1,9 +1,3 @@
-// Share and web downloads bill the owner (drive#517 finish line 5). The dl
-// Worker bills mount reads; these are the other two ways bytes leave storage:
-// a share link opened by anyone, and the signed-in web routes (download,
-// preview, embed). Each adds the bytes its response carries to the owner's
-// download total, the same usage_minutes column the invoice reads.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -19,7 +13,7 @@ import { makeMeteredDB } from "./d1-sqlite.mjs";
 
 const OWNER = { id: "acct_owner", name: "Owner" };
 const NOW = Date.UTC(2026, 9, 6, 10, 0, 0);
-const BYTES = "0123456789".repeat(30); // 300 bytes
+const BYTES = "0123456789".repeat(30);
 
 /**
  * @param {{prepare(sql: string): {get(...params: unknown[]): unknown}}} sqlite

@@ -1,13 +1,3 @@
-// The repo is public, and the rival's name must not appear anywhere in its
-// current tree (git history still holds the old text; it is not rewritten).
-// This file walks every tracked text file and fails on the name, so it cannot
-// come back in a doc, a comment, a test or a fixture. The patterns live in
-// test/rival-terms.mjs, built from pieces so that this file and that one stay
-// clean too.
-//
-// Write "the main competitor" instead, or "the competitor's docs" for a
-// citation, and do not link the rival's site.
-
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";

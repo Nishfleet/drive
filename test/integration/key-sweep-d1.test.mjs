@@ -1,26 +1,3 @@
-// The nightly vendor-key sweep over the real schema (drive issue #552).
-//
-// A minted key lives twice: our row carries the hour and the revoke, but the
-// iDrive key does not — the vendor mints keys with no expiry of their own —
-// so an expired row or a revoke whose vendor call failed leaves a key the
-// storage server still enforces. The sweep walks exactly those dead rows,
-// removes their vendor keys and stamps each row as accounted for
-// (migrations/drive/0033's `vendor_key_removed_at`), then records how many
-// keys the vendor answers with.
-//
-// This proof runs the real store (createD1DeviceStore over the real
-// migrations, test/d1-sqlite.mjs `makeMeteredDB`) against a fake vendor, so
-// the assertions are about the store's rows and the vendor calls the sweep
-// made, not about a stub's own bookkeeping:
-//
-// - an expired row's key is removed and the row stamped;
-// - a live row is never touched;
-// - a row already gone at the vendor (the vendor's documented "no such key"
-//   answer) is stamped too, so it converges instead of erroring every night;
-// - a vendor failure leaves the row unstamped for the next night and the
-//   sweep keeps going;
-// - a stamped row is never removed twice (the second sweep's list is short).
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createD1DeviceStore } from "../../core/devices.js";

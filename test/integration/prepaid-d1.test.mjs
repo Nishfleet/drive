@@ -1,9 +1,3 @@
-// Integration test for the prepaid balance, part 2 (drive#586): the meter's
-// usage draws, the pause at $0, the "$2 left" email and the auto top-up, on
-// every real migration under migrations/drive/ in a real SQLite database. The
-// provider is a recorder fetch and mail is a fake binding, so nothing is
-// charged or sent.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
