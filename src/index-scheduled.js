@@ -19,6 +19,7 @@ import { reconcileMeter } from "../core/meter-reconcile.js";
 import { listMeteredAccounts } from "../core/meter-usage.js";
 import { checkYesterdayDraws, drawPendingHours, settleBalances } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
+import { absoluteUrl } from "../core/seo.js";
 import { CLOSE_SCHEDULE, runAccountCloseCron } from "./account-close.js";
 import { runActivationNudges } from "./activation.js";
 import { dodoEnv, ownerFor, prepaidPauseFromEnv, sentryFor, storeFor } from "./index-support.js";
@@ -570,6 +571,8 @@ export async function runScheduled(event, env, context, store) {
           db: env.DRIVE_DB,
           email: env.EMAIL,
           mailFrom: secrets.MAIL_FROM ?? "",
+          secret: /** @type {{BETTER_AUTH_SECRET?: string}} */ (env).BETTER_AUTH_SECRET,
+          origin: new URL(absoluteUrl("/")).origin,
           now: event.scheduledTime,
         });
         console.log(`activation: nudged=${nudges.sent} failed=${nudges.failed}`);

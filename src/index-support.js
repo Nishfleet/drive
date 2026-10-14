@@ -19,6 +19,7 @@ import { fairUseRefuseOn } from "../core/pricing.js";
 import { createD1QueueStore } from "../core/queues.js";
 import { signedInAccount, unauthorizedResponse } from "../core/status.js";
 import { BILLING_WEBHOOK_PATH } from "../core/topup.js";
+import { UNSUBSCRIBE_PATH } from "../core/unsubscribe.js";
 import { ACCESS_SIGNIN_PATH } from "./access-signin.js";
 import { createKvSnapshotStore } from "./branches.js";
 import { HEALTH_PATH } from "./health.js";
@@ -138,6 +139,7 @@ export const PUBLIC_ROUTES = Object.freeze([
   `${REQUEST_ENDPOINT}/upload`,
   QUOTE_ENDPOINT,
   BILLING_WEBHOOK_PATH,
+  UNSUBSCRIBE_PATH,
 ]);
 
 /**

@@ -127,3 +127,53 @@ test("the nudge names both commands once and the browser way in", () => {
     assert.equal(mail.text.match(/drive login/g)?.length, 1);
   }
 });
+
+test("a nudge carries a signed stop link, and using it ends the nudges for that account only", async () => {
+  const { handleUnsubscribe } = await import("../core/unsubscribe.js");
+  const w = world();
+  w.add("empty-a", 30);
+  w.add("empty-b", 30);
+  const bodies = /** @type {Array<{to: string, text: string}>} */ ([]);
+  const email = {
+    /** @param {{to: string, text: string}} message */
+    async send(message) {
+      bodies.push(message);
+      return { messageId: "<n@drive.example>" };
+    },
+  };
+  const secret = "test-secret";
+  await runActivationNudges({
+    db: w.db,
+    email,
+    mailFrom: MAIL_FROM,
+    secret,
+    origin: "https://drive.example",
+    now: NOW,
+  });
+  const a = bodies.find((m) => m.to === "empty-a@example.com");
+  const link = /Stop these reminders: (https:\/\/\S+)/.exec(a?.text ?? "")?.[1];
+  assert.ok(link, "the email prints the link");
+
+  const env = { DRIVE_DB: w.db, BETTER_AUTH_SECRET: secret };
+  const forged = await handleUnsubscribe(new Request(`${link.slice(0, -2)}00`), env);
+  assert.equal(forged.status, 400);
+  const done = await handleUnsubscribe(new Request(link), env);
+  assert.equal(done.status, 200);
+
+  const flags = w.db.sqlite.prepare("SELECT id, nudges_off FROM accounts ORDER BY id").all();
+  assert.deepEqual(
+    flags.map((row) => [row.id, row.nudges_off]),
+    [
+      ["empty-a", 1],
+      ["empty-b", null],
+    ],
+  );
+  const again = /** @type {Array<{to: string, subject: string}>} */ ([]);
+  await runActivationNudges({
+    db: w.db,
+    email: mailer(again),
+    mailFrom: MAIL_FROM,
+    now: NOW + 50 * HOUR,
+  });
+  assert.ok(!again.some((m) => m.to === "empty-a@example.com"));
+});
