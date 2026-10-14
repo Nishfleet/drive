@@ -806,6 +806,39 @@ function securityEventTemplate(data = {}) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// First-file nudge -- sent once at 24 hours and once at 72 hours to an account
+// that has no file yet (delight item 3). { hours: 24 | 72 }
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data] `hours` (24 or 72) and the shared footer data
+ */
+function firstFileNudgeTemplate(data = {}) {
+  const late = data.hours === 72;
+  const subject = late ? "Your drive is still empty" : "Add your first file";
+  const steps = `  ${SIGN_IN_COMMAND}\n  ${INSTALL_COMMAND}`;
+  const lines = [
+    late
+      ? "Your drive has no files yet. It takes two commands, and your first file is there about a second after install."
+      : "Your drive is ready and has no files yet. It takes two commands to add the first.",
+    "",
+    steps,
+    "",
+    "No computer handy? Open Files in the browser and press Upload.",
+    "",
+    "You pay only for what you store, so an empty drive costs nothing.",
+  ];
+  const html_lines = [
+    late
+      ? "<p>Your drive has no files yet. It takes two commands, and your first file is there about a second after install.</p>"
+      : "<p>Your drive is ready and has no files yet. It takes two commands to add the first.</p>",
+    `<ul><li>${SIGN_IN_COMMAND}</li><li>${INSTALL_COMMAND}</li></ul>`,
+    "<p>No computer handy? Open Files in the browser and press Upload.</p>",
+    "<p>You pay only for what you store, so an empty drive costs nothing.</p>",
+  ];
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
+}
+
 // The kind names every caller and the test suite use. Order is the spec's.
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
@@ -822,6 +855,7 @@ export const EMAIL_KINDS = Object.freeze([
   "device-approve-notice",
   "upload-arrivals",
   "security-event",
+  "first-file-nudge",
 ]);
 
 /**
@@ -842,6 +876,7 @@ const TEMPLATES = Object.freeze({
   "device-approve-notice": deviceApproveNoticeTemplate,
   "upload-arrivals": uploadArrivalsTemplate,
   "security-event": securityEventTemplate,
+  "first-file-nudge": firstFileNudgeTemplate,
 });
 
 /**
