@@ -1,21 +1,8 @@
-// First-file activation emails (delight item 3). An account that signed up and
-// still has no file hears from us twice, once at 24 hours and once at 72, each
-// with the exact commands. An account that has a file hears nothing.
-//
-// "Once" is a property of the row, as with the welcome (src/welcome.js): the
-// claim is one conditional UPDATE on a nullable column, released if the send
-// fails, so a cron that runs twice, or two crons that overlap, send one email.
-// "Empty" is read from the two tables a file lands in, the metered versions
-// and the search index, so a file that arrived by either feed counts.
-
 import { sendEmail } from "../core/email-send.js";
 import { unsubscribeUrl } from "../core/unsubscribe.js";
 
-// An account older than this was not signed up recently enough for a nudge to
-// read as one; the pass skips it rather than mailing an old account.
 const NUDGE_MAX_AGE_HOURS = 24 * 14;
 
-/** The two nudges: the hour they are due at, and the column that records them. */
 const NUDGES = Object.freeze([
   { hours: 24, column: "nudge_24h_sent_at" },
   { hours: 72, column: "nudge_72h_sent_at" },

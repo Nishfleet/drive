@@ -1,34 +1,3 @@
-// The upload-queue report (drive issue #318): the endpoint a device reports its
-// live rclone queue to, over the device token it already holds.
-//
-// The queue is the Mac's own, inside the mount process: rclone's vfs/queue and
-// core/stats, read where `drive pause` and `drive status` already read them
-// (cmd/drive/rc.go, cmd/drive/status.go). The CLI reads them there, transports
-// the numbers over the device token the sign-in flow already minted, and
-// stores them (queues.js). This route is the write half; the read half is the
-// first-run status and usage endpoints on the site Worker, which read the same
-// row from the same database.
-//
-// It is an account route, like every other credential-holding route: the gate
-// resolved the account from the caller's own bearer token, so an anonymous
-// request is 401 and the account the row is keyed by is the gate's, never a
-// field in the body.
-//
-// The rate limit is the report interval, enforced in the store's conditional
-// upsert (queues.js `QUEUE_REPORT_INTERVAL_SECONDS`). A report that lands
-// inside it is a 429 with `retry-after`, which is the rate a real mount's
-// reporter loop cannot trip: it ticks at the same interval and would have to
-// send two reports in one tick. There is no edge-limit binding here to declare
-// — the credential already bounds the caller to one device's own account, and
-// a second, slower bucket keyed on a different label would only be a second
-// contract to keep in step.
-//
-// The failure words are machine-facing, not the person's: the only caller is
-// the mount loop, and these strings are the api Worker's own error shape (the
-// same inline sentences workers/api/src/index.js uses for 400/404/405 and
-// core/event-routes.js uses for its bucket), so they are
-// deliberately NOT the one user-facing table in core/messages.js.
-
 import { sha256Hex } from "../../../core/db.js";
 import { bearerToken, errorResponse, json, readJsonObject } from "../../../core/http.js";
 import { failureMessage } from "../../../core/messages.js";
@@ -54,9 +23,6 @@ export function parseQueueReport(body) {
     return { error: "Send the queue as a JSON object." };
   }
   const raw = /** @type {Record<string, unknown>} */ (body);
-  // `wholeNumber` answers the value, or null with the reason in `problem`, so
-  // each field below is one check and one early return rather than a nested
-  // cast at every call site.
   /** @type {string} */
   let problem = "";
   /**
@@ -106,10 +72,6 @@ export async function reportUploadQueueRoute(request, ctx) {
   if (request.method !== "POST") {
     return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
   }
-  // The account gate resolved the account, and the row is keyed by it. The
-  // null half is the closed door rather than an open endpoint: the gate answers
-  // an anonymous caller 401 before this handler runs, and a direct call with no
-  // account is the same answer.
   const account = ctx.account ?? null;
   if (account === null) {
     return errorResponse(401, failureMessage("unauthorized"), {
@@ -126,16 +88,12 @@ export async function reportUploadQueueRoute(request, ctx) {
   }
   const queues = ctx.queues ?? null;
   if (queues === null) {
-    // A deployment with no database holds no queue to write, so the route
-    // refuses rather than answering as though it had stored one.
     return errorResponse(503, "This deployment cannot hold a queue report.");
   }
   const token = bearerToken(request);
   const deviceId = token ? await sha256Hex(token) : account.id;
   const answer = await queues.record(account.id, parsed.report, deviceId);
   if (!answer.stored) {
-    // Inside the interval: the report is refused, not stored, and the caller is
-    // told when to send the next one.
     return errorResponse(429, `Report again in ${answer.retryAfter} seconds.`, {
       "retry-after": String(answer.retryAfter),
     });

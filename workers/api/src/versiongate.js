@@ -1,29 +1,3 @@
-// The version gate (drive#560). The CLI names itself on every request with
-// `User-Agent: drive/<version> (<os>/<arch>)` (cmd/drive/api.go), and this
-// module reads the version out of that header. A version below the floor this
-// deployment still serves is refused with 426 Upgrade Required and the
-// message table's cli-too-old words, so an api shape change under an old CLI
-// names the fix — `drive update` — instead of surfacing as an answer the old
-// CLI cannot read (the api-answer dead end that motivated the issue).
-//
-// The gate only refuses what it can read as a drive version, and never a
-// whole header: a health probe, a browser on a device approval page and an
-// unparseable version all pass through to the gates and routes below. The
-// floor is MIN_CLI_VERSION in this module. A request env that carries a
-// readable MIN_CLI_VERSION uses that instead; an unset or unreadable value
-// is the module default, never a silent "serve everyone".
-//
-// Version compares are the CLI's own compareVersions shape (rclonecheck.go):
-// dotted numeric parts, padded with zeros, so 0.9 sorts below 0.10 the way a
-// person expects. Build metadata and pre-release dashes are cut before the
-// compare, so a `go install ...@main` pseudo-version
-// (v0.1.1-0.20261005...-abcdef) is never read as older than the release it is
-// built ahead of — a mangled read must not brick the one working tool.
-
-/**
- * The minimum CLI version a deployment serves when it sets none. Raised in
- * the deployment when an api shape changes under it.
- */
 export const MIN_CLI_VERSION = "0.1.0";
 
 const DRIVE_USER_AGENT = /^\s*drive\/([^\s/]+)/;

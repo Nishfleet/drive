@@ -1,56 +1,3 @@
-// The sign-in screen (build-spec.md "Screens": "Sign in | Email one-time
-// link, or Google or GitHub. A card is needed at sign-up") and the two
-// endpoints it and the emailed link reach. This is build step 9's sign-up
-// half (drive#10, card-at-sign-up drive#387); the pricing half is the static
-// page in public/index.html.
-//
-// The page is a static asset served from public/signin.html, so it cannot
-// import this module; test/signin.test.mjs reads the shipped page and fails CI
-// when its copy, its endpoints, its method list or its vocabulary drift from
-// here — the same gate test/usage.test.mjs runs for src/usage.js and
-// test/pricing-copy.test.mjs for the price.
-//
-// What the endpoint does today, and what it deliberately does not. The store
-// is Better Auth over the customer database (core/auth.js): a link that is
-// single-use, expiring and stored beside the account's own rows, so a session
-// survives the isolate that made it. This route owns the HTTP shape — the two
-// steps, the closed door, the words — and none of the rules behind them: who
-// may sign in, how long a link lives and what a session is are the library's,
-// and a second implementation of any of them would be a second answer to the
-// same question (drive issue #181).
-//
-// The route stays a closed door (503, the message table's words) when no
-// EMAIL binding is bound to the deployment, so a deployment that could not
-// mail a link never reports one sent. That is the same posture
-// POST /api/emails/send takes with EMAIL_SEND_TOKEN unset (core/email-send.js).
-//
-// Third-party sign-in (Google, GitHub) is read by the endpoint and answered
-// the closed way. The OAuth client ids and secrets are credentials on Nish's
-// side of the fence, never values in this repo, so the route refuses rather
-// than redirecting to a client it does not have — and because the server
-// cannot complete them, the page does not offer them at all:
-// SIGNIN_OFFERED_METHODS below is the screen's list, and it carries email
-// alone until a provider's client exists (drive#180).
-// What bounds the route, and why the bound is at the edge (drive issue #147).
-// The start step mails a real email, so POST /api/signin is a mailbomb and a
-// send-cost vector the moment the route is open in production: a script walking
-// addresses spends a send on each, and nothing inside the route is keyed on
-// anything but the request itself. So the two stock rate-limit bindings the
-// waitlist introduced (WAITLIST_RATE_LIMITER, cloudflare.config.ts) are the
-// guard here too, beside the waitlist's: a per-IP one (SIGNIN_RATE_LIMITER) so
-// one client cannot walk addresses, and a constant-key one
-// (SIGNIN_GLOBAL_RATE_LIMITER) so a flood inside one Cloudflare location
-// cannot either. A rate-limit key counts separately in each location, so the
-// walk spread over many locations is the D1 account counter's job
-// (signinAccountSendOutcome, drive#878), run just before the send. Both
-// bindings are read off env and run before the body is parsed, so a refused
-// request costs no parse and no email; both are declared next to the
-// waitlist's in cloudflare.config.ts, and both are probed by the health endpoint
-// (src/health.js), which answers 503 naming one a deploy lost. The shared
-// module (core/rate-limit.js) owns the key, the fail-closed answer and the 429,
-// so the waitlist, this route and the api Worker's device routes cannot state
-// two different limits.
-
 import { ensureBillingAccount, pendingCardAccountId } from "../core/abuse-guards.js";
 import {
   AFTER_SIGNIN_COOKIE,
@@ -76,80 +23,25 @@ import { createWelcomeStore, sendWelcomeOnce } from "./welcome.js";
 
 /** @typedef {import("../core/auth.js").Auth} Auth */
 
-/**
- * What a caller is told when the address is not one a link can be sent to. One
- * sentence in one place: the start step's own shape check and the start step's
- * hand-off to the library both answer with it, so the two cannot drift into
- * saying the same thing in two words. It is a step-validation string and not a
- * message-table entry, the same class as the two rejections readStart makes
- * above it — the table holds the failures a person cannot act around, and a
- * mistyped address is fixed by retyping it.
- */
 const BAD_ADDRESS_MESSAGE = "Enter an email address we can send the link to.";
 
-/** The page itself, served from public/signin.html by the asset layer. */
 export const SIGNIN_PATH = "/signin";
-/** The one endpoint the page posts to. */
 export const SIGNIN_ENDPOINT = "/api/signin";
 
-/**
- * The three methods the spec's screen names, in the order it names them. The
- * endpoint accepts no other, so a fourth method cannot start a sign-in
- * without appearing here.
- */
 export const SIGNIN_METHODS = Object.freeze(["email", "google", "github"]);
 
-/**
- * The display name of each method the spec's screen names. The button copy
- * the page shows for a provider is `Continue with ${label}` and its
- * provider's name in prose is this label, so "github" is "GitHub", never
- * "Github": the gate test that keeps an unoffered provider's copy off the
- * page builds its forbidden strings from here, and a test that uppercased the
- * method name instead would pass on the very regression it exists to catch
- * (drive#180).
- */
 export const SIGNIN_METHOD_LABELS = Object.freeze({
   email: "Email",
   google: "Google",
   github: "GitHub",
 });
 
-/**
- * The methods the server can actually complete today, in the order the page
- * shows them. Email is one: the store mints a code and a session. Google and
- * GitHub stay in SIGNIN_METHODS — the endpoint still reads them and answers
- * the closed door — but they are deliberately not here, because there is no
- * OAuth client to redirect to (their client ids and secrets are Nish's
- * credentials, never values in this repo), so a button for one would promise
- * a sign-in that ends in the closed door. The page renders one control per
- * offered method and test/signin.test.mjs fails CI when a button returns for
- * a method this list does not carry (drive#180). Restoring a provider's
- * control starts here — add the method to this list — and finishes with its
- * button markup and copy on the page, whose gate test then binds the two.
- */
 export const SIGNIN_OFFERED_METHODS = Object.freeze(["email"]);
 
-// Every word and every path the page shows, in one place. The page carries
-// these verbatim (test/signin.test.mjs pins each one against the shipped
-// file); nothing here is money, so no number is written twice — the one price
-// line comes from core/pricing.js, the single price source.
 export const SIGNIN_COPY = Object.freeze({
   title: "Sign in",
-  // drive#180: the screen offers only what the server can complete, so the
-  // lede names the email path alone. Google and GitHub return to this line,
-  // and their buttons to SIGNIN_COPY, when SIGNIN_OFFERED_METHODS carries
-  // them.
   lede: "One link by email.",
-  // drive#387: a card at sign-up, and why, in plain words. The page says it
-  // once (drive#420). A tick box on the start form made every returning
-  // customer consent again (drive#538). Verify claims a test stand-in;
-  // a real card waits on the Dodo key (drive#417, drive#325).
   needCard: PRICE.needCard,
-  // drive#781, and its scope as decided on drive#785: the terms say an
-  // account holder must be 18 or older (public/terms.html, drive#547), and
-  // this page is where a first-time account attests. The label is short;
-  // needAge is the sentence above the box, and the words the link page
-  // uses again when a link without the tick cannot open its account.
   needAge: "You must be 18 or older to open an account.",
   ageConsent: "I am 18 or older",
   noPlansLine: PRICE.noPlansLine,
@@ -158,43 +50,14 @@ export const SIGNIN_COPY = Object.freeze({
   emailButton: "Email me a link",
   emailNote: "We email a link that signs you in. No password to remember.",
   emailSent: "Check your email — the link signs you in.",
-  // drive#558: the line the page shows (and the approval mail carries) when
-  // the sign-in started from the device-approve page. The link's return path
-  // travels with the token, so whichever device opens the mail can approve;
-  // the person no longer has to walk the link back to the laptop the code is
-  // showing on.
   deviceNote: "Open this link on the computer you ran drive login on, or approve from any device.",
   linkFailed: "That link did not work. Ask for a new one from the sign-in page.",
-  // The line the page shows while it waits for the endpoint, and the line it
-  // falls back to when the browser cannot reach the network at all. The
-  // second is the message table's `offline` entry; the first is this page's
-  // own.
-  //
-  // Two steps, both posts to one endpoint: "start" asks for a link, "signout"
-  // ends the session. They are two posts to one endpoint rather than two
-  // endpoints because a person signing in is one action, and the one action
-  // with a step in the middle is the sign-in itself. The link a person
-  // follows is a third path, GET /api/signin/verify, because a link in an
-  // email is a link a browser follows. The step names are data the routes
-  // read (SIGNIN_STEPS below), not words the page shows.
   sending: "Sending…",
-  // drive#418: the screen used to read as an open door beside a pricing page
-  // that said the drive was not open. These are the canonical words from
-  // src/release-state.js, carried here because a static page cannot import the
-  // module: a person who has no invite now reads where to get one instead of
-  // mailing an address into a route that answers with the closed door.
   notOpen: NOT_OPEN,
   inviteNote:
     "This screen is for an invited account. Without an invite, join the waitlist on the pricing page.",
-  // The signed-in menu (drive#423): the same words on every page that carries
-  // the site's header, so a person who is in sees how to leave, never Sign in.
   signOut: "Sign out",
   signOutEverywhere: "Sign out everywhere",
-  // The live test address only (src/access-signin.js): a person Cloudflare
-  // Access already proved signs in with that identity. The page shows the
-  // button, with the proven address after these words, only when the route
-  // answers; everywhere else the route does not exist and the button stays
-  // hidden.
   accessButton: "Continue as",
 });
 
@@ -220,13 +83,6 @@ export function signinEmailFailedBody() {
   return { error: failureMessage("sign-in-email-failed") };
 }
 
-/**
- * The three steps a sign-in post can be. Anything else is refused, so a typo in
- * a field name cannot read as a request to start a sign-in. `signout-all` is
- * the website's door to the same two store writes `DELETE /v1/keys` runs for
- * `drive logout --all` (keys, then device tokens), then every browser session
- * for this account, then this browser's cookies.
- */
 export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
 
 /**
@@ -257,9 +113,6 @@ export function readSigninRequest(body) {
     return { error: `Send step: ${SIGNIN_STEPS.join(" or ")}.` };
   }
   if (step === "signout") {
-    // Signing out needs nothing else: the cookie the browser already carries
-    // is the whole request, and a person with no session is already signed
-    // out.
     return { step: "signout" };
   }
   if (step === "signout-all") {
@@ -296,9 +149,6 @@ function readStart(body) {
     return { step: "start", method };
   }
   const email = typeof body.email === "string" ? body.email.trim() : "";
-  // One check, the same shape the waitlist form accepts: an address with a
-  // local part, an @ and a domain with a dot. Deliberately not a full RFC 5322
-  // grammar — the link that comes back is the real proof the address works.
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { error: BAD_ADDRESS_MESSAGE };
   }
@@ -307,11 +157,6 @@ function readStart(body) {
     method,
     email,
     age: isTick(body.age),
-    // The device-approval return path (drive#558): the approve page sent the
-    // person here with ?next= its own URL. Validated here, at the read, so a
-    // hand-edited link is dropped rather than stored — the same drop
-    // safeAfterSigninPath applies to the cookie, and not a 400, which would
-    // let a crafted link break a person's sign-in.
     next: safeAfterSigninPath(body.next),
   };
 }
@@ -349,16 +194,6 @@ export async function handleSigninRequest(request, env) {
       headers: { allow: "POST", "content-type": "text/plain; charset=utf-8" },
     });
   }
-  // The edge limits, in the same place the waitlist runs its own: after the
-  // guards that refuse a request outright (a refused cross-site post spends no
-  // quota) and before the body is read or the auth instance is asked, so a
-  // denied sign-in costs no parse and no email send. Both buckets are checked,
-  // the per-IP one first, so a client over its own limit is answered before
-  // the service-wide counter moves for it. The two limiters are optional in
-  // the type and required in practice: with either missing this answers 503
-  // rather than serving an endpoint that would mail an unbounded number of
-  // links, which is the closed door the other unset credentials in this
-  // deployment shape already give.
   const limited = await enforceEdgeLimits(
     [
       {
@@ -381,10 +216,6 @@ export async function handleSigninRequest(request, env) {
   const contentType = request.headers.get("content-type") ?? "";
   const fromForm = contentType.includes("application/x-www-form-urlencoded");
   if (fromForm) {
-    // The no-JavaScript path: a plain <form> posts form-encoded fields, not
-    // JSON. The fields are the same ones the JSON path reads, so the route
-    // accepts the form it documents rather than answering a 400 to a browser
-    // with its script off.
     try {
       body = Object.fromEntries((await request.formData()).entries());
     } catch {
@@ -406,13 +237,6 @@ export async function handleSigninRequest(request, env) {
     return json(signinClosedBody(), 503);
   }
   if (read.step === "signout" || read.step === "signout-all") {
-    // Sign out everywhere first, while the session still names the account:
-    // keys, device tokens, then every browser session row for this account,
-    // which is what the menu's words promise. A request with no session is
-    // already signed out everywhere it could name, so it skips the stores
-    // and still answers ok. A store that cannot finish does not report
-    // success: this browser is still signed out (below), and the body says
-    // the rest did not complete.
     /** @type {string | null} */
     let everywhereError = null;
     if (read.step === "signout-all") {
@@ -422,13 +246,6 @@ export async function handleSigninRequest(request, env) {
         if (db === undefined || db === null || typeof db !== "object") {
           everywhereError = failureMessage("drive-not-configured");
         } else {
-          // The deployment's own key provider, the one close and the cap
-          // route use (keyprovider-env.js), so a signed-out key is withdrawn
-          // at the vendor and not only refused by the api. Each of the three
-          // writes is attempted whatever the one before it did: a vendor
-          // refusal leaves that key live for the next tap to retry
-          // (devices.js revokeAccountCredentials), and it must not leave the
-          // device tokens or the browser sessions standing as well.
           const keyProvider =
             keyProviderFor(
               /** @type {{[key: string]: unknown}} */ (/** @type {unknown} */ (env)),
@@ -436,10 +253,7 @@ export async function handleSigninRequest(request, env) {
           const steps = [
             () => createD1DeviceStore(db, { keyProvider }).revokeAllKeys(account),
             () => createD1DeviceSigninStore(db).revokeAllDeviceTokens(account),
-            // Better Auth's own adapter, not a hand-written delete against
-            // its table. Its revoke-sessions endpoint would do the same, but
-            // it demands a fresh session, so a day-old sign-in could not
-            // sign out everywhere.
+            // Better Auth's revoke-sessions endpoint demands a fresh session.
             async () => (await auth.$context).internalAdapter.deleteUserSessions(account.id),
           ];
           for (const step of steps) {
@@ -452,10 +266,6 @@ export async function handleSigninRequest(request, env) {
         }
       }
     }
-    // Better Auth's own sign-out: the session row is deleted and the cookies
-    // are cleared. For a plain sign-out, a library failure is not a 500 for a
-    // person who only asked to leave. For sign-out everywhere the rows above
-    // are already gone, so a throw here still leaves every session dead.
     /** @type {Record<string, string[]>} */
     let cookies = {};
     try {
@@ -481,9 +291,6 @@ export async function handleSigninRequest(request, env) {
       ? redirect(SIGNIN_PATH, cookies)
       : json({ ok: true, step: read.step }, 200, cookies);
   }
-  // Google and GitHub land on the closed door before the library is asked:
-  // their client ids and secrets are Nish's credentials, so there is no client
-  // to redirect to. Naming the missing credential is the honest error.
   if (read.method !== "email") {
     return json(signinClosedBody(), 503);
   }
@@ -491,31 +298,6 @@ export async function handleSigninRequest(request, env) {
   if (typeof email !== "string") {
     return json({ error: BAD_ADDRESS_MESSAGE }, 400);
   }
-  // drive#781, decided for drive#785: the age gate sits at account opening —
-  // the moment an emailed link is followed — and never at this start step,
-  // because an older account must not attest again and the page cannot tell
-  // a first-time address from a returning one without looking the address up
-  // (drive#538). The tick travels with the link it mails and the verify step
-  // reads it there. The answer below is 202 for every well-formed address
-  // the send actually takes, known or unknown, ticked or not.
-  //
-  // drive#550: the per-IP and global limits above bound mail volume per IP,
-  // so a script spread across hosts still fills one inbox. This guard is
-  // keyed on the address instead: 5 links an hour and 20 a day per inbox,
-  // however many IPs the asks come from. The key is the lowercased address
-  // because that is the account key the user row is looked up by, so Alice@,
-  // alice@ and ALICE@ share one ceiling. The check runs after validation and
-  // before the library is handed the send, so a refused address costs no
-  // link and no mail.
-  //
-  // The two answers differ on purpose. Over the limit the page still says
-  // "check your inbox": answering differently would tell a stranger that
-  // this is a real address that was signed up for recently, which is the
-  // enumeration the sign-in screen avoids everywhere else. A counter that
-  // failed to write is a deployment problem, not a caller over a ceiling, so
-  // it keeps drive#431's rule and answers that no link went out rather than
-  // the 202 a refused address gets — the caller gets the truth, and the
-  // failure travels to the log (src/signin-send-limit.js).
   const sendOutcome = await signinSendOutcome(env.DRIVE_DB, email.toLowerCase());
   if (sendOutcome === "broken") {
     return json(signinEmailFailedBody(), 503);
@@ -526,21 +308,6 @@ export async function handleSigninRequest(request, env) {
       202,
     );
   }
-  // drive#878: the account-wide send bound, the counter the two edge bindings
-  // cannot be. Cloudflare counts a rate-limit key separately in each location,
-  // so SIGNIN_GLOBAL_RATE_LIMITER's constant key bounds one location and a
-  // walk spread over many locations multiplies it; this counter's row lives on
-  // the customer database — one database, so one row for every location — and
-  // the account's total is bounded by it whatever the walk does. It runs after
-  // the address guard and before the send, the same narrow-first order the
-  // edge limits run in (the per-IP bucket before the service-wide one): an ask
-  // the address guard refused never moves the account's counter, and an ask
-  // the account guard refuses has spent its address's slot, because it did
-  // reach for a send. The answers are the address guard's two: `refused` gets
-  // the sent link's own 202 (a different answer would tell a stranger the
-  // account is being walked, which is the enumeration this screen avoids),
-  // and `broken` is a deployment problem that keeps drive#431's rule — nobody
-  // is told a link is coming when none went out.
   const accountOutcome = await signinAccountSendOutcome(env.DRIVE_DB);
   if (accountOutcome === "broken") {
     return json(signinEmailFailedBody(), 503);
@@ -552,20 +319,10 @@ export async function handleSigninRequest(request, env) {
     );
   }
   try {
-    // Hand the send to Better Auth's own handler so its rate limiter runs.
-    // The in-process `auth.api` call bypasses the router's onRequest hook, so
-    // a per-IP ceiling stored in D1 would never see the request; the handler
-    // routes the call through that hook, building the rate-limit key (IP plus
-    // path) from this request's headers. The route's own origin check, body
-    // parse and closed-door guard have already run above; this only needs the
-    // email the start step validated and the headers the limiter reads IP from.
+    // Better Auth's in-process `auth.api` call bypasses the router's onRequest hook, so its rate limiter never sees the request.
     const authResponse = await auth.handler(
       signinLinkRequest(auth, email, request, read.next, read.age),
     );
-    // Better Auth answers 429 from its rate limiter; translate that into the
-    // message table's words rather than passing its body through, and carry the
-    // library's own retry-after through as the `retry-after` header the edge
-    // limiter sets (core/rate-limit.js), so a client gets one backoff signal.
     if (authResponse.status === 429) {
       const retryAfter = authResponse.headers.get("x-retry-after");
       return json(
@@ -574,26 +331,13 @@ export async function handleSigninRequest(request, env) {
         retryAfter === null ? {} : { "retry-after": retryAfter },
       );
     }
-    // A 400 from the library is its own answer about an address the start step
-    // already accepted, so it is passed on as a 400 rather than closed as an
-    // outage: a caller who mistyped would otherwise be told sign-in is
-    // temporarily closed, which is the one thing they cannot act on. The words
-    // are the start step's, not the library's body — see BAD_ADDRESS_MESSAGE.
     if (authResponse.status === 400) {
       return json({ error: BAD_ADDRESS_MESSAGE }, 400);
     }
-    // Any other non-200 is a real failure — a mailer that threw, a
-    // deployment with no email setting, a token that could not be stored: no
-    // link went out, so the answer says exactly that and never a 202 for an
-    // inbox that will stay empty (drive#431).
     if (authResponse.status !== 200) {
       return json(signinEmailFailedBody(), 503);
     }
   } catch {
-    // A rate-limit refusal arrives as the 429 Response handled above, never a
-    // throw. This catch is for anything else `auth.handler` lets escape — a
-    // mailer with no way to send, a torn D1 binding, a runtime fault — which
-    // means no link went out, so the answer says so (drive#431).
     return json(signinEmailFailedBody(), 503);
   }
   return json(
@@ -638,21 +382,6 @@ export async function handleSigninLinkVerify(request, env) {
   if (token === null || token === "") {
     return redirect(`${SIGNIN_PATH}?error=no-token`);
   }
-  // The 18+ gate, before the library's verify runs (drive#781, drive#785).
-  // The start step stored this link's address and whether the tick travelled
-  // with it; once magicLinkVerify runs it opens the account, so a first-time
-  // address whose start posted no tick has to be turned back here. An address
-  // that already has an account signs in whatever the tick said — that is
-  // the decided behaviour, no re-attestation for older accounts. Only
-  // someone holding the token reaches this lookup, so the answer never
-  // leaves the mailbox the link was delivered to: no new enumeration risk
-  // (drive#538).
-  //
-  // The gate fails closed on a storage fault (turned back with the same
-  // words a broken or spent link gets, which never name which of the three
-  // it was) and fails open for a link whose row carries no address, written
-  // by the code before the 0046 column existed: it cannot look the address
-  // up, and a start posted it the same way every other link was posted.
   const driveDb = env.DRIVE_DB;
   if (
     driveDb !== undefined &&
@@ -668,10 +397,6 @@ export async function handleSigninLinkVerify(request, env) {
           .bind(row.email)
           .all();
         if ((held.results?.length ?? 0) === 0) {
-          // Not attested and no account behind the address: the link is
-          // refused here rather than the account opened under it. The
-          // person starts again and ticks the box; the page explains the
-          // rule again.
           return redirect(`${SIGNIN_PATH}?error=need-age`);
         }
       }
@@ -703,19 +428,6 @@ export async function handleSigninLinkVerify(request, env) {
     const cookie = cookies.map((line) => line.split(";")[0]).join("; ");
     const account = await sessionAccount(new Request(request.url, { headers: { cookie } }), auth);
     if (account !== null) {
-      // The person is signed in by now: Better Auth set the cookie above.
-      // Drop any leftover unauthenticated hold for this address so an old
-      // start cannot move a stranger's fingerprint onto the new account
-      // (drive#538). pendingCardAccountId lowercases, so a mixed-case
-      // mailbox still matches the hold id.
-      //
-      // Nothing here writes a card fingerprint (drive#503). The `test:<email>`
-      // stand-in this used to claim was a string the browser's checkbox
-      // produced, so every new address got a distinct one and the
-      // one-account-per-card guard never fired; the card is now recorded from
-      // the verified payment webhook (core/ledger.js creditTopUp). An account
-      // whose payment has not landed simply has no card yet, which reads as
-      // "no card" everywhere else too (core/devices.js cardAdded).
       try {
         await /** @type {D1Database} */ (driveDb)
           .prepare("DELETE FROM accounts WHERE id = ?1")
@@ -726,12 +438,6 @@ export async function handleSigninLinkVerify(request, env) {
           `card-step leftover hold for account ${account.id} did not clear: ${String(cause)}`,
         );
       }
-      // The billing row this account needs, written without a card. It used to
-      // appear as a side effect of claiming the stand-in fingerprint above, so
-      // it is now its own call: no fingerprint, no card_added_at, and an
-      // existing row left untouched. A failure is logged loudly and the
-      // sign-in still lands, because the cap write and the key mint each make
-      // their own row.
       try {
         await ensureBillingAccount(/** @type {D1Database} */ (driveDb), {
           accountId: account.id,
@@ -740,15 +446,6 @@ export async function handleSigninLinkVerify(request, env) {
       } catch (cause) {
         console.error(`billing row for account ${account.id} did not write: ${String(cause)}`);
       }
-      // The account's own bucket exists from the first sign-in (drive#540):
-      // the verify step provisions `drv-<id>` through the one provisionBucket
-      // call the key mint also makes, so a customer who only ever uses the
-      // website has a bucket for the Files page and web upload, with no device
-      // key minted. Idempotent, so a returning sign-in re-checks the bucket for
-      // free and an account from before this call existed catches up here. A
-      // provisioning failure is logged loudly and the sign-in lands anyway —
-      // the Files page answers an empty folder for a bucket that is not there
-      // yet, and the key mint keeps its own call as the safety net.
       try {
         await provisionAccountBucket(env, account.id);
       } catch (cause) {
@@ -756,19 +453,6 @@ export async function handleSigninLinkVerify(request, env) {
           `bucket provisioning for account ${account.id} did not finish: ${String(cause)}`,
         );
       }
-      // The welcome email, once (drive#522). Four customer templates had no
-      // caller at all, so somebody could sign up, be charged, hit their cap
-      // and never hear from us. This is the seam that is guaranteed to run for
-      // a real account, and it is once-only because the claim lives on the
-      // account row (src/welcome.js), not in this isolate.
-      //
-      // A welcome is the one of those four that does not wait on a billing
-      // decision, so it ships here; the other three are still waiting on
-      // #496, and test/email-callers.test.mjs names them so they cannot go
-      // missing again quietly.
-      //
-      // Never throws: sendWelcomeOnce reports instead, because a failed
-      // welcome must never cost somebody their sign-in.
       const secrets = /** @type {{MAIL_FROM?: string}} */ (env);
       await sendWelcomeOnce({
         db: /** @type {D1Database} */ (driveDb),
@@ -780,15 +464,6 @@ export async function handleSigninLinkVerify(request, env) {
       });
     }
   }
-  // The one thing this route does is take the cookie Better Auth set onto a
-  // same-origin redirect of its own, so a person lands on the drive rather
-  // than on a JSON body. When they opened the device-approve link while signed
-  // out, that page left a return cookie so they come back to the code — and
-  // since drive#558 the start step also stored the path with this link's
-  // token, so a link opened on a second device (the phone that signs in,
-  // while the code sits on the laptop) lands on the approve page too. The
-  // stored row wins over the cookie: the row travels with the link, the
-  // cookie only names the browser that opened the approve page.
   const extra = cookieHeaders(verified);
   const cookies = extra["set-cookie"] ?? [];
   let mailedReturn = "";
@@ -802,10 +477,6 @@ export async function handleSigninLinkVerify(request, env) {
       mailedReturn = (await consumeSigninReturn(/** @type {D1Database} */ (driveDb), token))
         .returnPath;
     } catch (cause) {
-      // A lookup that cannot finish must not turn a session that was already
-      // minted into a 500: the cookie below still carries the same intent for
-      // the browser that opened the approve page, the same posture as the
-      // card-step claim above.
       console.error(`signin return lookup did not finish: ${String(cause)}`);
     }
   }
@@ -840,15 +511,6 @@ export async function handleSigninLinkVerify(request, env) {
 function signinLinkRequest(auth, email, request, returnPath = "", ageAttested = false) {
   const basePath = auth.options.basePath;
   const base = /** @type {string} */ (auth.options.baseURL);
-  // Forward only what the callee reads, not the caller's whole header set. The
-  // library validates the origin from `origin` and resolves the per-IP
-  // rate-limit key from `cf-connecting-ip` (its configured ipAddressHeaders,
-  // core/auth.js); a JSON body is all it parses. The caller's `content-length`
-  // names this route's body, not the JSON built here, so carrying it across
-  // risks a body/length mismatch, and `Cookie`/`Authorization` belong to a
-  // signed-in person a magic-link send has no need to impersonate. `accept` is
-  // not forwarded either: the library's answer is JSON and the route reads the
-  // status, never a negotiated representation.
   const headers = new Headers();
   const origin = request.headers.get("origin");
   if (origin !== null) {
@@ -858,19 +520,10 @@ function signinLinkRequest(auth, email, request, returnPath = "", ageAttested = 
   if (clientIp !== null) {
     headers.set("cf-connecting-ip", clientIp);
   }
-  // The user-agent travels so the mail can name the browser or device
-  // that asked (drive#550): the library's own request context carries
-  // the forwarded headers into the magic-link callback, which is where
-  // the mail is built. It is a person's own string, not a key anything
-  // is bound to.
   const userAgent = request.headers.get("user-agent");
   if (userAgent !== null) {
     headers.set("user-agent", userAgent);
   }
-  // The body is the library's own shape, not the route's `step` wrapper. The
-  // metadata carries the return path (drive#558) and the 18+ tick (drive#785)
-  // for every send: the row this write becomes at core/auth.js is what the
-  // verify step's gate reads, so a plain sign-in stores its row too.
   headers.set("content-type", "application/json");
   return new Request(`${base}${basePath}/sign-in/magic-link`, {
     method: "POST",
