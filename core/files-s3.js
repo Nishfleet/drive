@@ -758,10 +758,10 @@ export function trashRows(entries, now = Date.now()) {
         ),
         restorable,
         // Past the window the button is gone, and the one line says why.
-        restoreLabel: restorable ? "Restore" : "Past the 30 days",
+        restoreLabel: restorable ? "Restore" : "Past the 3 days",
         goneLabel: restorable
           ? ""
-          : "This one has been gone 30 days. Restoring it is not possible.",
+          : "This one has been gone 3 days. Restoring it is not possible.",
       };
     })
     .filter(Boolean)

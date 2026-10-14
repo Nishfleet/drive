@@ -16,11 +16,11 @@
 //      the button is a decision and not a leap of faith. The list is the
 //      branch's own live diff (src/branches.js `diffBranch`), so it cannot
 //      drift from what a discard would actually remove.
-//   2. The 30-day window, and it is enforced on the server rather than by
+//   2. The 3-day window, and it is enforced on the server rather than by
 //      hiding a button: a branch older than the window answers that it cannot
 //      be rewound, so a caller who ignores the page cannot rewind it either.
 //      The window is the drive's own (core/files.js RECENTLY_DELETED_DAYS, the
-//      same 30 days the 30-day undo promises), read from there so the two
+//      same 3 days the 3-day undo promises), read from there so the two
 //      cannot disagree about how long a rewind lasts.
 //   3. Who changed what, from the same row the rewind reads: the key on the
 //      branch is who made the change, and the same value answers the activity
@@ -46,7 +46,7 @@ import { diffBranch, readSnapshot, readSnapshotObject } from "./branches-snapsho
 export const REWIND_ENDPOINT = "/api/rewind";
 
 /** How long a rewind stays available, in days. Read from the drive's own
- * 30-day undo window (core/files.js) rather than declared here, so the screen's
+ * 3-day undo window (core/files.js) rather than declared here, so the screen's
  * promise and Recently deleted's promise are the same number. */
 export const REWIND_WINDOW_DAYS = RECENTLY_DELETED_DAYS;
 
@@ -189,7 +189,7 @@ async function rewindBranchRow(db, snapshots, store, account, name) {
 
 /**
  * The one-click rewind: the branch's copy is discarded and the original is left
- * exactly as it is. The window is checked first, so a branch past 30 days
+ * exactly as it is. The window is checked first, so a branch past 3 days
  * answers the same sentence the screen showed rather than quietly removing work
  * whose old versions are gone.
  *
@@ -219,7 +219,7 @@ export async function rewindBranch(db, snapshots, store, account, name, now, que
   // read as an open branch — so nothing moves the row and the name stays held
   // by the one-active-name index for good. Finishing a rewind is not starting
   // one: it removes this branch's own copies and never names the original, so
-  // neither the open state nor the 30-day window decides it, and the batches
+  // neither the open state nor the 3-day window decides it, and the batches
   // run from the cursor the row carries, the way the queue would have
   // continued them. This sits above the snapshot check below for the same
   // reason: a row stuck long enough to lose its snapshot can still be

@@ -713,7 +713,7 @@ async function restoreRequest(request, store, account, now) {
       // see it. One deep LIST, and only when the cheap one came back empty,
       // finds it by the same parse the Recently deleted view uses. Nothing
       // writes that layout now, so this only runs for a file deleted before
-      // the upgrade, and the 30-day window bounds how long any of them live.
+      // the upgrade, and the 3-day window bounds how long any of them live.
       found = findTrashName(await store.listAll(TRASH_PATH), checked.path);
     }
     if (!found) {
@@ -721,7 +721,7 @@ async function restoreRequest(request, store, account, now) {
     }
     if (!isRestorable(found.deletedAt, now)) {
       return json(
-        { error: "That file has been in Recently deleted for 30 days, so it is gone." },
+        { error: "That file has been in Recently deleted for 3 days, so it is gone." },
         410,
       );
     }

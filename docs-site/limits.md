@@ -25,7 +25,7 @@ would rather you read it here than find out in week three.
   have not run the measured suite on a Mac, so treat read-write on a Mac as
   untested.
 - **No `restore` command yet.** A delete from the Files page is restorable for
-  30 days in Recently deleted; a delete made any other way is recoverable for
+  3 days in Recently deleted; a delete made any other way is recoverable for
   one day by asking us. `drive restore` is not in the CLI.
 - **{{VERSION_HISTORY}}** Save a file again and the file is replaced; no command
   lists the versions that were there before.

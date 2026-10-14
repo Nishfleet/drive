@@ -71,9 +71,9 @@ command lists the versions that were there before. {{NOT_OPEN}} See
 ## Restore
 
 Deleting a file on the Files page does not erase it. It moves to Recently
-deleted and stays there for 30 days, the meter stops counting it the same
+deleted and stays there for 3 days, the meter stops counting it the same
 hour, and you can put it back yourself: open your drive in the browser, press
-the **Recently deleted** tab, find the file, and press **Restore**. After 30
+the **Recently deleted** tab, find the file, and press **Restore**. After 3
 days the file is removed for good.
 
 A delete made anywhere else — `rm` in the mounted folder, an rclone command,
