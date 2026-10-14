@@ -92,21 +92,11 @@ export async function saveCreateBatch(db, branch, copiedFiles, snapshots, key, c
   }
   const parts = snapshotPartWriter(snapshots);
   if (parts === null) {
-    // A store that cannot build a value a part at a time keeps the whole-value
-    // path this issue replaced, so a namespace without the seam still works.
-    // It is only a stand-in: the KV store has the seam and production uses it.
     const merged = await readSnapshot(snapshots, resolved);
     const saved = await saveSnapshot(db, branch.id, { ...merged, ...delta }, snapshots, key);
     return { success: saved.success, part: 0 };
   }
   const leaf = createPartsKey(resolved, branch.id);
-  // The cursor carries each batch's next part beside its walk position, and a
-  // batch that finished keeps it. But a give-up clears the cursor while its
-  // parts are still in the namespace, which is why the discard path reads the
-  // count off the leaf: a batch that lands with no part in the cursor takes the
-  // next index from the count the build stored on its own leaf, so a redelivery
-  // never overwrites part 0 and resets the count over parts 1..N (drive#842,
-  // coordinator review).
   let index = createPartIndex(cursor);
   if (index === 0) {
     index = (await parts.partCount(leaf)) ?? 0;
@@ -203,9 +193,6 @@ export async function joinCreateParts(db, branch, snapshots, base, cursor, writt
   try {
     const reads = snapshotPartReader(snapshots);
     if (reads === null) {
-      // Parts were written to a store that cannot read them back, so the one
-      // value a finished branch resolves can never be assembled (drive#842,
-      // coordinator review).
       return { success: false };
     }
     /** @type {Record<string, Fingerprint>} */
@@ -213,8 +200,6 @@ export async function joinCreateParts(db, branch, snapshots, base, cursor, writt
     for (let index = 0; index < written.part; index += 1) {
       const raw = await reads.getPart(leaf, index);
       if (raw === null) {
-        // A part the namespace does not hold is a join that cannot be honest:
-        // returning a shorter snapshot would call every missing file removed.
         throw new Error(
           `the create parts under ${leaf} name part ${index}, and the namespace does not have it`,
         );
@@ -223,9 +208,6 @@ export async function joinCreateParts(db, branch, snapshots, base, cursor, writt
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
         throw new Error(`a create part under ${leaf} is not a file map`);
       }
-      // Each part's own entries are copied in one at a time, and only the ones
-      // that name a file, so a key like `__proto__` in a part cannot reach the
-      // snapshot's prototype and a malformed part cannot smuggle a non-file in.
       for (const [rel, fp] of Object.entries(/** @type {Record<string, unknown>} */ (parsed))) {
         if (fp !== null && typeof fp === "object" && !Array.isArray(fp) && rel !== "__proto__") {
           snapshot[rel] = /** @type {Fingerprint} */ (fp);
@@ -234,21 +216,10 @@ export async function joinCreateParts(db, branch, snapshots, base, cursor, writt
     }
     const saved = await saveSnapshot(db, branch.id, snapshot, snapshots, resolved);
     if (!saved.success) {
-      // The row refused the one complete snapshot, so a branch opened here
-      // would hand later readers a value the join never wrote (drive#842,
-      // coordinator review).
       return { success: false };
     }
-    // The deltas are folded into the one value `saveSnapshot` wrote, so they are
-    // swept here. Leaving them would keep every file of the branch in the
-    // namespace twice, and the next create of the same key would read them back.
     await dropCreateParts(snapshots, branch, cursor, written.part, key);
   } catch (error) {
-    // A part the namespace does not hold, or a value that does not parse: the
-    // join cannot be honest because returning a shorter snapshot would call
-    // every missing file removed, so the failure reaches the batch and fails
-    // the job (drive#842, coordinator review). The detail is logged; the row's
-    // job error is the one table's words.
     console.error?.(`create parts join failed for ${branch.id}: ${errorText(error)}`);
     return { success: false };
   }
@@ -450,12 +421,6 @@ export async function writeFrozenWindows(snapshots, key, listed) {
     await snapshots.put(frozenWindowKey(key, windows), JSON.stringify(slice));
     windows += 1;
   }
-  // The count names how many windows and how many files the whole listing has,
-  // and a batch reads it once per batch to learn which window is its own and
-  // whether it is the last one — a batch's view of the branch is a window, so
-  // "my window ran out" is not "the branch is copied" (drive#842). An empty
-  // listing still has a window count of zero, and the count is what a batch
-  // reads to know there is nothing frozen to read.
   await snapshots.put(frozenListingKey(key), JSON.stringify({ windows, files: rels.length }));
   return windows;
 }
@@ -576,14 +541,6 @@ export async function loadJobRow(db, snapshots, account, id) {
   if (row === undefined || row === null) {
     return null;
   }
-  // A create batch must not read the whole snapshot (drive#842). The snapshot it
-  // would read is the one its own batches are building, so the read is the size
-  // of the whole branch on every one of its 1,250 batches. A create batch copies
-  // from its own delta and writes its own delta, and the value the branch is
-  // left with is assembled once, in the batch that finishes the copy — so the
-  // row goes to the batch with an empty snapshot and the copy never asks for
-  // one. Every other job kind still gets the snapshot: approve and rewind diff
-  // against it, and a row whose job has ended is read for its result.
   const creating =
     String(row.job_kind ?? "") === "create" && String(row.state ?? "") === "creating";
   return toBranch(
@@ -592,16 +549,6 @@ export async function loadJobRow(db, snapshots, account, id) {
   );
 }
 
-// Persists one account's branch snapshot, so an approve that is retried after
-// a partial run sees each file it already copied back as no longer changed.
-// The value goes to the namespace (drive#252): the leftover `branches.snapshot`
-// column is no longer written (drive#329). The first save of a newly claimed
-// row has no pointer yet and is handed the key; every later save reads the
-// pointer the row already carries, so an approve can never write another
-// account's value. A row with an empty pointer and no key is a pre-backfill
-// row the sweep has not reached, and `approveBranch` refuses it before it
-// copies. The row's byte length is refreshed, so `snapshotBytes` stays the
-// honest length of the value the diff reads.
 /**
  * @param {D1Database} db
  * @param {number} id the row's own id
@@ -615,10 +562,6 @@ export async function saveSnapshot(db, id, snapshot, snapshots, key = "") {
   if (!snapshots) {
     throw new TypeError("saveSnapshot needs the branch snapshot store");
   }
-  // The row decides the key, not this function, except the first save of a
-  // newly claimed row which has not stored a pointer yet. `branches.snapshot_key`
-  // is already `u/<id>/branch/<name>` after that, so an approve can never
-  // write another account's value even if the caller handed it a strange store.
   const row = await db
     .prepare(
       "SELECT snapshot_key FROM branches WHERE id = ?1 AND state IN ('open', 'creating', 'approving')",

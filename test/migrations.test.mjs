@@ -1,14 +1,3 @@
-// Guards migrations/drive/ against the non-deterministic apply order and the
-// stale hand-kept migration list that broke test reproducibility (drive issue
-// #619).
-//
-// The deploy orders migrations by full filename — the order `wrangler d1
-// migrations apply` uses — and so must the tests. A numeric-prefix sort
-// (Number.parseInt) ties on shared prefixes (0005, 0006, 0012, 0017, 0020 and
-// 0021 on main) and leaves the tie to the filesystem, so the same schema could
-// be built in different orders on different machines. These tests pin the
-// folder to the deploy's rule and reject any *new* duplicate prefix.
-
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { test } from "node:test";

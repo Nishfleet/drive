@@ -1,26 +1,3 @@
-// A device key's renewal on a provider that names a session, over the real D1
-// schema (drive issue #749).
-//
-// The unit proof (workers/api/test/keystore.test.js) runs against the
-// in-memory stand-in. This file makes the claims only the real store can:
-//
-//   1. A device key minted over a session-naming provider (the STS path)
-//      records the vendor session in `devices.expires_at` and
-//      `devices.ttl_seconds` — the row the renewal is measured against is a
-//      column, not a per-isolate field.
-//   2. The renewal mints a fresh credential under the SAME row id and swaps
-//      the row onto it (`renewDeviceCredentialRow`), and a second store
-//      instance built over the same database — the stand-in for the isolate a
-//      deploy replaces — authenticates the fresh credential and refuses the
-//      old one, because the row names the new access key now.
-//   3. The fresh credential rides the renew answer to the signed-in device
-//      that asked; an agent key's renew answer still carries no secret.
-//
-// The fake provider below mirrors the file this test's harness comes from
-// (agent-key-ttl-d1.test.mjs): a provider whose sessions die on their own,
-// saying so with `namesSession`. The live proof over a real STS mint is the
-// cap-mount harness's MinIO stand-in; this file pins the rows.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sha256Hex } from "../../core/db.js";

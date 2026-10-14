@@ -1,24 +1,3 @@
-// The per-address sign-in send counters (drive#550) on the real D1 schema.
-//
-// The unit proof (test/signin-send-limit.test.mjs) and the route proof
-// (test/signin.test.mjs) run against the in-memory stand-in, which cannot make
-// the claims this file makes:
-//
-//   1. Migration 0026 is in the set the drive applies. Every one of these
-//      files is read off disk and executed against a real SQLite engine, so a
-//      statement the store adds without its table fails here rather than in
-//      production, and a migration that would not apply (a statement the
-//      older tables cannot take) fails here too.
-//   2. Both the new READ and the new WRITE land on the real rows. The write
-//      is the guarded upsert; the read is a plain SELECT off the same engine,
-//      with the numbers the deployed ceilings name.
-//   3. The migration is expand-only, one way (the fleet's D1 rule): a new
-//      table, no NOT NULL on anything an older row could carry, and no drop or
-//      rename that would break the code already running.
-//
-// Every assertion about storage reads the row back with plain node:sqlite
-// statements, so an answer that came from memory would leave the table empty.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

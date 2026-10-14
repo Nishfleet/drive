@@ -1,9 +1,3 @@
-// Tests for the one timeout-and-retry wrapper every outbound data-plane call
-// goes through (drive#570): the S3 store's storage requests and the meter's
-// Dodo ingest. The acceptance bullet this file proves: a stalled fetch fails
-// in the caller's window with a NAMED error, and a 5xx is retried once — no
-// more — before the caller's own failure wording takes over.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DataPlaneTimeout, fetchWithTimeoutAndRetry } from "../core/fetch-retry.js";

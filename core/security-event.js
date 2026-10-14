@@ -1,16 +1,6 @@
-// One security-event mail for the silent actions drive#551 names: an agent,
-// team or branch key mint, a share or upload-request link, sign-out-everywhere,
-// a device logout, and a cap change. The owner gets one mail per event with
-// what happened, when, which device, and how to revoke. A mail failure never
-// fails the action: the mint, link, logout or cap write already committed.
-//
-// Plain helper plus sendEmail, so node --test exercises every skip and the
-// failing-mailer path without a Worker runtime.
-
 import { sendEmail } from "./email-send.js";
 import { SECURITY_EVENT_COPY } from "./emails.js";
 
-/** How long a send may block the action before it is treated as a failure. */
 const SEND_DEADLINE_MS = 8_000;
 
 /**
@@ -101,8 +91,6 @@ export async function notifySecurityEvent(input) {
   const mailFrom = typeof input.mailFrom === "string" ? input.mailFrom.trim() : "";
   const to = typeof input.to === "string" ? input.to.trim() : "";
   if (binding === undefined || binding === null) {
-    // Tests and a Worker with no mailer skip without a line on every mint;
-    // a bound mailer that cannot send is the case that must be loud.
     return { sent: false, reason: "no-email-binding" };
   }
   if (mailFrom === "") {

@@ -1,26 +1,10 @@
-// Split out of core/files-p4.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
 import { ChangedUnderUsError } from "./files-scope.js";
 import { decodeEntities, tagValue } from "./s3-listing.js";
 
-/**
- * S3's single-copy ceiling. CopyObject copies at most 5 GiB per call (Amazon
- * S3, "Copying objects"; iDrive e2 and B2 publish the same limit), so a bigger
- * source is only copyable the multipart way: CreateMultipartUpload, one
- * UploadPartCopy per byte range, then CompleteMultipartUpload. In GiB, because
- * 5 GiB is the number S3 documents and every implementation measures against.
- */
+// S3 CopyObject copies at most 5 GiB per call (https://docs.aws.amazon.com/AmazonS3/latest/userguide/copy-object.html).
 export const SINGLE_COPY_LIMIT = 5 * 1024 ** 3;
-/** The most keys one DeleteObjects call may name: S3's own ceiling. */
 export const REMOVE_BATCH_LIMIT = 1000;
-/** The byte range one UploadPartCopy copies. S3's floor for a copy part is
- * 5 MiB; 16 MiB puts a 10 GB branch file at 640 requests and a 6 GB one at 384,
- * which is a request count a stand-in and a real provider both answer quickly.
- */
 const COPY_PART_SIZE = 16 * 1024 ** 2;
-/** S3's cap on the parts in one multipart upload. A range narrower than
- * COPY_PART_SIZE for an object this large is only needed past 160 GiB, so the
- * cap is checked rather than assumed.
- */
 const COPY_MAX_PARTS = 10000;
 
 /**
@@ -80,11 +64,6 @@ export async function multipartCopy(fetchImpl, urlFor, source, to, size, options
           `storage multipart copy part ${number} failed: ${copyFailure(copied, copiedBody)}`,
         );
       }
-      // The ETag is S3's, XML-escaped in the part's answer and read back into
-      // the completion as it was answered, so the entity the server sent is the
-      // entity the server gets. A part with no ETag cannot be named in the
-      // completion, and a completion without it cannot be finished: naming
-      // that beats completing an upload of nothing.
       const etag = tagValue(copiedBody, "ETag");
       if (etag === "" || !copiedBody.includes("<CopyPartResult")) {
         throw new Error(
@@ -112,11 +91,6 @@ export async function multipartCopy(fetchImpl, urlFor, source, to, size, options
     }
     return bareEtag(completedBody);
   } catch (error) {
-    // The parts uploaded so far are still stored and billed until the upload is
-    // aborted, so the abort is part of failing the copy. A failed abort is
-    // logged and the copy's own error is what the caller is told — the copy
-    // failed either way, and the upload id is in the line so it can be aborted
-    // by hand.
     const aborted = await fetchImpl(`${target}?${upload}`, { method: "DELETE" }).catch(
       (abortError) => {
         console.error?.(

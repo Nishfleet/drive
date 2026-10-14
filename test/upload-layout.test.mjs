@@ -1,8 +1,3 @@
-// The Lighthouse gate allows a layout shift of 0.01. The drop box on the
-// upload page is revealed after the link answers; if it is display:none until
-// then, the status line under it jumps when it appears. It must keep its space
-// (hidden but laid out), and only a closed link may take the space back.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

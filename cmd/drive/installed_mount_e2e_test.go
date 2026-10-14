@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-// TestTwoDevicesKeepBothSavesThroughTheInstalledUnit is issue #515: `drive
-// init` writes a login item that runs the product, two devices that start
-// from that item keep both saves as a conflict copy, and a pinned file stays
-// in the cache after storage goes away.
 func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stand-in proof skipped in -short mode")

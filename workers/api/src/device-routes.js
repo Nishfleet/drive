@@ -1,48 +1,3 @@
-// The device sign-in routes (build step 4, drive#55): a code the CLI shows in
-// the terminal, a page the person approves it on, and the token the CLI picks
-// up when they do.
-//
-// The flow is RFC 8628's device authorization grant, because that is the
-// stock shape for "a terminal asks a browser to approve it": the CLI gets a
-// device code (its own secret) and a short user code (what the person types),
-// opens the verification page, and polls until approved. Nothing here invents
-// a second sign-in protocol.
-//
-// Approving requires a signed-in account (drive#136 finding 2): the approve
-// POST is an account route (routes.js), so the dispatcher resolves the
-// sign-in session cookie through the same gate every site account route uses
-// (core/status.js `signedInAccount` over the Better Auth instance core/auth.js
-// `authFor` builds, drive#109) and answers 401 to an anonymous request before
-// this handler runs. The account is the sign-in flow's (drive#130), copied onto
-// the code row by the store; approving no longer makes an account, it attaches
-// the person who already signed in.
-//
-// Since drive#524 the approval itself is where the second factor bites. An
-// account that has armed two-factor authentication (the TOTP secret confirmed
-// with one correct code, `user.twoFactorEnabled`) must re-prove it here: the
-// approve page shows a second field, and the approve POST checks the code —
-// a TOTP value or a one-time recovery code — through the library's own
-// endpoints before the store approves anything. A stolen sign-in cookie (an
-// inbox the attacker read) is therefore not enough to attach a new device;
-// the attacker needs the rotating code from the person's authentication app
-// too. The field appears only for accounts with the factor on, so an account
-// that never armed it sees the page it always did.
-//
-// All three POSTs are rate limited, one bucket each: the two public ones write
-// or read a row for a caller that holds no credential, so an unlimited
-// version of them is a way to fill the table or burn reads from anywhere. The
-// approve page's GET is limited in its own bucket too: it names a pending
-// code's device and time, so an unlimited page is an existence oracle for
-// codes a phishing site is cycling (drive#518 review). Each limit runs before
-// the body is read, so a refused call costs no parse and, on the code route,
-// no row. The limiter is the one edge limiter (core/rate-limit.js
-// `enforceEdgeLimits`), the same guard the waitlist and the sign-in route run
-// behind, so the fail-closed posture and the 429 answer are written once.
-// The DELETE below is the fourth device route and is the only one that is
-// neither public nor rate limited: the account gate has already resolved the
-// caller's own token from its own bearer header, so there is nothing for a
-// stranger to spend.
-
 import { AFTER_SIGNIN_COOKIE, safeAfterSigninPath } from "../../../core/auth.js";
 import { isSameOriginRequest, sendEmail } from "../../../core/email-send.js";
 import { escapeHtml } from "../../../core/escape-html.js";
@@ -52,8 +7,6 @@ import { clientIpKey, enforceEdgeLimits } from "../../../core/rate-limit.js";
 import { mailFromEnv, notifySecurityEvent } from "../../../core/security-event.js";
 import { signedInAccount } from "../../../core/status.js";
 
-/** The stand-in key store (core/keystore.js `createMemoryStore`), the same one
- * the key routes take. */
 /** @typedef {ReturnType<typeof import("../../../core/keystore.js").createMemoryStore>} KeyStore */
 
 /**
@@ -66,36 +19,7 @@ import { signedInAccount } from "../../../core/status.js";
  * @typedef {{store: KeyStore, url: URL, env: Record<string, unknown>, db?: D1Database|null, account?: {id: string, name?: string, email?: string}|null, accounts?: {api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string, twoFactorEnabled?: unknown}} | null>, verifyTOTP?: (options: {body: {code: string}, headers: Headers, returnHeaders?: boolean}) => Promise<{headers?: Headers}|undefined>, verifyBackupCode?: (options: {body: {code: string}, headers: Headers, returnHeaders?: boolean}) => Promise<{headers?: Headers}|undefined>}}|null}} DeviceCtx
  */
 
-// The two edge-limit bindings the device flow answers behind (drive issue #147,
-// raised in the code review that read the sign-in's send vector: "Covers
-// /api/signin and device approve/poll"). The stock rate-limit binding keyed on
-// the client IP, plus one global bucket: approval attaches a signed-in person
-// and a poll mints a device token, so an unbounded loop from one connection is
-// both a token factory and a guessing lane for the short user code.
-//
-// The bindings belong to the deployment, and this repo now declares them:
-// workers/api/cloudflare.config.ts is the api Worker's deploy config
-// (drive#168), and test/deploy-api-worker.test.mjs gates that both names are
-// declared there, each on its own namespace, with the per-IP ceiling above the
-// CLI's own poll rate — a device code is polled every
-// DEVICE_CODE_INTERVAL_SECONDS (5s, core/device-signin.js), i.e. 12
-// requests a minute from one well-behaved CLI, which the sign-in binding's
-// 10/min would lock out of the flow it is already in. With no binding on env
-// these two routes fail closed: an unrate-limited public route is the case the
-// binding exists to prevent, so a deployment that has not declared it does not
-// run the flow (the same closed door src/signin.js shows with no mailer).
-//
-// One shape note: the refusal is JSON ({"error": ...}), the api Worker's
-// answer everywhere (docs/api.md), including on POST /v1/device/approve, whose
-// page is HTML. A person over the limit sees the JSON words rather than the
-// page's error shell; the rate limit is a machine-scale bound, so the machine
-// answer is the honest one.
-//
-// Both names are exported so the deploy config's test reads them from here
-// rather than from a second copy: a rename changes that gate with it.
-/** The per-IP edge limit the device routes run behind. */
 export const DEVICE_IP_LIMIT = "DEVICE_RATE_LIMITER";
-/** The account-wide edge limit, which bounds the token factory. */
 export const DEVICE_GLOBAL_LIMIT = "DEVICE_GLOBAL_RATE_LIMITER";
 
 /**
@@ -122,7 +46,6 @@ async function deviceLimitRefused(request, ctx, log) {
   );
 }
 
-// The page's own words, kept together so the tests pin the copy.
 const APPROVE_TITLE = "Approve drive on this device";
 const APPROVE_INTRO =
   "Type the code shown in the drive terminal, then approve. You are signed in, " +
@@ -133,11 +56,6 @@ const SECOND_FACTOR_MISSING = "Type the code from your authentication app, or a 
 const SECOND_FACTOR_WRONG =
   "That code did not match. Check your authentication app and try again, or use a recovery code.";
 const CONNECTED_COPY = "This Mac is connected. You can close this tab.";
-
-// The characters an HTML text or attribute value must not contain, and what
-// they become, live in core/escape-html.js now: the transactional emails put
-// store-provided text into HTML too, and one escaper cannot drift from the
-// other (drive#518 review).
 
 /**
  * The approval page. A static shell; the code from the query string is never
@@ -187,10 +105,6 @@ function approvePage({
   });
 }
 
-/**
- * The page after a successful Approve: one sentence, no form, so the person
- * can tell it worked and close the tab.
- */
 function connectedPage() {
   const body =
     `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n` +
@@ -242,9 +156,6 @@ async function sendApproveNotice(ctx, account, pending) {
   const binding = ctx.env.EMAIL;
   const mailFrom = ctx.env.MAIL_FROM;
   if (binding === undefined || binding === null) {
-    // The skip is loud on purpose (drive#518 review): the notice is the
-    // owner's one signal that a device asked in, so a deployment that can
-    // never send it should say so in the logs on every skipped approval.
     console.warn("device-approve: no EMAIL binding; the owner's approve notice was not sent");
     return;
   }
@@ -327,10 +238,6 @@ async function readUserCode(request) {
  * @returns {Promise<boolean>}
  */
 async function approveNeedsSecondFactor(request, ctx, account) {
-  // Armed-ness comes from the authenticated account id first, so every way to
-  // an approval is gated: a cookie session, and a bearer device token too
-  // (which carries no cookie for getSession to read). A read of the user row
-  // that errors counts as armed.
   if (ctx.db && account?.id) {
     try {
       const row = await ctx.db
@@ -347,8 +254,6 @@ async function approveNeedsSecondFactor(request, ctx, account) {
     const found = await ctx.accounts.api.getSession({ headers: request.headers });
     return found?.user?.twoFactorEnabled === true;
   } catch {
-    // It could not be read. That reads as armed so the verify path runs and
-    // refuses: "cannot tell" must not approve past the gate this issue closes.
     return true;
   }
 }
@@ -374,8 +279,6 @@ async function approveNeedsSecondFactor(request, ctx, account) {
  */
 async function verifyApprovalSecondFactor(request, ctx, code) {
   const api = ctx.accounts?.api;
-  // A surface without the verify endpoints cannot check the factor, so it
-  // cannot approve past it: fail closed, never open.
   if (typeof api?.verifyTOTP !== "function" || typeof api?.verifyBackupCode !== "function") {
     return { ok: false, setCookie: [] };
   }
@@ -387,10 +290,6 @@ async function verifyApprovalSecondFactor(request, ctx, code) {
       setCookie.push(cookie);
     }
   };
-  // "No throw" is the library's contract, but a future version that answered a
-  // failure without throwing would open this gate, so success also requires the
-  // object the endpoint resolves back: a wrong code throws (INVALID_CODE), and
-  // a real success is that object, carrying the session and its headers.
   /** @param {unknown} result */
   const verified = (result) => typeof result === "object" && result !== null;
   try {
@@ -418,8 +317,6 @@ async function verifyApprovalSecondFactor(request, ctx, code) {
       return { ok: false, setCookie };
     }
   }
-  // The value was not thrown out as wrong, but no endpoint resolved it as a
-  // success body either: neither factor confirmed it, so the caller refuses.
   return { ok: false, setCookie };
 }
 
@@ -433,23 +330,14 @@ export async function requestDeviceCodeRoute(request, ctx) {
   if (request.method !== "POST") {
     return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
   }
-  // Public because the CLI holds no credential before it asks for one, which
-  // is also why it is rate limited: every allowed call writes a row, so an
-  // unlimited version of this route is a way to fill the table from anywhere
-  // (drive#136). The limit runs first, so a refused call writes nothing.
   const limited = await deviceLimitRefused(request, ctx, "device-code");
   if (limited) {
     return limited;
   }
-  // The device name is optional: the CLI sends its hostname so the approval
-  // page and the device list can tell two laptops apart. A body that is
-  // absent is fine; one that is present must be a JSON object.
   const read = await readRequestedName(request);
   if ("error" in read) {
     return errorResponse(400, read.error);
   }
-  // The store's `requestDeviceCode` is a Promise over D1 (device-signin.js), so
-  // an un-awaited call would answer `{}` with an undefined user code.
   const code = await ctx.store.requestDeviceCode({ name: read.name });
   const verification = new URL("/v1/device/approve", ctx.url);
   const complete = new URL(verification);
@@ -497,9 +385,6 @@ export async function pollDeviceTokenRoute(request, ctx) {
   if (request.method !== "POST") {
     return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
   }
-  // The poll is public for the same reason the code request is, and costs a
-  // database read per call, so it spends its own bucket rather than the
-  // approval's (drive#136).
   const limited = await deviceLimitRefused(request, ctx, "device-poll");
   if (limited) {
     return limited;
@@ -525,10 +410,6 @@ export async function pollDeviceTokenRoute(request, ctx) {
     return json({
       status: "approved",
       deviceToken: result.deviceToken,
-      // When the window ends, as an epoch second. The CLI keeps it (drive#557)
-      // so a device knows its own token has a shelf life and can sign in again
-      // before a command ever sees a 401, and so the sliding rule the store
-      // applies on each use has a date the person could be told.
       expiresAt: result.expiresAt,
       account: {
         id: result.account.id,
@@ -551,9 +432,6 @@ export async function pollDeviceTokenRoute(request, ctx) {
  * @param {DeviceCtx} ctx
  */
 export async function approvePageRoute(request, ctx) {
-  // The page names a pending code's device and time, so an unlimited GET is
-  // an existence oracle for codes a phishing page is cycling (drive#518
-  // review). One bucket of the one edge limiter, before anything reads.
   const limited = await deviceLimitRefused(request, ctx, "device-approve-page");
   if (limited) {
     return limited;
@@ -595,10 +473,6 @@ export async function approvePageRoute(request, ctx) {
  * @param {DeviceCtx} ctx
  */
 export async function approveDeviceCodeRoute(request, ctx) {
-  // State-changing and cookie-authenticated, so a form another site made on
-  // the person's behalf is refused before it spends any rate-limit quota (the
-  // waitlist's own ordering). The session cookie is SameSite=Lax, but this is
-  // the second lock: the approval must come from the page that served it.
   if (!isSameOriginRequest(request)) {
     return errorResponse(403, failureMessage("cross-site"));
   }
@@ -616,23 +490,8 @@ export async function approveDeviceCodeRoute(request, ctx) {
   if (userCode === "") {
     return approvePageError("Type the code from the terminal.");
   }
-  // The store is async (the D1 implementation is), so this must be awaited:
-  // an un-awaited Promise has no `error` property, which would render the
-  // success page for a code that was never approved.
-  // This is an account route, so ctx.account is guaranteed non-null by the dispatcher.
   /** @type {{id: string, name?: string, email?: string}} */
   const account = /** @type {{id: string, name?: string, email?: string}} */ (ctx.account);
-  // The second factor is checked before the store is touched, so a request
-  // that fails it approves nothing and consumes nothing: the pending code
-  // stays pending, and the person can retype. The page is re-rendered with
-  // the field still on it, so the next try is one edit away. The `set-cookie`
-  // the check hands back rides the connected page — the first correct code
-  // after enrollment rotates the browser's session, and the newer cookie is
-  // the one to keep.
-  // One pending read serves both the error page's fields and the approval
-  // notice: the second-factor check between them can take a moment, but the
-  // device a code names does not change, so re-reading the row is a second D1
-  // call for a value already in hand.
   const approval = await ctx.store.pendingDeviceApproval(userCode);
   const fields = pendingPageFields(approval);
   const armed = await approveNeedsSecondFactor(request, ctx, account);
@@ -657,8 +516,6 @@ export async function approveDeviceCodeRoute(request, ctx) {
         : result.error === "approved-code"
           ? "That code has already been approved. Return to the terminal it was printed in."
           : "That code was not recognised. Check the terminal and try again.";
-    // The account is armed (the check above passed), so the retry page keeps
-    // the second-factor field on it: the person fixes the code, not the page.
     return approvePageError(notice, fields.deviceName, fields.requestedAt, armed);
   }
   await sendApproveNotice(ctx, account, approval);
@@ -685,18 +542,12 @@ export async function revokeDeviceTokenRoute(request, ctx) {
   }
   const token = bearerToken(request);
   if (token === null) {
-    // The account gate already 401s a request with no or malformed bearer;
-    // this is a belt-and-braces check for direct handler calls.
     return errorResponse(401, "Provide a device token to revoke.", {
       "www-authenticate": 'Bearer realm="drive"',
     });
   }
   const result = await ctx.store.revokeDeviceToken(token);
   if ("error" in result) {
-    // The gate resolved this token, so the store row exists — this is
-    // unreachable through the dispatcher, but the handler is also unit-testable
-    // without the gate, so the shape is the honest answer: the token the
-    // caller sent is not one this drive knows.
     return errorResponse(404, "That token is not one this drive knows.");
   }
   const mail = mailFromEnv(ctx.env);
@@ -710,8 +561,6 @@ export async function revokeDeviceTokenRoute(request, ctx) {
         ? ctx.account.email
         : "",
     event: "device-logged-out",
-    // Tokens do not store the name typed at `drive login`. This mail is
-    // about the token that just died, so "this device" is the honest label.
     deviceName: "this device",
     happenedAt: new Date().toISOString(),
   });

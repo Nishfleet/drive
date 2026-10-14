@@ -11,18 +11,12 @@ import (
 	"testing"
 )
 
-// keyServer is a stand-in for the api Worker's key store (drive#2): it accepts
-// the revoke request only when HTTP Basic auth carries the exact key pair, and
-// answers 204 like the real endpoint will. It counts requests so tests can
-// prove when a revoke was and was not attempted, and records whether the
-// config file still existed at request time, which is the proof that the
-// revoke runs before the local copy is deleted.
 type keyServer struct {
 	*APIKeyRevoker
 	mu     sync.Mutex
 	calls  int
 	auth   string
-	config bool // was RcloneConfigPath(home) still present at request time
+	config bool
 }
 
 func newKeyServer(t *testing.T, home, accessKeyID, secret string) *keyServer {
@@ -99,7 +93,6 @@ func TestRevokeNamesANonOKAnswer(t *testing.T) {
 }
 
 func TestRevokeNamesAnUnreachableServerWithoutPrintingTheKey(t *testing.T) {
-	// Port 1 on loopback is reserved and refuses; no server of ours is there.
 	r := APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}
 	err := r.Revoke(KeyPair{AccessKeyID: "ACCESSKEYID", SecretKey: "SECRETACCESSKEY"})
 	if err == nil {
@@ -122,12 +115,6 @@ func TestRevokeRejectsABadBaseURLBeforeAnyRequest(t *testing.T) {
 	}
 }
 
-// An already-revoked key answers 401 from the self-revoke endpoint (the
-// endpoint refuses a revoked key and a wrong secret alike). Reading that as
-// success is what keeps a retry after a half-finished logout from recording a
-// dead key as live: the first run revoked the key and died before it deleted
-// the config, and `drive logout` again is the advice the first run's own error
-// gives.
 func TestRevokeReadsA401AsAnAlreadyDeadKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -141,9 +128,6 @@ func TestRevokeReadsA401AsAnAlreadyDeadKey(t *testing.T) {
 	}
 }
 
-// Only 204 means revoked. A proxy that answers 200 with an error page must
-// never read as a key turned off, and a server's own error text is not
-// relayed either: it could echo the credential this request just presented.
 func TestRevokeAcceptsOnly204AndNeverRelaysTheResponse(t *testing.T) {
 	for _, tc := range []struct {
 		code        int
@@ -175,10 +159,6 @@ func TestRevokeAcceptsOnly204AndNeverRelaysTheResponse(t *testing.T) {
 	}
 }
 
-// The revoke carries the storage secret in the Authorization header, and Go's
-// client replays that header on a redirect it follows. A redirect must never be
-// followed, or a 302 to another host — or a downgrade to http — would take the
-// secret somewhere it was never meant to go.
 func TestRevokeDoesNotFollowARedirectWithTheCredential(t *testing.T) {
 	const secret = "SECRETACCESSKEY"
 	var gotAuth string

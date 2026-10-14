@@ -1,13 +1,3 @@
-// Thin helpers over D1 so route code reads as SQL plus intent. Every value is
-// bound, never interpolated.
-//
-// The type is Cloudflare's own `D1Database` (the ambient type `cf workers types`
-// generates from cloudflare.config.ts), not a hand-written copy of the subset
-// these helpers touch: a copy drifted once already — its braces were unbalanced
-// and `tsc` could not parse the file at all (drive#174). The tests still hand
-// these helpers a stand-in; the test tree is outside the type check (drive#162),
-// and a stand-in only has to speak the interface at runtime.
-
 /**
  * @param {D1Database} db
  * @param {string} sql
@@ -62,7 +52,6 @@ export function batch(db, statements) {
   return db.batch(statements.map(({ sql, params = [] }) => db.prepare(sql).bind(...params)));
 }
 
-/** Seconds since the epoch: the one clock format in the api tables. */
 export function nowSeconds(now = Date.now()) {
   return Math.floor(now / 1000);
 }

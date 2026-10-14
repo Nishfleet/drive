@@ -1,22 +1,3 @@
-// The docs site (drive issue #98), as one plain data module.
-//
-// Every number the docs state is worked out here, from the same functions the
-// invoice is worked out from, because a docs page that typed "$12" by hand is a
-// claim that can go stale. The pages are authored Markdown with {{MARKER}}
-// placeholders, and src/render-docs.js swaps in the strings from this file at
-// build time; the same markers are asserted in test/docs.test.mjs, so a page
-// that drops a marker, or carries a number this file no longer produces, fails
-// CI instead of shipping a wrong price.
-//
-// The numbers come from core/billing.js, which is the one place the money is
-// worked out (drive issues #7, #53, #76) and the one the invoice, the usage
-// page and the cap all read; the sentences come from core/pricing.js, the one
-// price source those numbers are built from (drive#463), so the docs cannot
-// ship a bill the invoice would not produce.
-//
-// Plain data and pure functions only, so `node --test` runs this directly (the
-// same reason core/status.js, core/seo.js and core/billing.js are plain).
-
 import {
   BILLING_CONFIG,
   GB_PER_TB,
@@ -30,10 +11,6 @@ import { SITE } from "../core/seo.js";
 import { AGENT_TOOLS, KEY_POWERS, STORAGE_POWERS } from "./keys.js";
 import { NOT_OPEN, VERSION_HISTORY } from "./release-state.js";
 
-/**
- * The rate, in the words a page uses: 2¢ a GB. Read from the billing config,
- * not retyped, so a re-rate moves the docs and the invoice together.
- */
 const RATE_LABEL = `${Math.round(BILLING_CONFIG.rateUsdPerGbMonth * 100)}¢ per GB`;
 
 /**
@@ -46,14 +23,6 @@ function meteredUsdFor(size30Bytes) {
   return meteredMonthlyBillUsd(size30Bytes);
 }
 
-/**
- * The worked examples on the Pricing page: four sizes, each with the meter
- * before the maximum, the maximum, and the bill (drive#463). Every figure is a
- * function call: the bill comes from monthlyBillForStoredTb(), the one "kept
- * all month" converter the pricing copy already uses, and the meter and the
- * maximum from the two functions the usage page reads. A docs row is therefore
- * the same row, worked the same way, that the copy gate holds the live page to.
- */
 const BILL_EXAMPLES = Object.freeze(
   [0.2, 0.8, 1.5, 3].map((tb) => {
     const gb = tb * GB_PER_TB;
@@ -77,11 +46,6 @@ function dollars(amount) {
   return Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
 }
 
-/**
- * The whole worked table, header included, as Markdown. Built here rather than
- * typed in the page so a re-price cannot leave a stale example on a page that
- * still reads as current.
- */
 const BILL_TABLE = Object.freeze(
   [
     "| Stored, kept all month | The meter | The maximum | Your bill |",
@@ -93,14 +57,6 @@ const BILL_TABLE = Object.freeze(
 /** @param {number} n */
 const days = (n) => (n === 1 ? "1 day" : `${n} days`);
 
-/**
- * The sentence that says what happens when an agent key deletes a file. It is
- * built from what the storage provider enforces (src/keys.js STORAGE_POWERS,
- * read from the switches core/idrive-keys.js mints with), not from
- * the api Worker's capability table: an agent key talks to iDrive e2
- * directly, and iDrive takes its delete (drive#502). If a mint ever sets
- * `disable_delete_object`, this sentence changes with it.
- */
 export function agentDeleteSentence() {
   const agent = STORAGE_POWERS.agent;
   if (!agent.canDelete) {
@@ -114,11 +70,6 @@ export function agentDeleteSentence() {
   return `An agent key can delete a file. That delete does not go through Recently deleted, but the storage keeps the deleted copy for ${days(agent.undoDays)}, and we can put it back if you ask within that time. After ${days(agent.undoDays)} it is gone for good.`;
 }
 
-/**
- * The sentence that says how far a branch key reaches. iDrive e2 limits a key
- * to a whole bucket, never to a folder in it, so a branch key reaches the
- * whole Drive even though the branch is one folder (drive#502).
- */
 export function branchReachSentence() {
   if (!STORAGE_POWERS.branch.reachesWholeDrive) {
     return "A branch key cannot reach your other files or other branches.";
@@ -151,7 +102,6 @@ function deleteCell(storage) {
   return `yes, undoable for ${days(storage.undoDays)}`;
 }
 
-/** The keys a person meets, as a Markdown table. */
 export const KEY_TABLE = Object.freeze(
   [
     "| Key | Belongs to | Can read | Can write | Can delete | Reaches |",
@@ -162,42 +112,14 @@ export const KEY_TABLE = Object.freeze(
   ].join("\n"),
 );
 
-// ---------------------------------------------------------------------------
-// The FAQ (drive issue #98, orchestrator comment 2026-09-30)
-//
-// The rule the FAQ is built under, verbatim: "every line marked [verify] cites
-// a measured row in docs/scoreboard.md (#114) with the real number before it
-// goes live; a line whose row is still 'not yet measured' stays out of the
-// published FAQ" — and "the backup-location line stays out until the backup
-// exists (#9)".
-//
-// So an answer is data with the scoreboard row it rests on, and faqMarkdown()
-// refuses to render an answer whose row is anything but a measured win. A row
-// that loses its measurement (or a page that hand-adds an answer) fails the
-// docs build instead of shipping an unmeasured claim.
-
-/**
- * The competitor's 1 TB price, as the scoreboard's "price at 1 TB" row records it
- * (docs/scoreboard.md, checked 2026-09-30): about $20 month to
- * month, $15 a month billed yearly. Public copy never quotes this (drive#387).
- * test/docs.test.mjs still fails if either number leaves that internal row.
- */
 const RIVAL_1TB = Object.freeze({
   name: "The main competitor",
   monthToMonthUsd: 20,
   yearlyUsd: 15,
 });
 
-/** The rival line, kept so tests can prove public copy never quotes it. */
 export const RIVAL_1TB_LINE = `${RIVAL_1TB.name} charges $${RIVAL_1TB.monthToMonthUsd} a month, or $${RIVAL_1TB.yearlyUsd} paid yearly, for 1 TB.`;
 
-/**
- * The published FAQ, newest understanding first is not a thing here: the order
- * is the page's order. Each entry carries the scoreboard metric (or metrics)
- * its answer rests on; `answer` is the page's own Markdown, markers included.
- * An answer the scoreboard does not yet back is simply not in this list —
- * faqMarkdown()'s gate is what keeps it out until it is measured.
- */
 export const FAQ = Object.freeze([
   Object.freeze({
     question: "What does it cost?",
@@ -289,8 +211,6 @@ export function faqMarkdown(scoreboardText) {
  * which this module will not open — it is plain data and pure functions).
  * @param {Record<string, string>} [extra]
  */
-// The cache limit and floor are the shipped defaults from cmd/drive/config.go,
-// and test/docs.test.mjs asserts they still match the Go source.
 const CACHE_LIMIT = "20G";
 const CACHE_FLOOR = "1G";
 const CACHE_COMMANDS =
@@ -318,11 +238,6 @@ export function markerValues(extra = {}) {
     BRANCH_REACH: branchReachSentence(),
     KEY_TABLE: KEY_TABLE,
     BILL_TABLE: BILL_TABLE,
-    // The two claims every page states and no page may contradict
-    // (drive#418). The pages carry the markers, the static surfaces
-    // carry the same strings verbatim, and test/version-1-claims.test.mjs
-    // reads the built pages to prove no page promises a feature the
-    // Limits page rules out.
     VERSION_HISTORY: VERSION_HISTORY,
     NOT_OPEN: NOT_OPEN,
     INSTALL_MACOS: INSTALL_LINES[0].line,

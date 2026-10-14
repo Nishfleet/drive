@@ -1,9 +1,3 @@
-// The fair-use pause tables on the real D1 rows (drive#364).
-//
-// A mocked binding cannot see the schema. This file applies every file under
-// migrations/drive/ and proves the 0048 migration's WRITE and READ: a
-// decision row lands, and the notice stamp is a nullable column on accounts.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

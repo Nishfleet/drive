@@ -49,8 +49,6 @@ func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 	return atomicwrite.Write(path, data, mode)
 }
 
-// ---- api client (internal/api) ----
-
 type APIClient = api.Client
 type APIError = api.Error
 type DeviceCode = api.DeviceCode
@@ -82,8 +80,6 @@ func LoadCredentials(home string) (Credentials, error) {
 func SaveCredentials(home string, creds Credentials) error {
 	return api.SaveCredentials(home, creds)
 }
-
-// ---- login items (internal/login) ----
 
 type StorageConfig = login.StorageConfig
 type RCAuth = login.RCAuth
@@ -123,8 +119,6 @@ func secretFromEnvFile(path string) (string, error) {
 }
 func systemdEnvQuote(v string) string { return login.EnvQuote(v) }
 
-// ---- rclone helper (internal/rc) ----
-
 type rcClient struct{ *rc.Client }
 type vfsStats = rc.VFSStats
 type queueEntry = rc.QueueEntry
@@ -143,9 +137,6 @@ const (
 	rcTimeout          = 30 * time.Second
 )
 
-// rcAddrEnvName is the environment variable that carries the remote control's
-// loopback address. It is login.RCAddrEnv, aliased here so the CLI and the
-// login package write and read one name.
 const rcAddrEnvName = login.RCAddrEnv
 
 func rcCtx() (context.Context, context.CancelFunc) {
@@ -236,10 +227,6 @@ func mountRCClient(home string) (*rcClient, error) {
 	return c, nil
 }
 
-// resolveMountRCAddr is the address the CLI uses to reach this home's mount.
-// DRIVE_RC_ADDR wins (tests and --rc-addr), then the address prepareMountAuth
-// stored in rclone.env. The shipped 5572 is never a silent fallback: that is
-// how pause/status used to talk to whichever rclone owned the port (drive#807).
 func resolveMountRCAddr(home string) (string, error) {
 	if set := strings.TrimSpace(os.Getenv(rcAddrEnvName)); set != "" {
 		if !IsLoopbackAddr(set) {
@@ -260,16 +247,10 @@ func resolveMountRCAddr(home string) (string, error) {
 	return auth.Addr, nil
 }
 
-// rcVersion is the part of rclone rc core/version this client needs: a
-// non-empty version string means the listener is rclone, not some other
-// HTTP service on the stored port.
 type rcVersion struct {
 	Version string `json:"version"`
 }
 
-// requireVersion asks rclone who it is before the client acts. An empty
-// version or a failed call is a named error, so pause/status never mutate
-// a stranger on the port (drive#807).
 func (c *rcClient) requireVersion(ctx context.Context) error {
 	var v rcVersion
 	if err := c.call(ctx, "core/version", nil, &v); err != nil {

@@ -14,11 +14,6 @@ import (
 	"testing"
 )
 
-// TestAgentPathStandinRefusesDeleteCapAndRevoke is drive#514 finish-line 2:
-// a delete through the agent credential is refused by storage, a cap-exceeded
-// agent cannot write, and a revoked agent cannot read. The stand-in is a local
-// S3 server the test owns, because the loopback `rclone serve s3` does not
-// enforce per-key capabilities.
 func TestAgentPathStandinRefusesDeleteCapAndRevoke(t *testing.T) {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		t.Skip("rclone is not installed")

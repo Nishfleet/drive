@@ -12,14 +12,8 @@ import (
 	"time"
 )
 
-// firstRunBeforeLines is how many non-empty lines origin/main printed for
-// `drive init` with no agent tools and a minter already attached: the drive
-// folder line, five "not installed" lines, and "no agent tools found".
 const firstRunBeforeLines = 7
 
-// firstRunAfterLines is the same run after the delight pass: "no agent tools
-// found" and one closing line that says to mount. Measured by
-// TestFirstRunTranscript.
 const firstRunAfterLines = 2
 
 type stubMinter struct{}
@@ -27,9 +21,6 @@ type stubMinter struct{}
 func (stubMinter) MintKey(string, string) (MintedKey, error) { return MintedKey{}, nil }
 func (stubMinter) RevokeKey(string) error                    { return nil }
 
-// RenewKey is the third KeyMinter method (issue #106). The first-run transcript
-// stores no agent key, so no key needs an hour and there is nothing to
-// restart: the stub answers the same empty row the mint does.
 func (stubMinter) RenewKey(string) (RenewedKey, error) { return RenewedKey{}, nil }
 
 func printedFailure(err error) string {
@@ -88,8 +79,6 @@ func TestSharedKindsMatchThePageTable(t *testing.T) {
 			t.Errorf("core/messages.js no longer carries the CLI what for %s: %q", kind, entry[0])
 		}
 	}
-	// cli-too-old is printed by both the api Worker and the CLI, so its next
-	// line is the page table's words too (the JS table cannot carry backticks).
 	if next := messageTable["cli-too-old"][1]; !strings.Contains(text, next) {
 		t.Errorf("core/messages.js no longer carries the CLI next for cli-too-old: %q", next)
 	}

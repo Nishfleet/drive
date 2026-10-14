@@ -1,8 +1,3 @@
-// Production api fetch refuses a missing DRIVE_DB, key provider or storage
-// endpoint (drive#505). Tests that need the in-memory stand-in import
-// createMemoryStore and pass it to dispatch; this file drives export default
-// { fetch }, which is where a deployment builds its store.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryStore } from "../../../core/keystore.js";

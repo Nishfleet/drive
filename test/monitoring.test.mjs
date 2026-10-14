@@ -1,11 +1,3 @@
-// The Sentry seam every cron branch and the error path report through
-// (drive issue #520). withCronCheckIn, monitorConfig, reportBillingGap and
-// captureError are the whole pipeline a failed trigger has to pass to reach
-// a human, so the tests stand a fake in the injectable `sentry` parameter
-// and pin the check-in shapes: in_progress before the work, ok or error
-// after, the same checkInId on both, and the error rethrown so the
-// platform's own record of a failed trigger keeps its signal.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -29,7 +21,7 @@ function fakeSentry() {
     /** @param {any[]} args */
     async captureCheckIn(...args) {
       calls.push({ method: "captureCheckIn", args });
-      return String(calls.length); // a distinct checkInId per call
+      return String(calls.length);
     },
     /** @param {any[]} args */
     async captureException(...args) {

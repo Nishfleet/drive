@@ -1,6 +1,3 @@
-// Balance runway (delight item 4): three worked examples worked from
-// monthBillCents, so the sentence and the invoice cannot drift apart.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BYTES_PER_GB, monthBillCents } from "../core/billing.js";

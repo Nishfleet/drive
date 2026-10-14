@@ -1,5 +1,3 @@
-// Split out of src/branches-frozen.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-
 import { failureMessage } from "../core/messages.js";
 import {
   approvePlanSliceKey,
@@ -53,7 +51,6 @@ import {
  * @returns {Promise<BranchJobResult>}
  */
 export async function processCreateBatch(db, snapshots, store, account, branch) {
-  // Re-read the raw cursor; toBranch does not carry it.
   const raw = await db
     .prepare("SELECT job_cursor, job_done FROM branches WHERE id = ?1")
     .bind(branch.id)
@@ -61,10 +58,6 @@ export async function processCreateBatch(db, snapshots, store, account, branch) 
   const stored = parseJobCursor(raw && typeof raw.job_cursor === "string" ? raw.job_cursor : "");
   const doneSoFar = Number(raw?.job_done ?? 0) || 0;
   const phase = typeof stored.phase === "string" ? stored.phase : "clear";
-  // The key this row writes under, named once: the row's own pointer when it has
-  // one, the key the account and name say, when it does not. Every part this job
-  // writes, joins and sweeps resolves it here, so no path can write a delta
-  // somewhere the join never looks (drive#842, in-run review).
   const key = resolvedSnapshotKey(branch, snapshotKey(account, branch.name));
   const walkKey = createWalkKey(key);
   if (phase === "clear") {
@@ -100,51 +93,20 @@ export async function processCreateBatch(db, snapshots, store, account, branch) 
       console.error?.(`create walk blob is not JSON for ${branch.id}: ${errorText(error)}`);
     }
   }
-  // What the claim froze (drive#802): the source listing as of claim time,
-  // stored under the row's own snapshot pointer, and marked by the claim with
-  // its own key. The marker is the test, not the snapshot's byte length: a
-  // create queued before that shipped has no marker and keeps copying the
-  // source as it is, which is what its bytes already on the row must not turn
-  // off. Its own snapshot is written a batch at a time, so reading `only` off
-  // `snapshot_bytes` would have made batch two copy batch one's files again and
-  // open a branch missing everything after the first 80. Every frozen key the
-  // batch reads resolves `key` the way the parts do, so a row with no pointer
-  // of its own looks in one place and not in the empty one (drive#842, in-run
-  // review).
   const frozenMarker = await snapshots.get(frozenSnapshotKey(key));
-  // The listing this branch is filling in, and where this batch reads it from
-  // (drive#802, drive#842).
-  //
-  // A claimed branch copies exactly the list the claim froze, and each file keeps
-  // the fingerprint the claim measured for it. That list is the size of the whole
-  // branch, so reading it out of the snapshot once per batch is an ~11 MiB read
-  // on each of 1,250 batches at the 100,000-file cap — the cost this issue
-  // removes. The claim therefore splits it into ordered windows of one batch's
-  // files and this batch reads only the window its own `job_done` offset names,
-  // so a batch's read is 80 files whatever the branch holds.
   const frozen = frozenMarker !== null && frozenMarker !== undefined;
   const windowIndex = batchNumber(doneSoFar);
   const listing = frozen ? await readFrozenListingCount(snapshots, key) : null;
   const window = listing === null ? null : await readFrozenWindow(snapshots, key, windowIndex);
-  // A window the claim did not write is a row claimed before the freeze shipped,
-  // or a claim that lost its windows. Either way the copy walks the source as it
-  // is, which is what its bytes already on the row were measured for.
   const only = window ?? undefined;
   if (doneSoFar === 0) {
     const incomingBytes =
       only !== undefined
         ? await frozenListingBytes(db, branch, snapshots, key)
         : await storedBytesUnder(store, branch.sourcePrefix);
-    // This check asks one question: has the account gone over the limit while
-    // this branch waited? Its own reservation is left out of the sum because
-    // its own bytes are the `incomingBytes` just measured, and the other queued
-    // rows are in it, because theirs are not (drive#801 in-run review).
     const blocked = await branchCopyBlocked(db, store, account, incomingBytes, branch.id);
     if (blocked !== null) {
       await failJob(db, branch.id, "discarded", blocked);
-      // Nothing was copied yet, but a batch that got this far on a retry has
-      // parts from the batches before it, and those are this row's work and
-      // nobody else's (drive#842).
       await dropCreateParts(snapshots, branch, stored, undefined, key);
       return { error: blocked, status: 403, done: true };
     }
@@ -152,12 +114,6 @@ export async function processCreateBatch(db, snapshots, store, account, branch) 
   const copied = await copyFolder(store, branch.sourcePrefix, branch.branchPrefix, {
     limit: BRANCH_JOB_BATCH_FILES,
     cursor: {
-      // Both paths carry the walk position across batches, because the frozen
-      // windows are cut in the same order the walk visits them: batch N reads
-      // window N and resumes the walk where batch N-1 stopped. Restarting each
-      // batch at the top would re-list the whole branch on every one of the
-      // 1,250 batches a 100,000-file branch takes (drive#842). A row with no
-      // frozen windows walks the source as it is, and carries `skip` too.
       current:
         typeof stored.current === "string" && stored.current !== ""
           ? stored.current
@@ -167,22 +123,6 @@ export async function processCreateBatch(db, snapshots, store, account, branch) 
     },
     only,
   });
-  // Progress is the files this job has copied, not the size of the snapshot it
-  // copies: the snapshot is seeded with the whole frozen listing, so counting
-  // its keys would report the branch finished on its first batch.
-  //
-  // Which of the two real counts applies depends on the walk. While there is
-  // more source to walk it is this job's own count plus what this batch moved.
-  // A windowed batch copies a disjoint window, so that sum is the whole job's
-  // count and can never repeat a past batch's (drive#842). An unwindowed walk,
-  // on the batch that finishes it, has found them again: the saved snapshot
-  // already holds every file the branch will ever hold, so its size is the
-  // frozen listing and not the copy's size, and the count is the files under
-  // the branch prefix instead. Adding the count to that size was the trap
-  // drive#844's review found: a resumed copy counted its own past batches
-  // again on the finishing batch, so a 1003 file branch passed
-  // BRANCH_FILE_LIMIT and the caller got a `branch-too-large` for a branch
-  // that fits.
   const files =
     copied.done && listing === null
       ? await copiedFileCount(store, branch)
@@ -198,20 +138,8 @@ export async function processCreateBatch(db, snapshots, store, account, branch) 
   if (!written.success) {
     return { error: failureMessage("unexpected"), status: 500, done: true };
   }
-  // When the copy is bounded by the claim's frozen windows, this batch has only
-  // seen its own window, so "my window ran out" is not "the branch is copied"
-  // (drive#842). The branch is copied when the files it has copied reach the
-  // files the claim froze — or when the walk has nothing left to queue, because
-  // the frozen count is a promise about a source that could have shrunk since
-  // the claim, and a count that never arrives would restart the walk from the
-  // top on every batch and copy forever (drive#842, in-run review). The
-  // live-walk path has no windows and its own exhausted walk is the whole
-  // answer, exactly as before.
   const finished = listing === null ? copied.done : copied.exhausted || files >= listing.files;
   if (finished) {
-    // The last batch is the one that reads the whole snapshot back, because it
-    // is the one that has to hand a reader a whole snapshot (drive#842). Every
-    // earlier batch wrote only its own 80 files and left the value alone.
     const joined = await joinCreateParts(
       db,
       branch,
@@ -222,11 +150,6 @@ export async function processCreateBatch(db, snapshots, store, account, branch) 
       key,
     );
     if (!joined.success) {
-      // A join that did not fold every part into the one value is a copy that
-      // did not finish: an incomplete snapshot is exactly what a later rewind or
-      // approve reads as removed files, so the job fails instead of opening. The
-      // frozen listing is left standing, because clearing it is what would make
-      // the incomplete branch look finished (drive#842, coordinator review).
       const error = failureMessage("unexpected");
       console.error?.(`create parts join failed for ${branch.id}: opening refused`);
       await removePrefixFiles(store, branch.branchPrefix);
@@ -236,13 +159,7 @@ export async function processCreateBatch(db, snapshots, store, account, branch) 
     }
     try {
       await clearScratch(snapshots, walkKey);
-      // The frozen listing is the branch's snapshot from here on, so the marker
-      // has done its job and goes with the walk's scratch (drive#802). It is
-      // only read while the copy runs, and a finished branch's copy never
-      // resumes, so leaving it would be a key that outlives its job.
       await clearScratch(snapshots, frozenSnapshotKey(key));
-      // The windows are the size of the whole listing, so the finished branch
-      // keeps no second copy of it (drive#842).
       await clearFrozenListing(snapshots, key);
     } catch (error) {
       console.error?.(`create walk cleanup failed for ${branch.id}: ${errorText(error)}`);
@@ -435,16 +352,6 @@ export async function clearApprovePlan(snapshots, planKey, sizes) {
   await clearScratch(snapshots, planKey);
 }
 
-// Every file under a prefix, removed, returning how many. A branch prefix is a
-// folder and the stores delete one object at a time (S3 has no folders), so
-// clearing what a name left behind is a walk of that folder's own listing.
-//
-// The prefix must be a folder strictly under the branches root. A branch name
-// is a single path segment (checkedBranchName refuses slashes and ".."), so
-// every real prefix passes; the guard is what holds if a row is ever written
-// with something else, so a corrupt `branch_prefix` can never turn a clear
-// into a bulk delete of the account's own files. Both the approve cleanup and
-// the discard path go through here, so the guard covers both.
 /**
  * @param {import("../core/files.js").FileStore} store a scoped store
  * @param {string} prefix
