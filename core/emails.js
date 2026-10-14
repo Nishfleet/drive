@@ -693,11 +693,40 @@ export const EMAIL_KINDS = Object.freeze([
   "upload-arrivals",
   "security-event",
   "first-file-nudge",
+  "monthly-story",
 ]);
 
 /**
  * @type {Readonly<Record<string, (data: Record<string, unknown>) => {subject: string, text: string, html: string, saved: string|null}>>}
  */
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function monthlyStoryTemplate(data = {}) {
+  const month = monthLabel(data.monthIso);
+  const peak = requireText(data.peakLine, "peakLine");
+  const spent = requireText(data.spentLine, "spentLine");
+  const added = Number(data.filesAdded);
+  if (!Number.isInteger(added) || added < 0) {
+    throw new TypeError(`filesAdded must be a whole number, got ${String(data.filesAdded)}`);
+  }
+  const subject = `Your drive in ${month.replace(", UTC", "")}`;
+  const addedLine =
+    added === 0
+      ? "No new files were added."
+      : `${added} ${added === 1 ? "file was" : "files were"} added.`;
+  const lines = [`Here is your drive for ${month}.`, "", peak, addedLine, spent];
+  const html_lines = [
+    `<p>Here is your drive for ${escapeHtml(month)}.</p>`,
+    `<p>${escapeHtml(peak)}<br>${addedLine}<br>${escapeHtml(spent)}</p>`,
+  ];
+  const unsubscribe =
+    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+      ? data.unsubscribeUrl
+      : null;
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
+}
+
 const TEMPLATES = Object.freeze({
   welcome: welcomeTemplate,
   "cap-warning": capWarningTemplate,
@@ -714,6 +743,7 @@ const TEMPLATES = Object.freeze({
   "upload-arrivals": uploadArrivalsTemplate,
   "security-event": securityEventTemplate,
   "first-file-nudge": firstFileNudgeTemplate,
+  "monthly-story": monthlyStoryTemplate,
 });
 
 /**
