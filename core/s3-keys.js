@@ -1,36 +1,4 @@
-// Key minting against the storage endpoint itself: the api Worker holds the
-// master credential and hands out credentials the storage server enforces
-// (build step 1, drive#2).
-//
-// Before this, a minted key was an id and a secret the api Worker remembered
-// in its own store, so the scope of a key was a promise the Worker made. Now
-// the scope is a policy handed to the storage server, which refuses the calls
-// it does not allow: an agent key that cannot delete is refused by storage,
-// and a key pointed at another account's prefix is refused by storage. The
-// proofs in test/step1-storage.test.mjs read those refusals off real S3
-// answers.
-//
-// The mint is STS `AssumeRole` with a session policy, which is stock S3, so
-// the endpoint, region and master credential are the whole of the
-// configuration difference between the local stand-in and a provider that
-// mints this way. MinIO and Backblaze B2 do; iDrive e2 refuses `AssumeRole`
-// outright (403 AccessDenied, measured 2026-10-03, drive#173), so its bucket
-// settings come from this module but its keys cannot.
-//
-// The bucket a minted key is scoped to is the key scope's own, never this
-// provider's: one bucket per account and one per team (keyprovider.js
-// `bucketForAccount` / `bucketForTeam`, drive#371), so the boundary the
-// storage server enforces is the account. drive#462 measured the other way
-// round on the real Mac run of 2026-10-04: the mint resolved its bucket from
-// the deployment's `STORAGE_BUCKET`, so every key the deployment minted was
-// scoped to the one shared bucket, and the prefix was the only thing left
-// separating two accounts' files.
-//
-// Revoking a minted key is deliberately not here: a temporary S3 credential
-// cannot be withdrawn before it expires, so the provider is built with a
-// bounded session and the store still refuses a revoked key on its own
-// storage API. Withdrawing the credential at the provider is the vendor's key
-// API, which iDrive e2 does not expose over S3 (measured, drive#173).
+// iDrive e2 refuses STS `AssumeRole` outright (403 AccessDenied).
 
 import { createS3Client, ok, S3Error, tagValue } from "./s3.js";
 
@@ -49,17 +17,7 @@ import { createS3Client, ok, S3Error, tagValue } from "./s3.js";
  */
 const OBJECT_ACTIONS_BY_CAPABILITY = Object.freeze({
   read: Object.freeze(["s3:GetObject", "s3:GetObjectVersion"]),
-  // Multipart is what rclone writes a large file with, so a write that could
-  // not finish a multipart upload would fail on the big files, not the small
-  // ones. These three all act on the object; the bucket-wide multipart listing
-  // is explained in BUCKET_ACTIONS_BY_CAPABILITY.
   write: Object.freeze(["s3:PutObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]),
-  // `s3:DeleteObject` is the marker a plain delete leaves; `s3:DeleteObject`
-  // with a version id is what `drive restore` uses to lift that marker and
-  // bring the last save back (build step 1's done-when). Both are the delete
-  // capability, and only a device key has it — an agent key is refused either
-  // one by the endpoint, so an agent can never destroy the hidden version a
-  // delete left behind.
   delete: Object.freeze(["s3:DeleteObject", "s3:DeleteObjectVersion"]),
 });
 
@@ -78,8 +36,6 @@ const OBJECT_ACTIONS_BY_CAPABILITY = Object.freeze({
  * @type {Readonly<Partial<Record<Capability, ReadonlyArray<string>>>>}
  */
 const BUCKET_ACTIONS_BY_CAPABILITY = Object.freeze({
-  // A listing is `ListBucket` on the bucket, and the prefix condition on the
-  // statement is what keeps it inside one account's folder.
   list: Object.freeze(["s3:ListBucket", "s3:ListBucketVersions"]),
 });
 
@@ -107,9 +63,6 @@ export function policyForScope(scope, bucket) {
     );
   }
   if (!scope.prefix.endsWith("/")) {
-    // A prefix without its trailing slash would make `u/a*` also match
-    // `u/ab/…` — a cross-account widening. scopeFor() always ends the prefix
-    // with a slash; this refuses a scope that does not rather than widening.
     throw new TypeError(`A key prefix must end with "/", got ${JSON.stringify(scope.prefix)}.`);
   }
   const objectActions = scope.capabilities.flatMap(
@@ -131,9 +84,6 @@ export function policyForScope(scope, bucket) {
       Effect: "Allow",
       Action: [...new Set(bucketActions)],
       Resource: [`arn:aws:s3:::${bucket}`],
-      // The bucket is the resource, so the prefix cannot be a resource
-      // string: it is the condition. `folder/*` is everything inside the
-      // account, `folder` is the folder marker itself.
       Condition: { StringLike: { "s3:prefix": [`${folder}/*`, folder] } },
     });
   }
@@ -206,11 +156,6 @@ export function createS3KeyProvider(config) {
   });
 
   return {
-    // The mint's credential is a session the vendor ends on its own (the
-    // `DurationSeconds` above), so a row that reads "never expires" is never
-    // a claim this provider can keep. The stores refuse a null-expiry device
-    // row on this signal (drive#713). Cast, because an unannotated literal
-    // widens `true` to `boolean` and the typedef pins the marker to `true`.
     namesSession: /** @type {true} */ (true),
 
     /**
@@ -220,14 +165,6 @@ export function createS3KeyProvider(config) {
      * @returns {Promise<MintedStorageKey>}
      */
     async mint(scope) {
-      // The scope's own bucket, and nothing else. drive#371 moved the boundary
-      // from the prefix to the bucket: a key scoped to one bucket cannot list,
-      // read or write another account's, whatever the prefix inside it, and
-      // that is the guarantee the old `u/<id>/` prefix could not give on a
-      // vendor that cannot scope a key to a folder. So a scope that names no
-      // bucket is refused, exactly as the iDrive provider refuses one
-      // (idrive-keys.js): handing it the deployment's own bucket instead would
-      // mint a key for the shared bucket, which is the bug drive#462 found.
       const bucket = typeof scope.bucket === "string" && scope.bucket !== "" ? scope.bucket : null;
       if (bucket === null) {
         throw new TypeError(
@@ -235,9 +172,6 @@ export function createS3KeyProvider(config) {
         );
       }
       const policy = policyForScope(scope, bucket);
-      // STS answers on the service root with the parameters in the form body
-      // and no query string, signed for the `sts` service with the same region
-      // and master credential (AWS's own AssumeRole shape).
       const body = new URLSearchParams({
         Action: "AssumeRole",
         Version: "2011-06-15",
@@ -257,8 +191,6 @@ export function createS3KeyProvider(config) {
       const sessionToken = tagValue(answer.text, "SessionToken");
       const missing = [accessKeyId, secret, sessionToken].filter((part) => part === null).length;
       if (accessKeyId === null || secret === null || sessionToken === null) {
-        // A 200 without all three fields is not a credential, and handing one
-        // back half-built would fail later, on a user's file.
         throw new S3Error(
           "mint a scoped storage key",
           answer.status,
@@ -266,9 +198,6 @@ export function createS3KeyProvider(config) {
           `the answer was missing ${missing} of 3 credential fields`,
         );
       }
-      // The bucket is part of the answer, not a detail of the policy: the
-      // store keeps it on the key row it hands back and the callers mount this
-      // bucket, so a mint is where an account's own bucket name is learned.
       return { accessKeyId, secret, sessionToken, bucket, policy, expiresIn: sessionSeconds };
     },
   };
@@ -314,10 +243,6 @@ export function s3KeyProviderFromEnv(env) {
       `Storage is half-configured: set all of ${names.join(", ")}. Missing: ${missing.join(", ")}.`,
     );
     return {
-      // The mint throws, so this deployment writes no new rows; a row it did
-      // mint before the config broke was an STS session (namesSession, above
-      // in createS3KeyProvider), and the stores read the same signal off the
-      // stub (drive#713).
       namesSession: true,
       mint() {
         throw problem;

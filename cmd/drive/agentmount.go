@@ -1,29 +1,5 @@
 package main
 
-// The agent path (drive issue #514): the folder an agent tool actually works
-// in. It is a second rclone mount, and the credential behind it is that tool's
-// own key — the one that has no `deleteFiles`, minted for the tool by
-// `drive agents connect`.
-//
-// Why a mount of its own rather than the person's mount: the MCP filesystem
-// server and the agent's shell both read plain files through the kernel, and
-// the kernel will serve them whatever credential rclone holds. A mount that
-// holds the device key deletes, so an agent given `~/Drive` deletes. Storage
-// enforcement is the only place a no-delete key can bite without asking each
-// tool to honour it, and storage only sees the credential rclone sends.
-//
-// Each connected tool gets its own path, because each one has its own key. A
-// path per tool is what makes `drive agents revoke claude` mean what it says:
-// claude's mount and claude's key both stop, and codex's do not.
-//
-// The agent mount carries no remote control (`--rc`) and no background loops.
-// There is nothing to ask of the upload queue and nothing to fill or guard
-// that the person's mount is not already doing on the same drive, and one
-// bind address per mount on the same host would need a registry of its own.
-// Its credential never reaches argv (config.go): the secret sits in its own
-// 0600 env file or in the login item's EnvironmentVariables, never in a
-// command a `ps` could read (fleet-ops#8403).
-
 import (
 	"errors"
 	"fmt"
@@ -36,9 +12,6 @@ import (
 )
 
 const (
-	// agentRootDirName is the directory that holds every tool's agent path. It
-	// is a sibling of `~/Drive` and never inside it: a path inside the
-	// person's mount would let an agent walk up out of its own credential.
 	agentRootDirName = "Drive-agents"
 )
 
@@ -47,21 +20,17 @@ func AgentRootDir(home string) string {
 	return filepath.Join(home, agentRootDirName)
 }
 
-// AgentMountDir is the agent path tool works in: its own mount, backed by its
-// own key, a sibling of the person's `~/Drive`.
+// AgentMountDir is the agent path tool works in: its own mount, backed by its own key, a sibling of the person's `~/Drive`.
 func AgentMountDir(home, tool string) string {
 	return filepath.Join(AgentRootDir(home), toolNameInPath(tool))
 }
 
-// AgentRcloneConfigPath is the rclone config one tool's agent mount reads. It
-// carries the tool's name, so a second tool's connect never overwrites the
-// first tool's key and a restart of either mounts with its own credential.
+// AgentRcloneConfigPath is the rclone config one tool's agent mount reads.
 func AgentRcloneConfigPath(home, tool string) string {
 	return filepath.Join(DefaultConfigDir(home), "agent-"+toolNameInPath(tool)+"-rclone.conf")
 }
 
-// AgentRcloneEnvPath is the 0600 env file holding one tool's agent secret,
-// named for the tool for the same reason as the config file.
+// AgentRcloneEnvPath is the 0600 env file holding one tool's agent secret, named for the tool for the same reason as the config file.
 func AgentRcloneEnvPath(home, tool string) string {
 	return filepath.Join(DefaultConfigDir(home), "agent-"+toolNameInPath(tool)+"-rclone.env")
 }
@@ -71,8 +40,7 @@ func AgentLogPath(home, tool string) string {
 	return filepath.Join(DefaultConfigDir(home), "agent-"+toolNameInPath(tool)+".log")
 }
 
-// AgentCacheDir is the VFS cache for one tool's agent mount. Each tool keeps
-// its own, so one tool's cache never answers another tool's read.
+// AgentCacheDir is the VFS cache for one tool's agent mount.
 func AgentCacheDir(home, tool string) string {
 	return filepath.Join(home, ".cache", "drive", "agents", toolNameInPath(tool), "vfs")
 }
@@ -110,9 +78,6 @@ func AgentLoginItem(goos string, p MountPlan, tool string) string {
 	}
 }
 
-// toolNameInPath keeps a tool name to the characters a path and a systemd unit
-// name accept: a tool name is one of the known names, so this is a guard
-// against a config file that holds something else, not a translation layer.
 func toolNameInPath(tool string) string {
 	safe := make([]rune, 0, len(tool))
 	for _, r := range strings.ToLower(tool) {
@@ -126,10 +91,7 @@ func toolNameInPath(tool string) string {
 	return strings.Trim(string(safe), "-")
 }
 
-// AgentMountConfig is the agent mount's storage settings: the device mount's
-// own shared settings (endpoint, bucket, region, the download host that counts
-// an agent's read as a read) with the tool's own credential and prefix in
-// place of the person's.
+// AgentMountConfig is the agent mount's storage settings: the device mount's own shared settings (endpoint, bucket, region, the download host that counts an agent's read as a read) with the tool's own credential and prefix in place of the person's.
 func AgentMountConfig(device StorageConfig, key agentKey) StorageConfig {
 	c := device
 	c.AccessKey = key.AccessKeyID
@@ -142,17 +104,7 @@ func AgentMountConfig(device StorageConfig, key agentKey) StorageConfig {
 	return c
 }
 
-// BuildAgentMountPlan is BuildMountPlan for one tool's agent path. It is its
-// own function rather than a flag on BuildMountPlan, because the agent mount
-// is not the person's mount with a different key: it has no remote control, no
-// staging directory and no background loops, and a shared builder would have
-// to be told all three.
-//
-// Bwlimit stays empty on purpose. A paused person is one with whom the drive
-// stopped moving (logout.go PausedRate), and the agent path is a second
-// credential against the same storage — pausing it too would be the honest
-// reading, but it is a decision about money and billing that only the person
-// makes. The agent path runs at full speed and the meter counts it.
+// BuildAgentMountPlan is BuildMountPlan for one tool's agent path.
 func BuildAgentMountPlan(goos, home, rcloneBin string, tool string, c StorageConfig) MountPlan {
 	p := MountPlan{
 		GOOS:      goos,
@@ -180,21 +132,12 @@ func BuildAgentMountPlan(goos, home, rcloneBin string, tool string, c StorageCon
 		return p
 	}
 	if goos == "windows" {
-		// The Windows mount path (nfsmount, a drive letter per mount) and the
-		// agent path have not been proven together, and an agent that shares
-		// the device key is exactly the shape this path removes. So Windows
-		// connects the tool and says the agent path is not there, rather than
-		// granting `~/Drive` and calling it bounded.
 		p.err = failf("agent-path-windows", tool)
 		return p
 	}
 	return p
 }
 
-// mountAgentPaths is what Mount does for one tool: create the path, write the
-// agent credential and the login item, start it, and wait for the kernel to
-// agree that the path is a mount. Nothing here starts at login silently: the
-// item is written next to the device mount's own.
 func mountAgentPaths(goos, home, rcloneBin, tool string, device StorageConfig, key agentKey, foreground bool) error {
 	p := BuildAgentMountPlan(goos, home, rcloneBin, tool, AgentMountConfig(device, key))
 	if p.err != nil {
@@ -206,7 +149,6 @@ func mountAgentPaths(goos, home, rcloneBin, tool string, device StorageConfig, k
 	if err := os.MkdirAll(filepath.Dir(p.ConfigPath), 0o700); err != nil {
 		return failDetail("mount-failed", err)
 	}
-	// The agent credential in its own config and its own env file, both 0600.
 	if err := WriteFileAtomic(p.ConfigPath, []byte(RcloneConfig(AgentMountConfig(device, key))), 0o600); err != nil {
 		return failDetail("mount-failed", err)
 	}
@@ -230,8 +172,6 @@ func mountAgentPaths(goos, home, rcloneBin, tool string, device StorageConfig, k
 	return nil
 }
 
-// agentRcloneEnv renders the env file one agent mount reads: the storage
-// secret under the name rclone itself reads (config.go), and nothing else.
 func agentRcloneEnv(c StorageConfig) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s=%s\n", rcloneSecretEnv, systemdEnvQuote(c.SecretKey))
@@ -241,8 +181,6 @@ func agentRcloneEnv(c StorageConfig) string {
 	return b.String()
 }
 
-// mountAgentForeground runs one agent mount's rclone in this process. No
-// remote control and no background loops attach here (see the file note).
 func mountAgentForeground(p MountPlan) error {
 	rclonePath, err := exec.LookPath(p.RcloneBin)
 	if err != nil {
@@ -256,10 +194,6 @@ func mountAgentForeground(p MountPlan) error {
 	return cmd.Run()
 }
 
-// startAgentLoginItem starts the item mountAgentPaths just wrote. The same
-// rules as the device mount's own (mount.go startLinuxLoginItem): a missing
-// systemd user bus falls back to a detached rclone, and any other systemctl
-// failure is a named error rather than a silent no-op.
 func startAgentLoginItem(goos, home string, p MountPlan, tool string) error {
 	if goos == "darwin" {
 		if err := bootstrapLaunchdLabel(AgentLaunchdLabel(tool), AgentLoginItemPath(goos, home, tool)); err != nil {
@@ -285,10 +219,6 @@ func startAgentLoginItem(goos, home string, p MountPlan, tool string) error {
 	return nil
 }
 
-// waitAgentMounted waits for the kernel to say the path is a mount, with the
-// same bounded patience the device mount uses: a start that reports success
-// with nothing mounted is how an agent ends up writing through a credential
-// nothing checks (drive#514).
 func waitAgentMounted(goos string, p MountPlan) error {
 	deadline := time.Now().Add(mountWaitTimeout)
 	for {
@@ -303,10 +233,7 @@ func waitAgentMounted(goos string, p MountPlan) error {
 	}
 }
 
-// UnmountAgent stops one tool's agent mount: the login item first, then the
-// mount itself if the item was already gone. It is what `drive agents revoke`
-// calls before the key is withdrawn, so a revoked agent's path stops being
-// readable even if the withdrawal at the provider takes a moment.
+// UnmountAgent stops one tool's agent mount: the login item first, then the mount itself if the item was already gone.
 func UnmountAgent(goos, home, tool string) error {
 	if goos == "windows" {
 		return nil
@@ -324,9 +251,6 @@ func UnmountAgent(goos, home, tool string) error {
 		}
 	} else if err := exec.Command("systemctl", "--user", "disable", "--now", AgentSystemdUnitName(tool)).Run(); err != nil {
 		if systemdUserSessionAbsent(err) {
-			// No user bus: connect started this mount detached, so the unmount
-			// is the stop. Treat a clean unmount as handled, or revoke would
-			// exit here and never withdraw the storage key.
 			if stopErr := unmountAgentDir(goos, AgentMountDir(home, tool)); stopErr != nil {
 				return failDetail("unexpected", fmt.Errorf("systemctl --user disable --now %s: %v; fusermount: %w", AgentSystemdUnitName(tool), err, stopErr))
 			}
@@ -342,10 +266,6 @@ func UnmountAgent(goos, home, tool string) error {
 	return nil
 }
 
-// unmountAgentDir unmounts one agent path directly, for a host whose login
-// item is already gone or whose systemd will not answer. It is the unmount
-// half of logout.go stopMount for a mount point that is not the person's own,
-// and it checks first so a path that is already down is not an error.
 func unmountAgentDir(goos, mountDir string) error {
 	if mounted, err := MountedDir(goos, mountDir); err != nil || !mounted {
 		return nil
@@ -375,8 +295,7 @@ func AgentMounted(goos, home, tool string) (bool, error) {
 	return MountedDir(goos, AgentMountDir(home, tool))
 }
 
-// AgentPathState is what `drive agents` reports about one tool's path: the
-// mount point, whether it is live, and whether its login item is installed.
+// AgentPathState is what `drive agents` reports about one tool's path: the mount point, whether it is live, and whether its login item is installed.
 type AgentPathState struct {
 	Tool      string
 	Path      string
@@ -384,8 +303,7 @@ type AgentPathState struct {
 	LoginItem bool
 }
 
-// AgentPathStates lists every connected tool's agent path, so `drive agents`
-// can show the path each one really works in instead of a promise.
+// AgentPathStates lists every connected tool's agent path, so `drive agents` can show the path each one really works in instead of a promise.
 func AgentPathStates(goos, home string, tools []string) []AgentPathState {
 	states := make([]AgentPathState, 0, len(tools))
 	for _, tool := range tools {
@@ -405,10 +323,7 @@ func AgentPathStates(goos, home string, tools []string) []AgentPathState {
 	return states
 }
 
-// AgentPathSummary is one line of `drive agents` output: the path, and whether
-// it is up. A path whose login item is installed but which is not mounted is
-// called out as not running, because a tool connected to a dead path is a
-// failure the person has to see (drive#514).
+// AgentPathSummary is one line of `drive agents` output: the path, and whether it is up.
 func AgentPathSummary(s AgentPathState) string {
 	switch {
 	case s.Mounted:
@@ -420,12 +335,6 @@ func AgentPathSummary(s AgentPathState) string {
 	}
 }
 
-// agentMountTimeoutSeconds is what the message table prints as {1} for
-// the agent mount's own timeout, kept beside the code that waits so the two
-// cannot drift.
 const agentMountTimeoutSeconds = "60"
 
-// mountWaitTimeout bounds waitAgentMounted, the patience the agent mount is
-// given before a start is reported as a failure. It is the same order the
-// device mount allows and it is a number this file owns.
 var mountWaitTimeout = 60 * time.Second

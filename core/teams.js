@@ -1,20 +1,3 @@
-// The team store: teams, their members, and the account lookup that binds an
-// email invite to a signed-in account (drive#20, build step 12).
-//
-// Teams share one drive the way a company does: a member's key is scoped to
-// the team prefix `t/<teamId>/` rather than an account folder, and the role the
-// owner invited the member with decides what that key may do (keyprovider.js
-// `TEAM_ROLE_CAPABILITIES`, the one role table). Removing a member revokes the
-// device rows behind their team keys, so the key stops working on the next
-// request — the same `authenticate` a `DELETE /v1/keys/:keyId` revoke uses.
-//
-// This is the memory store, and it is deliberately the same shape
-// device-signin.js splits its two stores into: a D1-backed team store
-// (migrations/drive/0008_teams.sql) replaces this factory with the same
-// methods and no route changes, exactly as `createD1DeviceSigninStore`
-// replaced the device-signin Maps. Nothing here reads a request or a clock of
-// its own: the clock is injected, and the routes (team-routes.js) own the HTTP
-// shape.
 import { newId, nowSeconds } from "./db.js";
 import { checkedTeamRole, teamScopeFor } from "./keyprovider.js";
 
@@ -213,8 +196,6 @@ export function createTeamStore(options = {}) {
     async inviteMember(ownerAccount, teamId, email, role) {
       const team = teams.get(teamId);
       if (team === undefined || team.ownerAccountId !== ownerAccount.id) {
-        // Only the owner may invite. A team the caller is a member of is not
-        // theirs to invite into, so a member cannot widen the team.
         return { error: "not-found" };
       }
       const checkedRole = checkedTeamRole(role);
@@ -226,8 +207,6 @@ export function createTeamStore(options = {}) {
           member.state !== "removed",
       );
       if (existing !== undefined) {
-        // An invite to an address already on the team is the owner correcting
-        // a role, not a second seat: the same row's role moves.
         existing.role = checkedRole;
         return existing;
       }
@@ -245,9 +224,6 @@ export function createTeamStore(options = {}) {
         revokedAt: null,
       };
       members.set(member.id, member);
-      // The random source is read so a store built with a fixed generator
-      // still exercises the same path; the id above is the only random value
-      // this call needs.
       randomBytes();
       return member;
     },
@@ -522,12 +498,6 @@ export function createD1TeamStore(db, options = {}) {
       }
       const checkedRole = checkedTeamRole(role);
       const address = email.trim();
-      // An invite to an address already on the team moves that row's role
-      // rather than adding a second seat — the same rule the memory store
-      // follows, so the two stores cannot disagree about a duplicate. The
-      // invite stays pending until acceptInvite; looking the account up here
-      // would make the row (and the HTTP answer) differ for an address that
-      // already has an account (drive#518).
       const existing = memberRow(
         await db
           .prepare(
@@ -581,10 +551,6 @@ export function createD1TeamStore(db, options = {}) {
      * @returns {Promise<TeamMember|null>}
      */
     async acceptInvite(teamId, accountId) {
-      // An already-active member must get their row back: the key-mint route
-      // calls this for every non-owner, and answering null for `active` is
-      // how production 404'd every team key (drive#518). Memory does the
-      // same check first (activeMembership).
       const active = memberRow(
         await db
           .prepare(

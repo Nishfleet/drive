@@ -11,10 +11,6 @@ import (
 	"time"
 )
 
-// Prefetch caps (issue #227). N entries and M bytes per listed folder; the
-// first-chunk size matches --vfs-read-ahead. The bandwidth share is 1 MiB/s so
-// prefetch never takes the pipe from a user's own read; --bwlimit is not set
-// on the mount because that flag would slow the user too.
 const (
 	prefetchMaxEntries = 32
 	prefetchMaxBytes   = 8 << 20
@@ -36,8 +32,6 @@ var (
 	meteredVal bool
 )
 
-// planPrefetch picks child directories to list and small files to warm, dirs
-// first, under the N/M caps. It is the only policy: the watcher just calls it.
 func planPrefetch(parent string, entries []os.DirEntry, maxN int, maxBytes, chunk, smallMax int64) []prefetchTarget {
 	var (
 		dirs, files []prefetchTarget

@@ -1,14 +1,3 @@
-// The one HTML frame every Storagebun email wears (high-end gap 18): the
-// wordmark, a card for the message, one button, and a quiet footer, on the
-// same paper and orange as the site. Inline styles on tables, because mail
-// clients strip most of the rest; every colour has a dark-mode twin in the
-// head for the clients that honour it. The plain-text twin is built by each
-// template and is not touched here.
-//
-// A hidden preview line (the "preheader") is the first thing an inbox shows
-// next to the subject, so each message passes its own instead of letting the
-// client pick up the wordmark.
-
 import { escapeHtml } from "./escape-html.js";
 
 const STYLE = `
@@ -24,7 +13,6 @@ a { color: #b83200; }
 }
 `;
 
-// Single quotes: the value sits inside double-quoted style attributes.
 const FONT = "-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif";
 
 /**

@@ -239,9 +239,6 @@ async function processApproveBatch(db, snapshots, store, branch) {
   let remaining = BRANCH_JOB_BATCH_FILES;
   let failure = null;
   try {
-    // A sliced plan's arrays are already the rest of this batch's slice, so
-    // the loop index is local. A legacy whole-plan value still uses the
-    // plan-wide index (drive#843).
     let addedLocal = sliced ? 0 : addedI;
     let changedLocal = sliced ? 0 : changedI;
     let removedLocal = sliced ? 0 : removedI;
@@ -374,8 +371,6 @@ async function finishApprove(db, store, snapshots, branch, applied, sizes) {
     )
     .bind(branch.id, branch.name)
     .first();
-  // Any active successor (open or mid-job) owns the prefix now; removing its
-  // files here would delete what that job is copying or reading.
   if (!successor) {
     await removeBranchFiles(store, branch);
   }
@@ -466,12 +461,6 @@ export async function processBranchJob(db, snapshots, store, account, branchId) 
     (branch.jobKind === "discard" || branch.jobKind === "rewind") &&
     (branch.state === "discarding" || branch.state === "rewinding")
   ) {
-    // A branch discarded while its create job was still copying leaves this
-    // row's own parts in the namespace, and `discardBranch` has cleared the
-    // cursor that says which (drive#842). The count is read back off the build's
-    // own leaf, so the row that gave up takes its deltas with it and a later
-    // branch of the same name never folds them in. The sweep runs once the
-    // first batch, and the other batches find an empty leaf.
     await dropCreateParts(snapshots, branch, {}, undefined, snapshotKey(account, branch.name));
     return processDiscardBatch(db, store, branch);
   }
@@ -495,8 +484,6 @@ export async function processBranchJob(db, snapshots, store, account, branchId) 
  * @returns {Promise<BranchJobResult>}
  */
 export async function runBranchJobToEnd(db, snapshots, store, account, branchId) {
-  // Every batch moves at least one file or one folder, and a branch holds at
-  // most BRANCH_FILE_LIMIT of each, so a folder-heavy tree still finishes.
   const cap = 2 * BRANCH_FILE_LIMIT + 200;
   for (let step = 0; step < cap; step += 1) {
     const result = await processBranchJob(db, snapshots, store, account, branchId);
@@ -522,13 +509,6 @@ export function publicJobResult(ran) {
   return /** @type {BranchJobResult} */ (rest);
 }
 
-// --------------------------------------------------------------- the actions
-
-// The branch's own copies, gone. After an approve they have nothing left to
-// do, and leaving them makes a name branched again start from a prefix that
-// holds a previous branch's files: the diff would read them as the new
-// branch's additions and the next approve would copy a file the original had
-// deleted straight back into it.
 /**
  * @param {import("../core/files.js").FileStore} store a scoped store
  * @param {{sourcePrefix: string, branchPrefix: string, snapshot: Record<string, Fingerprint>}} branch

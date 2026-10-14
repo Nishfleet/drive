@@ -1,90 +1,17 @@
-// Cap enforcement: what the spending cap does to an account's keys, as plain
-// logic (drive issue #52, build step 6's cap half).
-//
-// Spec, docs/build-spec.md "Keys and safety": "At the spending cap, the api
-// Worker deletes each write-capable key and mints read-only ones. The mount
-// picks up the new key at its next start, and the CLI restarts the mount.
-// Uploads waiting in the cache stay on disk until the cap is raised." And the
-// build step's finish line: "a capped account goes read-only with no file lost
-// and starts writing again once the cap is raised."
-//
-// Three rules shape everything here, and each has its reason:
-//
-//   1. At the cap the write key is revoked before the read-only one is minted,
-//      so no moment exists in which the device holds a working write key and
-//      the cap is already reached. When the cap is raised the order flips:
-//      the write key is minted first, because the device's only key is
-//      read-only and revoking it first would leave the mount with no key at
-//      all if the mint failed.
-//   2. Both directions are idempotent. Enforcement runs from a timer and can
-//      run twice for the same account; a second run at the cap finds no
-//      write-capable key and does nothing, and a second run below it finds no
-//      read-only key and does nothing. Keys are never churned.
-//   3. Nothing is deleted. A swap moves writes only: the account's files, its
-//      other keys and its branches are untouched. Only the storage key is
-//      replaced, and only its write capability is lost.
-//   4. The cap gives back only what it took (issue #74). "Read-only" has two
-//      causes and this module must not confuse them: the cap, and the customer
-//      (`drive init --read-only` mints an agent key with just [list, read]).
-//      The swap that reduces a key records the capabilities it took on the key
-//      row (`cappedFrom`, which the wiring in issue #64 stores on the devices
-//      row next to capabilities), and only a key carrying that record is ever
-//      widened — back to exactly the recorded scope, never to the kind's full
-//      table. A key without a record stays whatever the customer made it, on
-//      every run, forever.
-//
-// *When* the cap is reached is not decided here: core/billing.js's
-// usageSummary()/capStatus() own that, and this module only acts on the state
-// they return, so enforcement, the usage page and `drive status` cannot
-// disagree about the money.
-//
-// The storage side is an injected provider shaped like the KeyProvider
-// interface in core/keyprovider.js (mint(scope), revoke(keyId) and
-// swapToReadOnly(keyId)): the real one lands with issue #2, so the decision
-// here is testable now with no storage account, and a provider that already
-// implements swapToReadOnly() is used for the cap swap rather than this module
-// re-doing revoke-then-mint by hand.
-
 import { usageSummary } from "./billing-report.js";
 import { sendEmail } from "./email-send.js";
 import { CAPABILITIES_BY_KIND } from "./keyprovider.js";
 
-// The capability that makes a key able to change storage. `delete` is a write
-// path too, so a key that has only delete is still a key the cap has to take
-// away.
 const WRITE_CAPABILITIES = Object.freeze(["write", "delete"]);
 
-// What a capped key keeps: the same prefix, list and read. A capped account
-// still reads every file it paid for; it just cannot change them.
 export const READ_ONLY_CAPABILITIES = Object.freeze(
   /** @type {ReadonlyArray<import("./keyprovider.js").Capability>} */ (["list", "read"]),
 );
 
-// The full capability set each kind of key gets, from build-spec.md "Keys and
-// safety": a device key may delete, and an agent, s3 or branch key may not.
-// These are the capabilities only: a swap keeps the key's own prefix, so a
-// branch key stays inside /u/<id>/.branches/<name>/ and is never widened to
-// the whole account. The table is also the ceiling on any restore: the most a
-// kind may ever hold, so a corrupted record cannot hand an agent key `delete`.
-//
-// It is the same object the api Worker scopes keys with: the one kind to
-// capabilities table is declared in core/keyprovider.js
-// (CAPABILITIES_BY_KIND) and this name is that object, not a second copy
-// (drive#77), so a kind cannot end up with different powers in two places.
 export const WRITE_SCOPE_BY_KIND = CAPABILITIES_BY_KIND;
 
-// The one reason this phase writes on a devices row's `capped_reason`
-// (migrations/drive/0032_capped_reason.sql): this module's freeze took the key
-// down because the account's spending cap was reached (drive#661). It is
-// exported so the store, the tests and the give-back pass that reads it back
-// (drive#656) name the same word instead of three literals that can drift. The
-// prepaid $0-balance pause marks nothing at all because it freezes no key.
 export const SPEND_CAP_REASON = "spend-cap";
 
-// The other word: the hourly pre-charge sweep (core/abuse-guards.js) froze the
-// key because the unpaid account passed 1 TB of live bytes. Only this word lets
-// the give-back pass (drive#656) widen a key, so the sweep's freeze is never
-// confused with the owner's money cap.
 export const PRE_CHARGE_LIMIT_REASON = "pre-charge-limit";
 
 /**
@@ -138,9 +65,6 @@ function freezeReason(reason) {
  * @returns {boolean}
  */
 function sameCapabilities(left, right) {
-  // Set equality, not element order: a row's capability list has no meaningful
-  // order, so two rows holding the same names must not trigger a swap (which
-  // would churn a key for nothing). Names are unique within a scope.
   return left.length === right.length && left.every((name) => right.includes(name));
 }
 
@@ -246,9 +170,6 @@ function targetCapabilities(key, state) {
   if (key.cappedFrom === undefined || key.cappedFrom === null) {
     return null;
   }
-  // A kind this table does not know is a data error, and the throw below says
-  // so: the lookup is asked only after the kind was checked, so the index is a
-  // kind the table holds.
   const scope = Object.hasOwn(WRITE_SCOPE_BY_KIND, key.kind)
     ? WRITE_SCOPE_BY_KIND[/** @type {keyof typeof WRITE_SCOPE_BY_KIND} */ (key.kind)]
     : undefined;
@@ -258,9 +179,6 @@ function targetCapabilities(key, state) {
         `add it to WRITE_SCOPE_BY_KIND in core/cap.js`,
     );
   }
-  // checkedKey() has already validated the record's shape, so it is only held
-  // to the kind's scope here. A record the kind cannot use gives back nothing
-  // and leaves the key read-only, rather than emptying it or crashing the run.
   const restored = grantedCapabilities(key.cappedFrom || [], scope);
   return restored.length === 0 || sameCapabilities(restored, key.capabilities) ? null : restored;
 }
@@ -310,19 +228,9 @@ export function capSwapPlan(keys, cap, options = {}) {
           keyId: row.keyId,
           kind: row.kind,
           prefix: row.prefix,
-          // The bucket the row names, carried into the swap so the replacement
-          // key is minted in the bucket the one it replaces was scoped to: an
-          // account's own, or a team's for a key on a team prefix (drive#371,
-          // drive#462). A swap without one would mint a scope with no bucket,
-          // which a storage provider refuses rather than answering with a
-          // deployment-wide bucket.
           ...(row.bucket === undefined ? {} : { bucket: row.bucket }),
           capabilities,
           cappedFrom: state === "read_only" ? Object.freeze([...row.capabilities]) : null,
-          // Which cap took this key down, on the swap that froze it (drive#661):
-          // the read-only state is this module's freeze, so it names the
-          // spending cap. The raise carries null, which the store writes as
-          // "no reason recorded" and a give-back pass may widen.
           cappedReason: state === "read_only" ? freezeReason(options.reason) : null,
         }),
       );
@@ -332,10 +240,6 @@ export function capSwapPlan(keys, cap, options = {}) {
   return Object.freeze({
     state,
     swaps: Object.freeze(swaps),
-    // The mount holds the old key until it is restarted, so a swap that
-    // changed something is also a restart for the CLI to perform. With nothing
-    // to swap there is nothing to restart, and the second enforcement run on an
-    // account finds exactly that.
     mount: Object.freeze({
       restart: changed,
       reason: !changed ? null : state === "read_only" ? "cap-reached" : "cap-raised",
@@ -391,40 +295,17 @@ export async function applyCapSwap(plan, provider) {
   /** @type {Array<CapKey & {minted: unknown}>} */
   const applied = [];
   for (const swap of plan.swaps) {
-    // The replacement is minted in the bucket the row names, so the key that
-    // comes back is scoped to the same boundary the one it replaces was: an
-    // account's own bucket, or a team's for a key on a team prefix (drive#371,
-    // drive#462). A swap that names no bucket mints a scope with none in it,
-    // which a storage provider refuses rather than answering with a
-    // deployment-wide bucket — that is how every key ended up in the shared
-    // bucket before drive#462.
     const scope =
       swap.bucket === undefined
         ? { prefix: swap.prefix, capabilities: swap.capabilities }
         : { prefix: swap.prefix, capabilities: swap.capabilities, bucket: swap.bucket };
     /** @type {unknown} */
     let minted;
-    // A freeze names the spending cap unless the plan named the sweep's word,
-    // and a raise names nothing (drive#661). freezeReason() allows only those
-    // two words: anything else maps to the spending cap's.
     const reason = plan.state === "read_only" ? freezeReason(swap.cappedReason) : null;
     if (plan.state === "read_only") {
       if (typeof keys.swapToReadOnly === "function") {
-        // The provider's own swap is handed the keyId and this freeze's
-        // reason, and it re-derives the scope from the row it is replacing
-        // (core/devices.js `swapToReadOnly` mints in
-        // `bucketForKeyPrefix(accountId, prefix)`), so the bucket the row was
-        // scoped to reaches the replacement without this module having to pass
-        // it.
         minted = await keys.swapToReadOnly(swap.keyId, { cappedReason: reason });
       } else {
-        // Revoke first, mint second. This is the cap path, and the cap is the
-        // safety limit: if the mint then fails, the account is on the safe side
-        // of the cap with no write key rather than still over the cap with a
-        // live one. The api Worker retries the same plan, and a mount with no
-        // write key is recoverable where a spend over the cap is not. This is
-        // deliberate and pinned by "a provider failure is raised, never
-        // swallowed" in test/cap.test.mjs.
         await keys.revoke(swap.keyId);
         minted = await keys.mint(scope, { cappedReason: reason });
       }
@@ -452,19 +333,11 @@ export async function enforceCap(account, provider) {
   if (typeof account !== "object" || account === null) {
     throw new TypeError(`enforceCap needs an account object, got ${String(account)}`);
   }
-  // usageSummary() applies the card-less $1 cap and counts min(metered,
-  // ceiling), so enforcement reads the same cap status the usage page shows
-  // instead of a second version of the rule.
   const summary = usageSummary(/** @type {Parameters<typeof usageSummary>[0]} */ (account.usage));
   const plan = capSwapPlan(/** @type {CapKey[]} */ (account.keys), summary.cap);
   return applyCapSwap(plan, provider);
 }
 
-// The share of the cap at which the warning email goes out (drive#496). The
-// number the cap-warning template already names in its own words ("You've
-// used 80% of your spending cap", src/emails.js), so the walk below sends that
-// email at the share that email describes rather than at a second threshold
-// nobody can read off the page.
 const CAP_WARNING_RATIO = 0.8;
 
 /**
@@ -537,11 +410,6 @@ export async function runCapEnforcement(input) {
   /** @type {Array<{id: string, error: unknown}>} */
   const failures = [];
   for (const { id } of accounts) {
-    // One account's failure (a storage revoke that timed out, a send the
-    // provider refused) must not leave every later account unenforced, so
-    // each account is its own step and its error is kept for the report.
-    // The caller raises them after the rest of the hourly run, so a failed
-    // account is still a failed trigger and never a quiet skip.
     try {
       const decided = await enforceOneAccount(store, id, input, atSeconds);
       if (decided === null) {
@@ -594,9 +462,6 @@ export async function enforceAccountCap(input, id) {
  * @param {number} atSeconds
  */
 async function enforceOneAccount(store, id, input, atSeconds) {
-  // A closed account is not a spend and must not be re-opened or mailed
-  // about. The guarded write below would not move its row, but skipping it
-  // here keeps the walk off its keys entirely.
   const previous = await store.accountState(id);
   if (previous === "closed") {
     return null;
@@ -609,28 +474,17 @@ async function enforceOneAccount(store, id, input, atSeconds) {
   if (keys.length > 0) {
     await applyCapSwap(capSwapPlan(keys, summary.cap), store.keyProviderFor(id));
   }
-  // The guarded write: a closed row stays closed even if the walk decided
-  // otherwise above (drive#537).
   await store.setAccountState(id, state);
   const notices = await store.capNotices(id);
   const overWarning =
     summary.cap.capUsd > 0 && summary.cap.countedUsd >= summary.cap.capUsd * CAP_WARNING_RATIO;
-  // A notice re-arms when its state ends: a drive back under 80% (a new
-  // month, a cap raise) can cross it again, and a drive that is writable
-  // again can be stopped again, and each is a new state change that is
-  // mailed once more.
   if (!overWarning && notices.warnedAt !== null) {
     await store.clearCapNotice(id, "cap-warning");
   }
   if (state === "active" && notices.readOnlySentAt !== null) {
     await store.clearCapNotice(id, "read-only");
   }
-  // The 80% warning is a threshold crossing, not a state change: the state
-  // is `active` on both sides of it, so it is the stamp that says whether it
-  // has been sent for this crossing. A cap of $0 has no 80% of it.
   const warning = state === "active" && overWarning && notices.warnedAt === null;
-  // The read-only notice is a state change: the account was not read-only
-  // and is now, or it was and the notice went out and was not reset.
   const readOnlyMail = state === "read_only" && notices.readOnlySentAt === null;
   const kind = readOnlyMail ? "read-only" : warning ? "cap-warning" : null;
   const sent =
@@ -679,17 +533,10 @@ async function sendCapNotice(input) {
   const { store, id, kind, capUsd, atSeconds } = input;
   const notices = await store.capNotices(id);
   if (notices.email.trim().length === 0) {
-    // An account with no address on file cannot be mailed. The count on the
-    // cap_cents row is the thing the walk reports; the stamp stays unset, so
-    // the next trip still says so instead of treating the notice as sent.
     console.error(`cap: account ${id} is due a ${kind} notice but has no email`);
     return false;
   }
   if (input.email === undefined) {
-    // No EMAIL binding on this deployment. A cap with no email provider still
-    // enforces; the notice is not sent and not stamped, so a deployment that
-    // later binds EMAIL sends it on its next trip rather than having marked it
-    // as already gone out.
     console.error(`cap: no email binding on this deployment, so no ${kind} notice went out`);
     return false;
   }
