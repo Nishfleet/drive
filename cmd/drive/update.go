@@ -1,16 +1,3 @@
-// `drive update` (drive issue #509): hand off to the package manager that
-// installed this binary. brew, apt, dnf and winget are the routes a release
-// actually publishes; `go install @latest` needs a public module and a Go
-// toolchain, and neither is how the packages ship.
-//
-// Detection asks the package manager, not the binary's path: Homebrew, dpkg,
-// rpm and winget each know whether they own the `drive` package. An unknown
-// install is a named error that prints the same three lines the docs lead
-// with, so the next step is the one-line install, not a second updater.
-//
-// `drive version` still reports the module version the toolchain recorded in
-// this binary, which is the tag goreleaser stamped.
-
 package main
 
 import (
@@ -25,8 +12,6 @@ import (
 	"strings"
 )
 
-// The install lines .goreleaser.yaml publishes. test/packaging.test.mjs
-// derives the same three from that YAML and fails when these constants drift.
 const (
 	brewInstallLine = "brew install nish3451/tap/drive"
 	aptInstallLine  = "sudo apt install ./drive_*.deb"
@@ -60,49 +45,24 @@ func (k installKind) String() string {
 	}
 }
 
-// commandRunner starts one program with an argument vector, not a shell.
 type commandRunner func(name string, args []string, out, errw io.Writer) error
 
-// captureRunner is commandRunner for detection: stdout is returned, and a
-// non-zero exit is an error the detector treats as "not this route".
 type captureRunner func(name string, args []string) (string, error)
 
-// updateOptions is everything one `drive update` run needs. The zero value is
-// the production path: look up binaries on PATH, run them, write the console.
 type updateOptions struct {
-	// from is the version this binary reports. Empty means read it from
-	// this process's build information.
-	from string
-	// checkOnly is `--check`: report whether an update exists, install nothing.
-	checkOnly bool
-	// exe is this binary's path, used to read the version after an upgrade.
-	// Empty means os.Executable().
-	exe string
-	// lookPath finds a binary on PATH; nil means exec.LookPath.
-	lookPath func(string) (string, error)
-	// run is the install/upgrade invocation; nil means exec.Command.
-	run commandRunner
-	// capture is the detection / --check invocation; nil means exec.Command
-	// with CombinedOutput.
-	capture captureRunner
-	// out and err take the human lines; err also takes the package manager's
-	// own output, so a slow upgrade is never a silent one.
-	out io.Writer
-	err io.Writer
-	// home and rclone are where the mount lives and how it is found, read
-	// after a successful install: `drive update` restarts a mount that is
-	// still running the old binary (drive#560).
-	home   string
-	rclone string
-	// restartMount is what lets the install restart a running mount. It is
-	// deliberately not part of the zero-value production path: the unit
-	// tests call updateDrive against a temp home and a local proxy, and
-	// restarting the machine's real mount is not something a test may do.
-	// runUpdate sets it; drive update is the one caller of that path.
+	from         string
+	checkOnly    bool
+	exe          string
+	lookPath     func(string) (string, error)
+	run          commandRunner
+	capture      captureRunner
+	out          io.Writer
+	err          io.Writer
+	home         string
+	rclone       string
 	restartMount bool
 }
 
-// runUpdate is `drive update [--check] [--home <dir>] [--rclone <path>]`.
 func runUpdate(args []string) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	common := addCommonFlags(fs)
@@ -164,9 +124,6 @@ func captureOr(fn captureRunner) captureRunner {
 	return fn
 }
 
-// updateDrive is the one `drive update` run: detect the install route, ask
-// that package manager whether a newer package exists, and either report or
-// hand off the upgrade to it. An up-to-date machine does not run sudo.
 func updateDrive(o updateOptions) error {
 	out, errw := o.out, o.err
 	if out == nil {
@@ -211,12 +168,6 @@ func updateDrive(o updateOptions) error {
 	}
 	to := installedVersion(o.exe, from)
 	fmt.Fprintf(out, "updated drive %s -> %s via %s\n", from, to, kind)
-	// rclone below the floor makes the mount's own flags fail (drive#105), and
-	// the update is the one moment a person is likely to act (drive#560). It is
-	// said before the restart, so a restart that failed cannot hide the remedy
-	// for the other old thing on this machine. A mount restart against that
-	// old rclone would then fail with update-restart after a successful
-	// install, so the restart waits until rclone is at the floor.
 	rcloneReady := false
 	if rcloneBin, rErr := ResolveRclone(o.rclone); rErr == nil {
 		if err := CheckRclone(CurrentGOOS(), rcloneBin); err != nil {
@@ -231,11 +182,6 @@ func updateDrive(o updateOptions) error {
 	if home == "" {
 		home = DefaultHome()
 	}
-	// The installed binary changed while the mount was running, and a mount
-	// serves the code it started with, so the update does not take effect on
-	// a running mount until it is restarted (drive#560). This runs only after
-	// the package manager's own upgrade, and it restarts nothing when this
-	// machine has no mount up.
 	if o.restartMount && rcloneReady {
 		on, mErr := mountOn(CurrentGOOS(), home)
 		switch {
@@ -244,10 +190,6 @@ func updateDrive(o updateOptions) error {
 				return failDetail("update-restart", err)
 			}
 			fmt.Fprintln(out, "drive: mount restarted on the new drive")
-			// Mounted can time out on a wedged FUSE mount, and a probe that
-			// could not answer would otherwise print "updated" beside a mount
-			// still serving the old build, so the question is named instead of
-			// swallowed.
 		case mErr != nil:
 			fmt.Fprintf(errw, "drive update: could not tell whether %s is mounted: %v\n", DefaultMountDir(home), mErr)
 		}
@@ -255,15 +197,6 @@ func updateDrive(o updateOptions) error {
 	return nil
 }
 
-// restartMountAfterUpdate restarts this machine's drive mount after the
-// binary changed under it, because a mount keeps running the code it started
-// with. It is the same restart `drive cap` runs: rclone from the flag or
-// PATH, the secret through ReadSecretKey's fixed order (the environment, then
-// this CLI's own 0600 config, then rclone.conf) and never off the pipe, then
-// the one RestartMount call that unmounts without touching the VFS cache its
-// queued uploads live in. It is written out here rather than shared with
-// cap.go's swap restart, because cap's restart is money-touching (the
-// spending cap) and this change does not modify that path.
 func restartMountAfterUpdate(rcloneFlag, home string) error {
 	rcloneBin, err := ResolveRclone(rcloneFlag)
 	if err != nil {
@@ -311,12 +244,6 @@ func installedVersion(exe, fallback string) string {
 	return v
 }
 
-// detectInstallRoute asks brew, dpkg, rpm and winget, in that order, whether
-// they own the drive package. The first yes wins. None of them is an unknown
-// install: the error names the three lines a person pastes to put drive on a
-// supported route. brew is asked for the tap cask first so a core cask named
-// `drive` cannot steal the route. apt/dnf must be on PATH because they are
-// the commands the upgrade actually runs.
 func detectInstallRoute(lookPath func(string) (string, error), capture captureRunner) (installKind, error) {
 	if _, err := lookPath("brew"); err == nil {
 		if _, err := capture("brew", []string{"list", "--cask", brewCask}); err == nil {
@@ -365,8 +292,6 @@ func upgradeCommand(kind installKind) (string, []string) {
 	}
 }
 
-// packageHasUpdate asks the same package manager the upgrade would drive.
-// Empty or "up to date" output means no update; any named newer package is yes.
 func packageHasUpdate(kind installKind, capture captureRunner) (bool, error) {
 	switch kind {
 	case routeBrew:
@@ -414,10 +339,6 @@ func exitCode(err error) (int, bool) {
 	return x.ExitCode(), true
 }
 
-// versionText is what `drive version` prints: the module version the toolchain
-// recorded in this binary, which is the tag it was installed at. A binary
-// built from a checkout (`go build`, `go run`, `go test`) records no module
-// version, so it falls back to the source-tree version.
 func versionText() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -429,9 +350,6 @@ func versionText() string {
 	return version
 }
 
-// moduleVersion is a build information's module version when it names a
-// released version. Every other value is the toolchain saying "built from a
-// working tree": an empty version, or the literal `(devel)`.
 func moduleVersion(info *debug.BuildInfo) string {
 	v := info.Main.Version
 	if v == "" || v == "(devel)" {
@@ -440,9 +358,6 @@ func moduleVersion(info *debug.BuildInfo) string {
 	return v
 }
 
-// binaryVersionAt reads the version the drive binary at path reports, the way
-// `go version -m` does. Tests use it to prove a checkout build falls back to
-// the source-tree version.
 func binaryVersionAt(path string) (string, error) {
 	info, err := buildinfo.ReadFile(path)
 	if err != nil {
