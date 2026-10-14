@@ -32,6 +32,7 @@
 import { escapeHtml } from "../core/escape-html.js";
 import { fileKind, previewDisposition } from "../core/files.js";
 import { LEGAL_PAGES, REPORT_PATH, SUPPORT_EMAIL } from "../core/legal.js";
+import { PRICE } from "../core/pricing.js";
 import { expiresAtIso, SHARE_LINK_PREFIX } from "./share.js";
 import { admitShareLink, handleShareFileRequest, liveShareObject } from "./share-routes.js";
 
@@ -191,6 +192,7 @@ h1 { font-size: 1.4rem; margin: 0.4rem 0 1rem; }
 img, video { max-width: 100%; height: auto; }
 a { color: #1f3a5f; }
 .expiry { color: #6f6a5f; }
+.made { color: #56514a; margin-top: 2rem; }
 footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #ddd5c5; display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; font-size: 0.85rem; }
 </style>
 </head>
@@ -202,6 +204,7 @@ footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #ddd5c5; d
 ${middle}
 ${expiry}
 <p><a href="${reportHref}" rel="nofollow">Report this link</a> to support, or read the <a href="${REPORT_PATH}">report policy</a>.</p>
+<p class="made">Stored on Storagebun. ${escapeHtml(PRICE.rateLine)} <a href="/">See how it works</a></p>
 <footer><nav aria-label="Footer">
       ${footerLinks}
 </nav></footer>
