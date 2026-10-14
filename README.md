@@ -9,11 +9,11 @@ write the same folder.
   packed into a database.
 - **Version history is not in version 1.** Saving a file again replaces it. A
   delete from the Files page is restorable for 30 days in Recently deleted.
-  Deleted or replaced files stay restorable for 30 days, free. The
+  Deleted or replaced files stay restorable for 3 days, free. The
   full list of what version 1 does not do is on the
   [Limits page](https://storagebun.com/docs/limits).
-- **An agent's delete is undoable for 30 days.** An agent gets its own key. The
-  storage takes that key's delete but keeps the deleted copy for 30 days, and we
+- **An agent's delete is undoable for 3 days.** An agent gets its own key. The
+  storage takes that key's delete but keeps the deleted copy for 3 days, and we
   can put it back if you ask within that time. After that it is gone. A branch key reaches your whole Storagebun, not only its branch, because the
   storage limits a key to the whole Storagebun. `drive init` mounts `~/Drive-agents/<tool>`
   for each tool on its own key, and the MCP server and the tool's allowed folders
