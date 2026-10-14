@@ -1006,6 +1006,7 @@ function rowFor(row) {
 // Putting one back is a save, so the copy it replaces shows up here next.
 const EARLIER_COPY = {
   none: "No earlier copies of this file. A copy shows up here after you save over it.",
+  note: "Deleted or replaced files stay restorable for 3 days, free.",
   restore: "Put this one back",
   restored: "Put back. The copy it replaced is under Earlier copies if you want it again.",
 };
@@ -1025,6 +1026,9 @@ async function showEarlierCopies(row, li) {
   }
   const box = document.createElement("ul");
   box.className = "earlier";
+  const note = document.createElement("li");
+  note.textContent = EARLIER_COPY.note;
+  box.append(note);
   const copies = Array.isArray(found.versions) ? found.versions : [];
   if (copies.length === 0) {
     const none = document.createElement("li");
@@ -1034,7 +1038,7 @@ async function showEarlierCopies(row, li) {
   for (const copy of copies) {
     const item = document.createElement("li");
     const label = document.createElement("span");
-    label.textContent = `Saved ${whenLabel(copy.savedAt)} · replaced ${whenLabel(copy.replacedAt)} · until ${whenLabel(copy.restorableUntil)}`;
+    label.textContent = `Saved ${whenLabel(copy.savedAt)} · replaced ${whenLabel(copy.replacedAt)} · permanently removed ${whenLabel(copy.restorableUntil)}`;
     const put = document.createElement("button");
     put.type = "button";
     put.textContent = EARLIER_COPY.restore;

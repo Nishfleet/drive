@@ -8,13 +8,13 @@ write the same folder.
 - **Plain files.** Real names, opened by the apps you already use. Nothing is
   packed into a database.
 - **Version history is not in version 1.** Saving a file again replaces it. A
-  delete from the Files page is restorable for 30 days in Recently deleted, and
-  a delete made any other way is recoverable for one day, by asking us. The
+  delete from the Files page is restorable for 30 days in Recently deleted.
+  Deleted or replaced files stay restorable for 3 days, free. The
   full list of what version 1 does not do is on the
   [Limits page](https://storagebun.com/docs/limits).
-- **An agent's delete is undoable for 1 day.** An agent gets its own key. The
-  storage takes that key's delete but keeps the deleted copy for 1 day, and we
-  can put it back if you ask within that day. After that it is gone. A branch key reaches your whole Storagebun, not only its branch, because the
+- **An agent's delete is undoable for 3 days.** An agent gets its own key. The
+  storage takes that key's delete but keeps the deleted copy for 3 days, and we
+  can put it back if you ask within that time. After that it is gone. A branch key reaches your whole Storagebun, not only its branch, because the
   storage limits a key to the whole Storagebun. `drive init` mounts `~/Drive-agents/<tool>`
   for each tool on its own key, and the MCP server and the tool's allowed folders
   point there, not at your Storagebun. Windows is not in version 1, and the tool there
