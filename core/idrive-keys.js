@@ -1,34 +1,7 @@
-// Key minting against the vendor's own access-key API: the api Worker holds a
-// reseller API token and hands out credentials the storage server enforces
-// (drive#371, build step 1's third measurement).
-//
-// iDrive e2 cannot limit a key to a folder (prefix) — it limits a key to a
-// BUCKET, and it allows unlimited buckets (measured 2026-10-03, drive#173 and
-// #371). So the boundary is the bucket: one bucket per account, `drv-<id>`,
-// and one per team, `drv-t-<id>` (keyprovider.js `bucketForAccount` /
-// `bucketForTeam`, the one place the name is built). The prefix inside a
-// bucket stays the layout the rest of the product already reads
-// (`u/<id>/…`, `.branches/<name>/…`), so the S3 code paths stay stock.
-//
-// The mint is the vendor's reseller API, not S3: `POST
-// /api/reseller/v1/create_access_key` with a `token` header, naming the bucket
-// or buckets the key may touch, the permission level, and the delete switches
-// that make an agent's delete a delete marker rather than a destruction.
-// That is the same safety the STS session policy gave the stand-in and B2 —
-// the endpoint refuses what the key is not allowed — carried on the one vendor
-// API that can express it. Revoking is the same API's `remove_access_key`, so
-// a revoked key really stops working at the provider, not only in the api's
-// own store.
+// iDrive e2 cannot limit a key to a prefix; it limits a key to a bucket.
 
 import { createS3Client, provisionBucket } from "./s3.js";
 
-/**
- * What a key minted here can reach: iDrive e2 limits a key to whole buckets,
- * never to a prefix inside one (measured 2026-10-03, drive#173 and #371). So a
- * branch key, whose scope names a `.branches/<name>/` prefix, still reaches
- * every file in the account's bucket. The docs read this (src/keys.js), so a
- * page cannot claim a narrower reach than the provider enforces (drive#502).
- */
 export const IDRIVE_KEY_REACH = "bucket";
 
 /**
@@ -91,11 +64,6 @@ export function deleteSwitchesFor(capabilities) {
  *   the deployment asked for one
  */
 
-/**
- * A vendor answer that is not a usable key or a usable revocation, named as
- * the failure it is rather than answered as a default: a mint that came back
- * without a secret would hand the caller half a credential.
- */
 export class IdriveKeyError extends Error {
   /**
    * @param {string} operation
@@ -112,7 +80,6 @@ export class IdriveKeyError extends Error {
   }
 }
 
-/** The permission level that reads and writes. 2 is the vendor's own number. */
 const READ_WRITE_PERMISSION = 2;
 
 /**
@@ -142,8 +109,6 @@ async function callResellerApi(apiEndpoint, apiToken, action, body, fetchImpl) {
   /** @type {Record<string, unknown>} */
   let answer = {};
   if (text !== "") {
-    // An unparseable answer is named as one: a body this module cannot read is
-    // not a successful mint.
     try {
       const parsed = JSON.parse(text);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
@@ -223,23 +188,16 @@ export function createIdriveKeyProvider(config) {
      * @returns {Promise<IdriveMintedKey>}
      */
     async mint(scope, options = {}) {
-      // A scope that names no bucket is refused below rather than minted
-      // against everything the vendor allows, so the read below is a double
-      // cast: the declared type promises a bucket, and the runtime proves it.
       const bucket = /** @type {string|undefined} */ (
         /** @type {Record<string, unknown>} */ (scope).bucket
       );
       if (typeof bucket !== "string" || bucket === "") {
-        // A scope with no bucket cannot name a vendor key: the vendor's own
-        // model limits a key to buckets, so there is nothing to mint against.
         throw new TypeError(
           "The iDrive key provider needs a scope that names its bucket (keyprovider.js scopeFor).",
         );
       }
       if (provisionBuckets && storageConfig) {
         const client = createS3Client(storageConfig);
-        // Idempotent, and one bucket per customer: the vendor allows unlimited
-        // buckets, so provisioning is the sign-up act the bucket model needs.
         await provisionBucket(client, { bucket, sse: "AES256" });
       }
       const switches = deleteSwitchesFor(scope.capabilities);
@@ -271,8 +229,6 @@ export function createIdriveKeyProvider(config) {
         "secret",
       ]);
       if (accessKeyId === null || secret === null) {
-        // A 200 without both halves is not a credential, and handing one back
-        // half-built would fail later, on a user's file.
         const missing = [
           accessKeyId === null ? "access key id" : null,
           secret === null ? "secret" : null,

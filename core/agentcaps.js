@@ -1,51 +1,7 @@
-// What an agent key is allowed to do this month and today (drive issue #171).
-//
-// An agent key is a key a tool holds, not a person. The one key rule is that a
-// person can always undo what a tool did (`drive undo`, and a new branch), so a
-// tool does not need to be trusted the way the person's own mount is. What it
-// does need is a ceiling that holds while nobody is watching: a tool stuck in a
-// retry loop, a runaway loop writing the same folder forever, or a
-// prompt-injected tool reading the whole drive can spend a real bill before
-// anyone notices, and the loop is the whole point of the tool.
-//
-// Why a per-agent cap at all, when the account already has one: the account cap
-// protects the customer's money, but a runaway agent spends the customer's
-// money on the customer's behalf, and "your bill is fine" is not the same
-// answer as "this one agent is not going to run up your bill".
-//
-// Two halves, both read from what the drive already measures:
-//
-//   - The monthly half is the money already metered for the account. An agent's
-//     ceiling is asked with the account cap's own function (`capStatus` in
-//     core/billing.js), so the number that decides "this is over" is the number
-//     the usage page shows. No second money rule and no second ledger: the read
-//     is `size30Through` (core/meter.js), the same peak the account
-//     cap and the usage page read, and `agent_caps.month_spend_cents` is left
-//     unread so there is nowhere else for a spend total to live.
-//   - The daily half is the key's own requests to the drive's API, counted on
-//     the key's row in `agent_caps` and stamped with the UTC day it belongs to,
-//     so it resets on its own with nothing running.
-//
-// What the cap does when it is reached is the account cap's own swap
-// (`capSwapPlan`, core/cap.js), so an agent key at its cap goes read-only on
-// exactly the terms a capped drive's keys do, and there is one state, one swap
-// and one message rather than a second set of them.
-//
-// This module is the decision and nothing else: no database, no clock, no
-// Worker. The caller (core/agent-caps.js) reads the row, counts the
-// request and hands the numbers here. That split is what lets the decision be
-// tested as plain data while the reading is tested against the real schema.
 import { BILLING_CONFIG } from "./billing.js";
 import { capStatus } from "./billing-report.js";
 import { capSwapPlan } from "./cap.js";
 
-// The ceilings an agent key gets when its row says nothing about its own.
-// The account's own default cap (BILLING_CONFIG.defaultCapUsd), so an
-// agent inherits the number a customer already reads on the usage page rather
-// than a second number to explain. 1,000 requests a day is far above what a
-// working editing session sends and far below what a runaway loop reaches; it
-// is a count of requests rather than of bytes, so it costs nothing to keep and
-// is not a second money rule.
 export const DEFAULT_AGENT_CAPS = Object.freeze({
   monthlyCapUsd: BILLING_CONFIG.defaultCapUsd,
   dailyRequests: 1000,
@@ -173,9 +129,6 @@ export function agentCapStatus(agent) {
     throw new TypeError(`agentCapStatus needs usage {size30Bytes}, got ${String(usage)}`);
   }
   const caps = agentCaps(agent.caps);
-  // The month the cap counts is the calendar month `at` falls in (drive#531).
-  // The whole bill, downloads included, the same way the account's own cap
-  // counts it (drive#496).
   const counted = capStatus(usage.size30Bytes, caps.monthlyCapUsd, BILLING_CONFIG, {
     downloadBytes: usage.downloadBytes,
   });

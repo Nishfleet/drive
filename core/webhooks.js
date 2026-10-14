@@ -1,25 +1,9 @@
-// Outbound webhooks (polish gap 19, drive#901): a signed POST to an https
-// address the customer chose, when something happens on their account.
-//
-// The scheme is Standard Webhooks, the one Dodo uses to call us (core/topup.js
-// verifyWebhook): headers `webhook-id`, `webhook-timestamp` and
-// `webhook-signature: v1,<base64 HMAC-SHA256 of "id.timestamp.body">`, keyed
-// by a `whsec_` secret. A customer can check a delivery with any library that
-// speaks it. The body is `{id, type, created, data}`.
-//
-// Delivery is one attempt with a short timeout, logged either way. Sending
-// never throws and never decides a payment: the caller's own work has already
-// finished by the time an event is emitted.
-
 import { all, first, newId, nowSeconds, run } from "./db.js";
 
-/** The events an endpoint can listen for. */
 export const WEBHOOK_EVENTS = Object.freeze(["balance.topped_up", "balance.low", "webhook.test"]);
 
-/** How many endpoints one account may hold. */
 export const MAX_ENDPOINTS = 5;
 
-/** How long one delivery waits for the customer's server. */
 const DELIVERY_TIMEOUT_MS = 4000;
 
 const LOG_DAYS = 30;
@@ -54,9 +38,6 @@ export function endpointUrlProblem(value) {
     return "Leave the user name and password out of the address.";
   }
   const host = url.hostname.toLowerCase();
-  // A last label that is all digits or 0x-hex is a number the network stack
-  // reads as an address (0x7f.1, 017700000001, 2130706433), so it is refused
-  // like a dotted quad. A real top-level domain is never numeric.
   const isAddress =
     /^[0-9.]+$/.test(host) || host.includes(":") || /(^|\.)(0x[0-9a-f]*|[0-9]+)$/.test(host);
   const isLocal = !host.includes(".") || /\.(local|localhost|internal|lan|home|corp)$/.test(host);
@@ -90,7 +71,6 @@ function toBase64(bytes) {
   return btoa(binary);
 }
 
-/** A fresh signing secret: `whsec_` and 32 random bytes in base64. */
 function newSecret() {
   return `whsec_${toBase64(crypto.getRandomValues(new Uint8Array(32)))}`;
 }
