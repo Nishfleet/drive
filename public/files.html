@@ -1010,6 +1010,20 @@ const EARLIER_COPY = {
   restored: "Put back. The copy it replaced is under Earlier copies if you want it again.",
 };
 
+// An account on the 30-day or 1-year history add-on keeps copies longer, and
+// the page's promises say so. The Worker sends the window with every listing;
+// 3 days is the free default the copy above is written for.
+function applyHistoryWindow(days) {
+  if (days !== 30 && days !== 365) {
+    return;
+  }
+  const words = days === 365 ? "1 year" : `${days} days`;
+  const swap = (text) => text.replace("3 days", words);
+  DELETE_COPY.confirm = swap(DELETE_COPY.confirm);
+  EMPTY_STATES.trash.next = swap(EMPTY_STATES.trash.next);
+  EARLIER_COPY.note = EARLIER_COPY.note.replace("for 3 days, free", `for ${words}`);
+}
+
 async function showEarlierCopies(row, li) {
   const open = li.querySelector(".earlier");
   if (open) {
@@ -1411,6 +1425,7 @@ async function refresh(keepStatus) {
     }
     const payload = await listPage(null);
     showSignedIn();
+    applyHistoryWindow(payload.historyDays);
     nextCursor = view === "folder" ? (payload.nextCursor ?? null) : null;
     renderRows(payload.rows || []);
     showMore(nextCursor);

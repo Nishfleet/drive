@@ -195,6 +195,7 @@ async function listRequest(request, url, store, now, days) {
       return json({
         view: "deleted",
         rows: trashRows(entries, now, days),
+        historyDays: days,
         empty: EMPTY_STATES.trash,
         line: PAGE_LINE,
       });
@@ -212,6 +213,7 @@ async function listRequest(request, url, store, now, days) {
     const { folders, files } = splitEntries(entries);
     return json({
       view: "folder",
+      historyDays: days,
       path: checked.path,
       rows: fileRows(entries),
       folders: folders.length,
