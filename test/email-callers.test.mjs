@@ -1,22 +1,3 @@
-// Every customer-facing email kind has a caller (drive issue #522).
-//
-// Four templates shipped with nobody to send them: cap-warning, read-only,
-// monthly-receipt and payment-failed. A person could sign up, be charged, hit
-// their spending cap, fail a payment and never receive a single email about
-// any of it, and nothing anywhere failed. That is the whole class of bug this
-// file exists to stop.
-//
-// The gate is deliberately not "the kind string appears somewhere". A string
-// in a comment, a test fixture or a switch case is not a caller: a template
-// named in a branch nobody reaches is exactly the failure this issue is about.
-// So each kind below must appear as an argument to a real send call inside
-// the runtime source, and the call must be reachable from a route or a cron.
-//
-// The one kind this file cannot unblock on its own is cap-warning, which is
-// waiting on the billing decision in #496. It is listed with its blocker
-// rather than deleted, so the day that decision lands the diff shows a
-// missing caller instead of a silently absent one.
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";

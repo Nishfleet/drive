@@ -1,12 +1,3 @@
-// Every drive email, every branch. The copy is a decision (docs/build-spec.md,
-// "Nothing missing": welcome, 80% of cap, read-only reached, payment failed,
-// monthly receipt with the "you saved" line), so the tests pin the sentences,
-// the numbers and the two "you saved" baselines from drive#39 rather than
-// letting a later run quietly reword a customer's inbox.
-//
-// No Worker runtime: sendEmail takes the binding as an argument, so a fake
-// records what would have gone out and the templates run through node --test.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { signinLinkEmail } from "../core/auth.js";

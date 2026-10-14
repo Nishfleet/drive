@@ -1,8 +1,3 @@
-// The prepaid balance's pure rules (drive#586): entry shapes, the top-up
-// amount, the reconciliation, the money format and the webhook signature.
-// The database half (idempotency, append-only) is
-// test/integration/ledger-d1.test.mjs.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {

@@ -1,5 +1,3 @@
-// Split out of core/meter.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-
 import { decodeNotificationKey } from "./event-routes.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
@@ -75,35 +73,6 @@ export async function recordUsage(db, accountId, hour, gbMinutes, storedBytes, n
   await usageStatement(db, accountId, hour, gbMinutes, storedBytes, now).run();
 }
 
-// The one read the month's peak is worked out from: the largest stored_bytes
-// mark in the month's half-open window.
-//
-// A month's window is written by SQLite's own calendar, not by arithmetic done
-// here: `strftime('%s', ? / 1000, 'unixepoch', 'start of month')` is the first
-// instant of the month the instant falls in, and 'start of month' again with
-// '+1 month' is the first instant of the month after it. That is the standard
-// library doing what SQLite is good at, and it means the two bounds can never
-// disagree with each other or with a month the writer produced. Times are
-// UTC on purpose, like hourStart, so a month never moves with a local clock or
-// a daylight-saving change.
-//
-// The window is half-open: an hour whose `hour` is exactly the first instant
-// of the month belongs to THAT month. An hour is keyed by the instant it
-// starts (core/meter.js's hourStart), so the hour that starts 00:00:00 on the
-// 1st is the new month's first row and the one that ends a second earlier is
-// the old month's last - a file spanning that instant is split across the two
-// months and neither month carries both hours (drive issue #163).
-// The peak is the MAX over the month's hour marks. marked_hours counts the
-// rows that carry a POSITIVE mark and hours counts the rows, so a month whose
-// every row reads 0 - no hour ever wrote a real size - is distinguishable from
-// a month of genuinely empty hours: an account with version rows live in the
-// month but no positive mark anywhere is a month the meter never measured, and
-// its peak is not readable. (A measured 0 and an unmeasured 0 are the same
-// number on purpose: migration 0006's NOT NULL DEFAULT 0 cannot tell them
-// apart, and the deploy window that produces an unmeasured 0 is bounded and
-// re-rolled by the reconciler #59. A MAX is not lowered by a 0, so the only
-// shape in which no hour measured anything is the all-zero one, and that is
-// the shape the reader refuses.)
 const MONTH_PEAK_BYTES_SQL = `SELECT
     COALESCE(MAX(stored_bytes), 0) AS peak_bytes,
     COALESCE(SUM(CASE WHEN stored_bytes > 0 THEN 1 ELSE 0 END), 0) AS marked_hours,
@@ -113,40 +82,6 @@ const MONTH_PEAK_BYTES_SQL = `SELECT
     AND hour >= strftime('%s', ?2 / 1000, 'unixepoch', 'start of month') * 1000
     AND hour <  strftime('%s', ?2 / 1000, 'unixepoch', 'start of month', '+1 month') * 1000`;
 
-// The two facts that tell an all-zero peak "unmeasured" from "empty", asked in
-// one read so the refusal below sees one snapshot of the month. A version of a
-// size over 0 bytes is what either fact is about: a 0-byte version can hold no
-// peak and bills no cents, so a month of empty files is a measured $0 month and
-// never an error (drive#535).
-//
-// `live_version` is the month's own window: a version created inside the
-// month, or still live across its start, was stored in it. That is the fact for
-// the month the cron never rolled at all - no hour rows, so there is no hour to
-// ask about, and a missing measurement is not an empty month.
-//
-// `unmarked_hour` is the other shape, and it is the hour the meter DID roll:
-// whether some hour END in the month had a version over 0 bytes live at it,
-// because that is the set the hour's mark is taken from (HOUR_STORED_BYTES_SQL,
-// drive#535). A rolled hour whose end held real bytes left a 0 mark only if the
-// rollup did not write the column, which is the deploy window where the hours
-// before migration 0006 landed carry its 0 default.
-//
-// What neither fact covers is the month whose every version was hidden before
-// an hour's end - a file written and deleted inside one hour. Its marks are 0
-// because the drive really held nothing at any hour's end, its GB-minutes
-// measured that hour, and its peak is 0. That is a measured month, and it reads
-// 0 rather than failing every route that opens on the month.
-//
-// Both facts read what the mark reads, so both exclude the account's trash
-// folder (NOT_TRASH_SQL): a parked file is not stored bytes, so a month whose
-// only live versions are in the trash is measured, not missing a measurement.
-//
-// Both windows are half-open like every other window in this module: a version
-// hidden at EXACTLY the month's first instant held no time in the month
-// (hidden_at > monthStart, strict), so it does not make the month look
-// measured-or-not. An hour ends at hour + HOUR_MS, and a version live there
-// (hidden_at >= that instant) is in that hour's mark - the same inclusive edge
-// the mark's own window uses.
 const MONTH_UNMEASURED_SQL = `SELECT
     EXISTS(
       SELECT 1 FROM file_versions
@@ -228,35 +163,6 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
   const markedHours = Number(row?.marked_hours ?? 0);
   const peakBytes = Number(row?.peak_bytes ?? 0);
   const hours = Number(row?.hours ?? 0);
-  // A month whose every hour reads 0 is one of three shapes, and only one of
-  // them is a failure:
-  //
-  //   1. The meter never measured it - a version over 0 bytes was live at an
-  //      hour end the rollup rolled and left unmarked (the deploy window where
-  //      the hours before migration 0006 landed carry the column's 0 default),
-  //      or there are no hour rows at all while such a version was live (the
-  //      cron never ran). Its peak is not readable, and reading it as 0 would
-  //      bill $0 for storage nobody recorded, so it is refused by name.
-  //   2. A month of empty files: every version is 0 bytes, no hour can mark a
-  //      byte, and the meter did measure - 0 GB-minutes and a 0 peak are that
-  //      month's real numbers (drive#535).
-  //   3. A month whose every version was hidden before an hour's end: the
-  //      drive really held nothing at any hour's end, the GB-minutes still
-  //      billed every minute the versions existed, and the peak is 0
-  //      (drive#535).
-  //
-  // MONTH_UNMEASURED_SQL takes the two facts that pick (1) out of the three:
-  // `unmarked_hour` for the rolled hours, `live_version` for the month that was
-  // never rolled at all. Neither asks about the month's hours versus 0-byte
-  // versions, which is what leaves (2) and (3) as answers.
-  //
-  // A PARTIALLY marked month is deliberately not refused: the only way one
-  // arises is the deploy window, where the hours before 0006 landed have the
-  // column's 0 default and every hour after it carries a real mark. Those early
-  // zeros cannot lower a MAX, and the hours that do carry a mark are the later
-  // ones, so the peak this reads is the drive's true largest size, not a subset
-  // of it. The unmeasurable case is the no-positive-mark one above, which is the
-  // only shape in which no hour measured anything at all.
   if (markedHours === 0 && peakBytes === 0) {
     const unmeasured = await db.prepare(MONTH_UNMEASURED_SQL).bind(accountId, at).first();
     if (hours === 0 ? unmeasured?.live_version : unmeasured?.unmarked_hour) {
@@ -273,20 +179,6 @@ export async function monthUsageRollup(db, accountId, month, now = Date.now()) {
   return Object.freeze({ month: label, peakBytes });
 }
 
-// The Dodo push's as-of-this-hour read (drive issue #51): the month's
-// GB-minutes, peak and downloads from the hour rows that already exist,
-// through the closed hour being pushed. This is a SUM over stored rows, not a
-// generate_series over missing hours, so a gap the meter has not rolled yet is
-// not invented as a $0 hour.
-//
-// There is no average in this read. The month's average stored size is the
-// month's GB-minutes over the month's minutes - one conversion, made once in
-// billing.js (`gbMonths`, the avg_GB both halves of the price read) - and
-// averaging the hour's stored-bytes marks instead was a second, different
-// answer: a drive whose files were replaced faster than once an hour had every
-// save counted again in that average (drive#535), and no two callers could be
-// held to the same figure. The caller divides, in the one place the price's
-// divisor lives (MINUTES_PER_MONTH); this read stays the meter's own numbers.
 const MONTH_USAGE_THROUGH_SQL = `SELECT
     COALESCE(SUM(gb_minutes_live), 0) AS gb_minutes,
     COALESCE(MAX(stored_bytes), 0) AS peak_bytes,
@@ -337,11 +229,6 @@ export async function monthUsageThrough(db, accountId, through) {
   });
 }
 
-// size30 (drive#642): the largest stored_bytes mark in the trailing 30 UTC
-// days, and the earliest hour that mark was reached. One statement, so there
-// is no second peak to drift from. A window with no rows is an empty drive
-// (size30 0), not a guessed charge. A stored_bytes value that does not parse
-// is refused, never billed.
 const SIZE30_SQL = `SELECT
     COALESCE(MAX(stored_bytes), 0) AS size30_bytes,
     CASE WHEN COALESCE(MAX(stored_bytes), 0) = 0 THEN NULL ELSE MIN(hour) END AS reached_hour,
@@ -421,13 +308,8 @@ export async function size30Through(db, accountId, from, through) {
  * @returns {{label: string, at: number}}
  */
 function monthWindow(month, now) {
-  // toMillis takes the three shapes a timestamp can be and throws on
-  // anything else, which is what refuses a month that is not an instant.
   const at = toMillis(/** @type {number|Date|string} */ (month), "month");
   const instant = new Date(at);
-  // toISOString throws a RangeError on an instant outside the calendar Date can
-  // name, so the label line is what refuses a month the calendar does not have:
-  // no separate NaN guard is reachable here once toMillis has taken the value.
   const label = instant.toISOString().slice(0, 7);
   if (at > toMillis(now, "now")) {
     throw new RangeError(
@@ -539,18 +421,12 @@ export async function recordDownloadBytes(db, accountId, bytes, now) {
 export async function listMeteredAccounts(db) {
   const result = await db.prepare("SELECT id FROM accounts ORDER BY id").all();
   return (result.results || []).map((row) => {
-    // Not a skipped row and not a silent filter: an account row with no id
-    // cannot be billed to anyone, and quietly rolling past it would leave
-    // storage that no rollup ever accounts for. The trigger fails, the
-    // operator sees why, and the row is fixed at the source.
     if (typeof row.id !== "string" || row.id === "") {
       throw new TypeError("accounts has a row with no id");
     }
     return row.id;
   });
 }
-
-// --- Event intake -------------------------------------------------------
 
 /**
  * The account id in a key or path under `/u/<id>/`. That prefix is what
@@ -561,28 +437,10 @@ export async function listMeteredAccounts(db) {
  * @returns {string|null}
  */
 export function folderAccount(value) {
-  // Anchored at the start: the account folder is the root of the key's
-  // prefix, never something that appears mid-path. Without the anchor a path
-  // like /u/alice/notes/u/bob/secret would bill bob's bytes to alice.
   const match = /^\/?u\/([^/]+)/.exec(value);
   return match === null ? null : match[1];
 }
 
-// The event actions this intake accepts, each mapped to the effect it has on
-// a version row. Backblaze words the same lifecycle as several actions and
-// another provider reading its own docs writes another set, so the table lists
-// the words rather than making the caller translate.
-//
-//   "create" - a version started existing: it needs its creation time, and
-//              its size. The size is the create's to set: `effect` below says
-//              so, and the upsert takes the size from a create only.
-//   "hide"   - a version stopped being visible (replaced or removed), which
-//              is where billing for it stops. A true delete lands here too:
-//              a hard-deleted version is not billed, and this product's
-//              hide-not-delete lifecycle means the hard delete comes after
-//              the hide.
-// An action outside this table is a 400 naming it, never a silent store:
-// billing for a lifecycle we never reasoned about is how a meter drifts.
 export const EVENT_ACTIONS = Object.freeze({
   created: "create",
   uploaded: "create",
@@ -593,19 +451,8 @@ export const EVENT_ACTIONS = Object.freeze({
   "file deleted": "hide",
 });
 
-// A batch of 1000 events at a realistic size sits well under this, and a
-// request over it is refused without being read, the same two layers
-// src/waitlist.js uses (declared length first, counted stream second); the
-// reader itself lives in core/http.js next to the other request
-// readers (drive#618).
 export const MAX_EVENT_BODY_BYTES = 256 * 1024;
 
-/**
- * The fields a storage notification record is recognised by. Holding one of
- * these is what separates a record the meter can bill from any stray bytes:
- * every mapping below reads a sizing or version field, and a body holding none
- * of them cannot become a version row at all.
- */
 const NOTIFICATION_RECORD_MARKERS = Object.freeze(["eventName", "b2FileId", "path", "keyName"]);
 
 /**
@@ -655,22 +502,14 @@ export function notificationRecord(input) {
   const object = typeof nested === "object" && nested !== null ? nested.object : undefined;
   const record = { ...event };
   delete record.Records;
-  // The key, under whichever of the three names the provider uses. A real
-  // `path` wins: it is the file's own path, and the key is the fallback. The
-  // key is decoded because an S3 notification form-encodes it, so
-  // `u%2Facct%2Fnotes.md` is the account folder `u/acct/` and the account
-  // check below is about accounts, not about escaping.
   const key = event.keyName ?? event.key ?? object?.key;
   if (typeof event.keyName !== "string" && typeof key === "string" && key !== "") {
     record.keyName = decodeNotificationKey(key);
   }
-  // The version the provider created, which the dedup and the row key on.
   const version = event.b2FileId ?? event.versionId ?? object?.versionId;
   if (typeof event.b2FileId !== "string" && typeof version === "string" && version !== "") {
     record.b2FileId = version;
   }
-  // A size the event names, under whichever name it uses. A string is left as
-  // it is: the intake already takes a decimal string.
   if (record.sizeBytes === undefined && event.sizeBytes === undefined) {
     if (event.size !== undefined) {
       record.sizeBytes = event.size;
@@ -678,19 +517,11 @@ export function notificationRecord(input) {
       record.sizeBytes = object.size;
     }
   }
-  // The instant the provider saw the change. A notification records when the
-  // write happened and nothing else, so for a create it IS the version's
-  // creation instant: validateEvent refuses a create with no creation time
-  // rather than bill from the arrival instant, and this is where that time
-  // comes from.
   if (typeof event.eventTime === "string") {
     if (typeof event.eventTimestamp !== "string" && typeof event.eventTimestamp !== "number") {
       record.eventTimestamp = event.eventTime;
     }
   }
-  // The event name is what says whether this is a write or a delete, so it
-  // becomes the action the intake bills on. A name outside the table is left
-  // alone and refused by validateEvent with the action in the answer.
   if (typeof event.action !== "string" && typeof event.eventName === "string") {
     const named = event.eventName.toLowerCase();
     if (named.includes("objectremoved")) {
@@ -699,7 +530,6 @@ export function notificationRecord(input) {
       record.action = "uploaded";
     }
   }
-  // A create's creation time, from the notification's own instant.
   if (record.action !== "deleted" && typeof record.createdAt !== "string") {
     if (typeof record.createdAt !== "number" && typeof event.eventTime === "string") {
       record.createdAt = event.eventTime;

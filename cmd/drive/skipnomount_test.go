@@ -7,10 +7,6 @@ import (
 	"testing"
 )
 
-// probeEnv is the probe child's whole environment. The child is this same test
-// binary re-exec'd against skipNoMount, and it needs nothing but the paths and
-// its own variables: the runner's own credentials never reach it, because a
-// process on this host is the one thing they must not travel sideways into.
 func probeEnv(probe string) []string {
 	out := []string{}
 	for _, name := range []string{"PATH", "HOME", "TMPDIR"} {
@@ -26,7 +22,6 @@ func TestSkipNoMountFailsUnderCI(t *testing.T) {
 		skipNoMount(t, "the host does not permit an unprivileged FUSE mount")
 		return
 	}
-	// CI=true is what GitHub Actions and `npm ci` set.
 	cmd := exec.Command(os.Args[0], "-test.run=^TestSkipNoMountFailsUnderCI$", "-test.v")
 	cmd.Env = append(probeEnv("fail"), "CI=true")
 	out, err := cmd.CombinedOutput()
@@ -42,8 +37,6 @@ func TestSkipNoMountFailsUnderCI(t *testing.T) {
 	}
 }
 
-// CI=false is what a shell exports to switch CI off, so it must still skip: an
-// exact comparison, not "set to anything".
 func TestSkipNoMountSkipsWhenCIIsFalse(t *testing.T) {
 	if os.Getenv("DRIVE_SKIPNOMOUNT_PROBE") == "not-ci" {
 		skipNoMount(t, "the host does not permit an unprivileged FUSE mount")

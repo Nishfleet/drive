@@ -1,14 +1,3 @@
-// The account page's balance section (drive#586 part 3): the balance, the
-// top-up presets and custom amount, the auto top-up switch (off by default)
-// and the recent ledger lines, on /usage (TOP_UP_PAGE, where the checkout
-// returns).
-//
-// public/usage.html is a static asset with a one-script budget
-// (lighthouserc.json), so the balance section is a second inline block, marked
-// data-part="balance". This file runs that block against a stub DOM and a stub
-// fetch, the way test/usage.test.mjs runs the month's block, so what it proves
-// is what the page does, not what its source says.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

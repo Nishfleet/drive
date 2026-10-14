@@ -1,18 +1,9 @@
-// The cap over HTTP: the dollar parser behind `drive cap <dollars>` and the
-// /api/cap route (GET the state, PUT a new cap). Split out of core/cap.js so
-// that module stays the enforcement walk (drive#617); the walk's
-// `enforceCap` is the one thing this one needs back from it.
 import { capLine, usageSummary } from "./billing-report.js";
 import { enforceCap } from "./cap.js";
 import { failureMessage } from "./messages.js";
 import { notifySecurityEvent } from "./security-event.js";
 import { unauthorizedResponse } from "./status.js";
 
-// A cap in dollars as `drive cap <dollars>` takes it: a bare number, with or
-// without a $ in front, so a pasted "$20" works and so do ".50" and "12.5".
-// The accounts row prices in cents (cap_cents); this is the one place the two
-// meet, so the rule lives here rather than in the CLI each surface would
-// rewrite.
 const CAP_DOLLARS = /^(?:\d+(?:\.\d{1,2})?|\.\d{1,2})$/;
 
 /**
@@ -43,15 +34,6 @@ export function parseCapUsd(input) {
  * @returns {string}
  */
 function capShapeError(given) {
-  // One sentence with its own next step, and no surface's name in it: the
-  // usage page's slider sends the same request the CLI does, so "Run: drive
-  // cap 20" answered a person holding the slider with a command they have no
-  // way to run, and "save it again" answered a terminal with a page's words
-  // (drive#421). The one sentence has to read right at both.
-  // JSON.stringify keeps the culprit delimited: without it an empty amount
-  // reads "got ." and "20 dollars" reads as if the whole thing were what the
-  // person typed. The quotes are also what the api's 400 body carries, so the
-  // CLI prints what the Worker said rather than a reworded copy of it.
   return (
     `A spending cap is a dollar amount like 20 or 12.50, got ${JSON.stringify(given)}. ` +
     "Type a number like that again."
@@ -110,9 +92,6 @@ export async function capStateForAccount(store, accountId) {
   if (typeof accountId !== "string" || accountId === "") {
     throw new TypeError(`capStateForAccount needs an account id, got ${String(accountId)}`);
   }
-  // The saved state first: a drive the hourly walk made read-only, or a
-  // closed one whose files are on their way out, takes no public upload
-  // either, whatever this hour's count says.
   if (typeof store.accountState === "function") {
     const saved = await store.accountState(accountId);
     if (saved === "read_only" || saved === "closed") {
@@ -199,33 +178,14 @@ export async function handleCapRequest(request, account, capStore, mail = null) 
     throw error;
   }
   if (capStore === null) {
-    // The one message table's words, with the one next step the table names: the
-    // cap did not move, and waiting will not fix a deployment that has no store.
     return jsonCapError(failureMessage("cap-store-missing"), 503);
   }
-  // A closed account's keys are already revoked and its files are on their way
-  // out (drive#537). The accounts row has three states: active, read_only,
-  // closed (core/devices.js accountState). read_only must still take a cap
-  // write: raising the cap is how a stopped drive starts writing again. closed
-  // is the only terminal state. Writing the cap, swapping keys, or saving
-  // active would un-stick the close: purge needs state=closed, and cancelClose
-  // throws close-not-closed once the row looks open. setAccountState itself
-  // will not overwrite closed (WHERE state <> 'closed' in core/devices.js);
-  // this 409 is the route's refusal before any of those writes.
   const saved = await capStore.accountState(account.id);
   if (saved === "closed") {
     return jsonCapError(failureMessage("cap-account-closed"), 409);
   }
-  // The cap as it stood before this write: the store's own row when it can
-  // answer, else the account object the caller passed. The authenticated
-  // account carries no cap, so the store is the one that knows.
   const previousCap = await readPreviousCap(capStore, account);
   await capStore.setCapCents(account, dollarsToCapCents(usd));
-  // The swap is decided from the month the account actually counted, so
-  // setting the cap below what it has already spent enforces at once (the
-  // finish line: making a drive read-only with `drive cap`). A deployment
-  // without the meter tables has no month read and keeps the blank one, which
-  // is the pre-existing behaviour and swaps nothing.
   const usage =
     typeof capStore.monthUsage === "function"
       ? await capStore.monthUsage(account.id, { capUsd: usd })
@@ -243,8 +203,6 @@ export async function handleCapRequest(request, account, capStore, mail = null) 
   const summary = usageSummary(usage);
   const credential = swapCredential(report);
   const mailer = mail !== null && typeof mail === "object" ? mail : {};
-  // A POST that writes the same amount is not a change. The write still
-  // runs (enforcement is idempotent); the inbox does not get a false alarm.
   if (previousCap !== usd) {
     await notifySecurityEvent({
       email: mailer.email,
@@ -328,9 +286,6 @@ function swapCredential(report) {
  * @param {Record<string, string>} [extraHeaders]
  */
 function jsonCapError(message, status, extraHeaders) {
-  // no-store on every answer here: a cap write is a money and key state, and a
-  // shared cache holding one account's 400 would answer another account's 400
-  // with it. The origin gate's 403 and the store-missing 503 carry it too.
   return new Response(JSON.stringify({ error: message }), {
     status,
     headers: {

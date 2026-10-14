@@ -1,25 +1,9 @@
-// Receipts for top-ups (polish gap 13): one printable page per payment, so a
-// person who needs a record for their books can open it and use the browser's
-// Print, Save as PDF. No PDF library runs in the Worker; the page is plain
-// HTML with its own print rules.
-//
-//   GET /api/receipts/:id   (signed in) the receipt for one of the account's
-//                           own top-ups; the id is the ledger line's id.
-//
-// The ledger is the only source: the credit is `amount_cents`, what the
-// provider took in total is `provider_amount_cents`, and the difference is the
-// tax the provider added at checkout. The legal name and postal address of the
-// seller are not typed here: they are the two facts the owner still has to
-// supply (core/legal.js), so the page points to the support page for them
-// rather than inventing either.
-
 import { escapeHtml } from "./escape-html.js";
 import { json } from "./http.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents } from "./topup.js";
 
-/** Where the receipt of one top-up is read. */
 export const RECEIPT_ENDPOINT = "/api/receipts";
 
 /**

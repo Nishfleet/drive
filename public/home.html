@@ -181,6 +181,13 @@ code {
       </section>
     </div>
 
+    <section class="tile" id="agents" aria-labelledby="agents-title" hidden>
+      <h2 id="agents-title">What your agents did</h2>
+      <p class="big" id="agents-what"></p>
+      <p class="more" id="agents-line"></p>
+      <p><a id="agents-link" href="/files#rewind">See and undo</a></p>
+    </section>
+
     <section class="tile next-step" id="next-step" aria-labelledby="next-title" hidden>
       <h2 id="next-title">Next step</h2>
       <p class="big" id="next-what"></p>
@@ -207,6 +214,7 @@ code {
 const BALANCE_ENDPOINT = "/api/balance";
 const USAGE_ENDPOINT = "/api/usage";
 const DEVICES_ENDPOINT = "/api/devices";
+const REWIND_ENDPOINT = "/api/rewind";
 const SIGNIN_ENDPOINT = "/api/signin";
 const LOAD_FAILED = "We could not load your drive. Check your connection and try again.";
 const SIGNED_OUT = "Sign in to see your drive.";
@@ -288,7 +296,10 @@ async function read() {
   }
   showSessionNav(true);
   setText("balance-amount", balance.payload.balance);
-  setText("balance-line", balance.payload.balance_line || "");
+  setText(
+    "balance-line",
+    [balance.payload.balance_line, balance.payload.runway_line].filter(Boolean).join(" "),
+  );
   const labels = usage.ok ? usage.payload?.labels : null;
   setText("stored-now", labels?.storedNow ?? "—");
   setText("stored-cost", labels?.cost ?? "");
@@ -303,6 +314,34 @@ async function read() {
   link.textContent = step.label;
   nextEl.hidden = false;
   gridEl.setAttribute("aria-busy", "false");
+  readAgents();
+}
+
+// The newest agent session, in one line: who, how many files, and whether
+// Rewind can still put them back. The tile is left out when there is none or
+// the read fails, because it is a bonus on this page and never its error.
+async function readAgents() {
+  let rewinds;
+  try {
+    const answer = await getJson(REWIND_ENDPOINT);
+    rewinds = answer.ok ? answer.payload?.rewinds : null;
+  } catch (_error) {
+    return;
+  }
+  if (!Array.isArray(rewinds) || rewinds.length === 0) return;
+  const latest = [...rewinds].sort((a, b) => Number(b.createdAt) - Number(a.createdAt))[0];
+  const count = Number(latest.files?.count ?? 0);
+  const who = latest.changedBy || "An agent";
+  setText("agents-what", `${who} changed ${count} ${count === 1 ? "file" : "files"}`);
+  const until = new Date(latest.restorableUntil);
+  setText(
+    "agents-line",
+    latest.canRewind && !Number.isNaN(until.getTime())
+      ? `One click puts your files back, until ${until.toLocaleDateString(undefined, { day: "numeric", month: "short" })}.`
+      : "That work is already settled.",
+  );
+  document.getElementById("agents-link").textContent = latest.canRewind ? "See and undo" : "See what changed";
+  document.getElementById("agents").hidden = false;
 }
 
 async function postSignout(step) {

@@ -1,20 +1,3 @@
-// The shared page shell (high-end gap 8): one header and one footer, written
-// once in shell/ and copied into every page that asks for it. The pages are
-// static files, so the copy happens at build time, not in the browser: no
-// script, no flash, and the page works with JavaScript off.
-//
-// A page asks with a pair of comments around the markup:
-//
-//     <!-- shell:app-header current="/usage" -->
-//     ...generated...
-//     <!-- /shell:app-header -->
-//
-// `npm run shell:sync` rewrites everything between each pair from
-// shell/<name>.html. `current` names the page's own link, which gets
-// aria-current="page". test/shell.test.mjs runs the same code in check mode,
-// so a hand edit inside a pair, or a page that drifted from the partial, fails
-// CI instead of reaching a visitor.
-
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 
 const SHELL_DIR = new URL("../shell/", import.meta.url);

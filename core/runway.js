@@ -1,6 +1,3 @@
-// Balance runway (delight item 4): how long the balance lasts at the current
-// size. It is worked from the same `monthBillCents` the invoice and the cap
-// read, so the sentence and the bill cannot disagree.
 import { monthBillCents } from "./billing.js";
 
 const DAYS_PER_MONTH = 30;

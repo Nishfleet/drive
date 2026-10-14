@@ -7,10 +7,6 @@ import (
 	"testing"
 )
 
-// writeFakeRclone writes a stand-in for the rclone binary that answers
-// `version` with out and exits 0, so CheckRclone's two branches (too old, new
-// enough) are exercised against the real code path that runs the binary and
-// parses its output, not against a mocked function.
 func writeFakeRclone(t *testing.T, out string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -49,9 +45,6 @@ func TestParseRcloneVersion(t *testing.T) {
 	}
 }
 
-// TestParseRcloneVersionReadsTheFirstRcloneLine pins that a banner printed
-// before rclone's own version line is skipped, and the version line is the one
-// read: a wrapper script that echoes something else first must not shift it.
 func TestParseRcloneVersionReadsTheFirstRcloneLine(t *testing.T) {
 	out := "warning: no config file found\nrclone v1.69.1\n- os/version: debian 13\n"
 	got, ok := parseRcloneVersion(out)
@@ -86,11 +79,6 @@ func TestCheckRcloneAcceptsTheFloor(t *testing.T) {
 	}
 }
 
-// TestCheckRcloneRefusesUbuntu2404 is the measured case this floor exists for:
-// Ubuntu 24.04's archive package is rclone 1.60.1, and the mount's
-// --vfs-read-chunk-streams flag does not exist before 1.68.0, so the refusal
-// must name the version, the floor, and the download that is newer than the
-// archive the package manager has.
 func TestCheckRcloneRefusesUbuntu2404(t *testing.T) {
 	bin := writeFakeRclone(t, "rclone v1.60.1-DEV\n- os/version: ubuntu 24.04\n")
 	err := CheckRclone("linux", bin)
@@ -120,9 +108,6 @@ func TestCheckRcloneReportsABinaryThatWillNotAnswer(t *testing.T) {
 	}
 }
 
-// TestInitRefusesAnOldRcloneBeforeItMounts is the drive#105 first-run path:
-// `drive init` must fail on Ubuntu 24.04's rclone before it writes a login
-// item or starts a mount, and the error must name the command that fixes it.
 func TestInitRefusesAnOldRcloneBeforeItMounts(t *testing.T) {
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "s")
@@ -159,16 +144,12 @@ func TestInitRefusesDriveLetterOffWindows(t *testing.T) {
 }
 
 func TestRcloneInstallHint(t *testing.T) {
-	// A missing rclone gets every package manager, because there is nothing to
-	// compare and the package manager's version is the best first answer.
 	everywhere := RcloneInstallHint("linux", true)
 	for _, want := range []string{"apt install rclone", "dnf install rclone", "pacman -S rclone", "rclone.org/downloads"} {
 		if !strings.Contains(everywhere, want) {
 			t.Errorf("missing-rclone hint must name %q:\n%s", want, everywhere)
 		}
 	}
-	// A too-old rclone gets the download first: the package manager's rclone is
-	// the one that was just refused, so pointing at it alone would loop.
 	tooOld := RcloneInstallHint("linux", false)
 	if !strings.Contains(tooOld, "https://rclone.org/downloads/") {
 		t.Errorf("too-old hint must name the download:\n%s", tooOld)
@@ -180,7 +161,6 @@ func TestRcloneInstallHint(t *testing.T) {
 		strings.Contains(tooOld, "apt install rclone") {
 		t.Errorf("too-old hint must put the download before the package that was refused:\n%s", tooOld)
 	}
-	// macOS always gets brew, whichever branch.
 	for _, hint := range []string{RcloneInstallHint("darwin", true), RcloneInstallHint("darwin", false)} {
 		if !strings.Contains(hint, "brew install rclone") {
 			t.Errorf("darwin hint must name brew:\n%s", hint)

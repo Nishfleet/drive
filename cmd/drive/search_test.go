@@ -8,10 +8,6 @@ import (
 	"testing"
 )
 
-// `drive search` against a stand-in api Worker: the same JSON src/search.js
-// returns, served by net/http/httptest, so the command's parsing and its
-// words are tested without a network.
-
 func writeHits(t *testing.T, w http.ResponseWriter, body string) {
 	t.Helper()
 	w.Header().Set("content-type", "application/json; charset=utf-8")

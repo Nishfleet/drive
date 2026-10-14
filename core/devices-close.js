@@ -1,4 +1,3 @@
-// Split out of core/devices.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
 import { all, batch, first, nowSeconds, run } from "./db.js";
 import { CLOSE_CRON_LIMIT, changesOf } from "./devices-rows.js";
 
@@ -95,11 +94,6 @@ export function createCloseOps(ctx) {
       accountId,
     );
     const withdrawable = typeof inner?.revoke === "function";
-    // The site Worker's share and upload-request rows (src/share.js
-    // createD1LinkStore, migrations/drive/0006_share_links.sql) are in the
-    // same batch: a revoked link is refused by the same `revoked_at` read the
-    // single revoke writes, so a link killed here is dead on the next request
-    // to whichever isolate answers it.
     const results = await batch(db, [
       {
         sql: withdrawable
@@ -307,11 +301,6 @@ export function createCloseOps(ctx) {
     return rows.map(closeStateFromRow).filter((row) => row !== null);
   }
 
-  /**
-   * Closed accounts whose day-0 receipt never landed, so the nightly pass
-   * can send it. No time floor: a close that stamped `closed` and then
-   * failed to mail is due on the next run.
-   */
   async function listDueCloseMail() {
     const rows = await all(
       db,
@@ -374,8 +363,6 @@ export function createCloseOps(ctx) {
    * @param {number} atSeconds
    */
   async function markPurged(accountId, atSeconds) {
-    // The cursor is cleared with the stamp: a purged account has no progress
-    // to resume, and a NULL cursor with `purged_at` set reads as finished.
     await run(
       db,
       "UPDATE accounts SET purged_at = ?1, purge_cursor = NULL WHERE id = ?2 AND purged_at IS NULL",

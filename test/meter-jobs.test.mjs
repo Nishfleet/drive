@@ -1,14 +1,3 @@
-// The meter queue job's failure path (drive#642 no-bugs bar 5): a day whose
-// meter row does not parse makes NO draw, and the job reports the failure to
-// the monitoring seam the repo already uses instead of reading it as a quiet
-// $0 day. The job still throws, so Cloudflare Queues retries it and, after its
-// retries, lands it in drive-meter-jobs-dlq where an operator can read it.
-//
-// The other half of that rule - the meter writes no row for an account with
-// nothing stored, so a day with no rows at all is a $0 day, not a failure - is
-// drawn and asserted by test/meter-scale.test.mjs and
-// test/integration/prepaid-d1.test.mjs.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { at, GB, makeMeteredDB } from "./d1-sqlite.mjs";
