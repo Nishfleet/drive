@@ -76,11 +76,13 @@ hour, and you can put it back yourself: open your drive in the browser, press
 the **Recently deleted** tab, find the file, and press **Restore**. After 30
 days the file is removed for good.
 
+Deleted or replaced files stay restorable for 30 days, free. A file you save over keeps its earlier copy for the same 30 days: press **Earlier copies** on the file in the Files page to put it back. Those copies do not count toward your bill.
+
 A delete made anywhere else — `rm` in the mounted folder, an rclone command,
 or an S3 client with a storage key — does not pass through Recently deleted.
-The storage keeps the previous copy for one day and removes it after. To get
-such a file back, leave your email in the form on the [landing page](/)
-within that day; we reply and put it back. {{AGENT_DELETE}} See
+The storage keeps the deleted copy for 30 days, free, and removes it after. To
+get such a file back, leave your email in the form on the [landing page](/)
+within those 30 days; we reply and put it back. {{AGENT_DELETE}} See
 [Agents](/agents) for what a key can and cannot do.
 
 ## How the bill is counted

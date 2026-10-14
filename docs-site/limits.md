@@ -26,9 +26,10 @@ would rather you read it here than find out in week three.
   untested.
 - **No `restore` command yet.** A delete from the Files page is restorable for
   30 days in Recently deleted; a delete made any other way is recoverable for
-  one day by asking us. `drive restore` is not in the CLI.
-- **{{VERSION_HISTORY}}** Save a file again and the file is replaced; no command
-  lists the versions that were there before.
+  30 days by asking us. `drive restore` is not in the CLI.
+- **{{VERSION_HISTORY}}** Save a file again and the file is replaced. The copy it
+  replaced stays for 30 days and the Files page lists it under Earlier copies;
+  no command lists them yet.
 - **No app or a desktop icon.** The drive is a folder and a command line.
 - **Twenty live keys per account.** An account holds at most 20 live keys at
   once — its device, agent, s3 and branch keys all counted together. A mint

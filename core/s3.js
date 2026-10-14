@@ -170,9 +170,14 @@ export function createS3Client(config) {
  * How many days a hidden version (an overwritten copy, or the file behind a
  * delete marker) stays in a bucket before the lifecycle rule removes it. The
  * docs read this value (src/keys.js `storagePowersFor`), so a page cannot
- * promise a longer undo window than the bucket keeps (drive#502).
+ * promise a longer undo window than the bucket keeps (drive#502). Thirty days,
+ * for a replaced file and a deleted one alike: Nish's call (2026-10-14). The
+ * copies are free to the customer, because the bill counts only versions still
+ * live at each hour's end (core/meter-usage.js), and after the thirty days the
+ * lifecycle rule removes them for good. A bucket provisioned before this change
+ * keeps its old rule until `provisionBucket` runs again on it.
  */
-export const HIDDEN_VERSION_DAYS = 1;
+export const HIDDEN_VERSION_DAYS = 30;
 
 /**
  * The bucket build step 1 asks for: versioning on, hidden versions kept for a
