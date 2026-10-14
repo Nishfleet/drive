@@ -40,9 +40,6 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
   let purged = 0;
   for (const row of accounts) {
     const scoped = scopeStore(store, { id: row.id });
-    // The recursive walk, because a parked file nests under
-    // `.trash/<path>/<ts>` (drive#570): `list` is one folder deep and would
-    // see the folders and none of the files in them.
     const entries = await scoped.listAll(TRASH_PATH);
     for (const entry of entries) {
       const parsed = parseTrashName(entry.name);
@@ -54,8 +51,6 @@ export async function purgeExpiredTrash(db, store, now = Date.now()) {
   }
   return { accounts: accounts.length, purged };
 }
-
-// ---------------------------------------------------------------- the store
 
 /**
  * What the handlers need from storage, and nothing more. Every method works in
@@ -189,15 +184,6 @@ export function drivePathFromKey(key, account) {
   return `/${key.slice(prefix.length + 1)}`;
 }
 
-/**
- * The refusal that means "the bytes changed under you": a move that read a
- * file's ETag, asked the storage to copy it, and then found the key holding
- * different bytes when it went to remove the original. A save that landed
- * while the move ran is the case that produces it (drive issue #567), and the
- * move stops rather than removing the newer bytes: a delete that loses the
- * save the person made while it ran is the failure this exists to prevent.
- * The route catches it and answers with the one sentence the page shows.
- */
 export class ChangedUnderUsError extends Error {
   /** @param {string} path the drive path, or the storage key in a store, whose bytes changed */
   constructor(path) {
@@ -208,8 +194,6 @@ export class ChangedUnderUsError extends Error {
   }
 }
 
-// Longest storage key, in bytes: S3 caps Object key naming at 1,024 bytes
-// (`400 KeyTooLong`). Bytes, not characters, because a non-ASCII name diverges.
 const MAX_STORAGE_KEY_BYTES = 1024;
 
 /**
@@ -265,15 +249,8 @@ export function scopeStore(store, account) {
   if (!store) {
     throw new TypeError("scopeStore needs a store");
   }
-  // The account is checked here, in the one function that applies the prefix,
-  // and the prefix itself comes from accountPrefix so the shape is written
-  // once.
   const prefix = accountPrefix(account);
 
-  // The drive path is checked here as well as in the handlers. Isolation must
-  // not rest on every future caller remembering to validate, so a path that
-  // could climb out of the prefix (`..`) is refused at the one place the
-  // prefix is applied, using the module's own validator.
   /** @param {string} path */
   const toKey = (path) => {
     const checked = validatePath(path);
@@ -285,8 +262,6 @@ export function scopeStore(store, account) {
   /** @param {string} key */
   const toDrivePath = (key) => {
     if (!key.startsWith(`${prefix}/`)) {
-      // A store that returned a key outside this account's prefix has a bug,
-      // not a row to show: the page would render another account's path.
       throw new Error(
         "the store returned a key outside the account's own prefix; a scoped store must never read outside it",
       );
@@ -310,16 +285,8 @@ export function scopeStore(store, account) {
   return {
     async list(path) {
       const entries = (await store.list(toKey(path))).map(toDriveEntry);
-      // The drive keeps `.branches` and `.trash` for itself. They are hidden
-      // in the drive root and nowhere else, the same rule the Files page's
-      // withoutTrash() applies: a folder of that name deeper in the tree is a
-      // person's own folder. Every walk that copies or indexes the drive goes
-      // through here, so a branch copy never steps into `.branches` (the
-      // folder it writes its own copies into) and the index never rows one up.
       return withoutTrash(entries, path);
     },
-    // async, so a refused path is a rejected promise on every method rather
-    // than a synchronous throw from three of the four.
     async read(path, options) {
       return store.read(toKey(path), options);
     },
@@ -339,16 +306,10 @@ export function scopeStore(store, account) {
     async write(path, body, contentType, options) {
       return store.write(toKey(path), body, contentType, options);
     },
-    // Scoped like every other write: the destination is rewritten to this
-    // account's own key before the store sees it, so a create-only write can
-    // no more land outside the prefix than an ordinary one.
     async writeIfAbsent(path, body, contentType) {
       return store.writeIfAbsent(toKey(path), body, contentType);
     },
     async remove(path, options) {
-      // The conditional half of the delete passes through the scope untouched:
-      // the store is the one that can compare the ETag it was given with the
-      // bytes it is holding, so scoping never drops a guard.
       return store.remove(toKey(path), options);
     },
     async copy(from, to, size, options) {
@@ -356,10 +317,6 @@ export function scopeStore(store, account) {
       return store.copy(source, dest, size, options);
     },
     async listVersions(path, options) {
-      // The versions come back under this account's own keys, so each one's
-      // path is rewritten like any other listing: a version the store
-      // returned from outside the prefix is a bug and is thrown on, and no
-      // reconciler ever reads another account's version.
       const versions = await store.listVersions(toKey(path), options);
       return versions.map((version) => ({
         ...version,
@@ -372,8 +329,6 @@ export function scopeStore(store, account) {
         startAfter: startAfter === undefined ? undefined : toKey(startAfter),
         limit: options?.limit,
       });
-      // Every key is rewritten like any other listing: one answered from
-      // outside the prefix throws here instead of reaching the caller.
       return keys.map(toDrivePath);
     },
     async removeBatch(paths) {

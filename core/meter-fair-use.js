@@ -1,5 +1,3 @@
-// Split out of core/meter-events.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-
 import { fairUseCheck } from "./billing-report.js";
 import { sendEmail } from "./email-send.js";
 import { HOUR_MS, hourStart, toMillis } from "./meter.js";
@@ -55,9 +53,6 @@ export async function pruneHiddenVersions(db, now = Date.now()) {
       skipped: "the rollup watermark has not covered the cutoff hour yet",
     };
   }
-  // The same guard for one account's re-roll (drive#519): a back-dated
-  // correction queues hours behind the global mark, and the re-roll reads
-  // the rows of those hours, so no row they still need may go first.
   const reroll = await db.prepare(OLDEST_REROLL_SQL).first();
   const oldestReroll = stampMillis(reroll?.from_hour);
   if (oldestReroll !== null && oldestReroll <= hourStart(cutoff)) {
@@ -71,9 +66,6 @@ export async function pruneHiddenVersions(db, now = Date.now()) {
   if (typeof result.meta?.changes !== "number") {
     throw new TypeError("the retention delete reported no change count");
   }
-  // Fair-use decisions (drive#364) are kept for the same window the ghosts
-  // they describe can still exist, then dropped so the table cannot grow
-  // forever. A would-refuse older than the stay has already opened uploads.
   await db.prepare(FAIR_USE_DECISIONS_PRUNE_SQL).bind(cutoff).run();
   return { pruned: result.meta.changes, cutoff, skipped: null };
 }
@@ -375,8 +367,6 @@ export async function sendFairUsePauseIfDue(db, accountId, check, options = {}) 
   if (!db) {
     throw new Error("fair-use notice: METER_DB binding is not configured");
   }
-  // Report-only (FAIR_USE_REFUSE not "on") records the would-refuse and
-  // must not mail or start the 30-day notice clock (drive#364).
   if (options.refuse !== true) {
     return false;
   }
@@ -401,9 +391,6 @@ export async function sendFairUsePauseIfDue(db, accountId, check, options = {}) 
     console.error("fair-use: MAIL_FROM is not set, so no pause notice went out");
     return false;
   }
-  // Claim the 30-day slot before sending, so two concurrent would-refuses
-  // cannot both mail. A send that throws puts the stamp back so a later
-  // upload can retry.
   const cutoff = now - 30 * DAY_MS;
   const claimed = await db.prepare(FAIR_USE_NOTICE_STAMP_SQL).bind(accountId, now, cutoff).run();
   if (typeof claimed.meta?.changes !== "number") {
@@ -489,13 +476,6 @@ export async function recordNightlySizes(db, now = Date.now()) {
   return sizes;
 }
 
-// --- The nightly reconciler (drive issue #59) ------------------------
-
-// The schedule the nightly reconciler runs on. 04:00 UTC, an hour after the
-// file index's own nightly rebuild (src/search.js REINDEX_SCHEDULE), so the
-// two walks do not share the quiet hour. cloudflare.config.ts declares the
-// same string as this Worker's third cron trigger, and test/meter.test.mjs
-// pins the two together the way it pins METER_CRON.
 export const METER_RECONCILE_SCHEDULE = "0 4 * * *";
 
 export const RECONCILE_ROWS_SQL = `SELECT b2_file_id, path, size_bytes, created_at, hidden_at, deleted_at

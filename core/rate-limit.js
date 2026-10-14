@@ -1,16 +1,3 @@
-// The one edge rate limiter (drive issue #147): the code POST /api/signin,
-// POST /api/waitlist and the api Worker's device approve/poll routes run
-// before any other work, over the stock Cloudflare rate-limit binding the
-// waitlist introduced (WAITLIST_RATE_LIMITER, cloudflare.config.ts). One
-// module, so the fail-closed posture and the 429 answer are written once: a
-// second copy that got a status or a log line wrong would be a second
-// contract for the same guard.
-//
-// The layering it enforces is the one the waitlist's review fixed: a limit
-// call bounds the work that actually costs something (a body parse, a D1
-// write, a real email), so it runs before those and after nothing but the
-// checks that refuse a request outright (the method and same-origin guards,
-// which must not spend the caller's quota).
 import { failureMessage } from "./messages.js";
 
 /**
@@ -25,9 +12,6 @@ import { failureMessage } from "./messages.js";
 export function clientIpKey(request, log) {
   const clientIp = request.headers.get("cf-connecting-ip");
   if (clientIp === null) {
-    // The first argument is a constant string, so a caller's log label
-    // cannot forge the log line (the pattern workers/api/src/index.js
-    // uses). The label travels as its own argument instead.
     console.warn(
       "rate-limit: request arrived without cf-connecting-ip; rate limiting against the shared bucket",
       log,
