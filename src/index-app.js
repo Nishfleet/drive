@@ -14,6 +14,7 @@ import { handleSendEmailRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
 import { FILES_ENDPOINT } from "../core/files.js";
 import { scopeStore } from "../core/files-scope.js";
+import { HISTORY_ENDPOINT, handleHistoryRequest } from "../core/history-addon.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { balanceCents } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";
@@ -399,6 +400,27 @@ export function createApp() {
       size30Bytes,
     });
   });
+  // The history add-on: how long deleted and replaced copies are kept. The
+  // price shown for a longer window is worked from the same size30 the bill is.
+  app.get(HISTORY_ENDPOINT, async (c) => {
+    const account = c.get("account");
+    let size30Bytes = 0;
+    if (account && c.env.DRIVE_DB) {
+      try {
+        const store = createD1DeviceStore(c.env.DRIVE_DB);
+        const month = /** @type {Record<string, unknown>} */ (
+          await store.monthUsage(account.id, { capUsd: await store.getCapUsd(account.id) })
+        );
+        size30Bytes = Number(month.size30Bytes ?? 0);
+      } catch {
+        // The preview then shows the price for old copies alone.
+      }
+    }
+    return handleHistoryRequest(c.req.raw, account, c.env.DRIVE_DB, { size30Bytes });
+  });
+  app.post(HISTORY_ENDPOINT, (c) =>
+    handleHistoryRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
+  );
   // Outbound webhooks (drive#901): the account's endpoints, a test send and the
   // delivery log. Session-cookie routes like the balance beside them.
   app.get(WEBHOOK_ENDPOINT, (c) =>
