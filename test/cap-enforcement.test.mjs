@@ -1,14 +1,3 @@
-// The spending cap enforced by itself (drive#496): the hourly walk saves each
-// metered account's state and mails the 80% and read-only notices once per
-// state change, and the routes a read-only drive must refuse read that state
-// through the Worker's own dispatch.
-//
-// Every month here holds 1 GB all month - the hour row carries the GB-minutes
-// that makes the allowance's average 1 GB (drive#535) - and downloads 503 GB,
-// so the bill is the 2-cent storage line plus the downloads past the free 3x
-// allowance. That is the case the old cap read missed, because it returned
-// `downloadBytes: 0`.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { minutesInMonth } from "../core/billing.js";

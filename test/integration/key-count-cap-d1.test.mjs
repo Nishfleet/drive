@@ -1,26 +1,3 @@
-// The per-account live-key cap on the key mint (drive issue #552).
-//
-// A mint is a vendor access key the storage server enforces, and the vendor
-// sets no per-account limit of its own, so the count of an account's live
-// keys is the bound: 20, and the 21st mint is refused before the vendor is
-// called, with the message table's "key-count-cap" words.
-//
-// The proof is the composition the live Worker builds — `storeFor` in
-// workers/api/src/index.js is
-// `createMemoryStore({ deviceStore: createD1DeviceStore(...) })` — over the
-// real schema, driven through the real route. The count is the D1 store's
-// `countLiveKeys` (devices.js), so what it measures is what another isolate
-// would see. The limiter the route runs ahead of the cap is proved in the
-// same dispatch: a binding that says no answers 429, and a missing binding
-// lets the mint through, because the account gate and this cap bind the route
-// anyway (test/deploy-api-worker.test.mjs refuses a config that does not
-// declare the binding).
-//
-// Every assertion about a row reads it back with plain node:sqlite off the
-// same engine `devices.js` runs its statements on (test/d1-sqlite.mjs
-// `makeMeteredDB`), so nothing here is checked against a store's own answer
-// about itself.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createD1DeviceStore } from "../../core/devices.js";

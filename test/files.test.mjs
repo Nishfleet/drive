@@ -1,14 +1,3 @@
-// Tests for the Web Files page (drive issue #31). Two halves, the same split
-// test/status.test.mjs uses for core/status.js:
-//
-// 1. The logic in core/files.js: what a file is, how a listing is ordered, the
-//    path validator, the trash key round-trip, the 30-day window, the words,
-//    and every /api/files* route against a real in-memory store — browse,
-//    preview, download, upload, delete and one-tap restore.
-// 2. The shipped page: public/files.html is a static asset and cannot import
-//    the module, so this reads the file and fails when its copy, its endpoints
-//    or its window drift from core/files.js.
-
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";

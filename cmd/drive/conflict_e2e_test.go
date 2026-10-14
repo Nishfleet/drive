@@ -12,24 +12,6 @@ import (
 	"time"
 )
 
-// TestTwoDevicesKeepBothSaves is issue #30's finish line, on the same
-// local `rclone serve s3` stand-in the other step-3 proofs use: two
-// independent `rclone mount` processes, each a separate `drive mount`
-// with its own home, config, prefix and VFS cache, sharing only the
-// storage backend — which is exactly two machines.
-//
-//   - Two devices save the same file inside one sync window. Both
-//     saves survive: the later one is the one plain file, the earlier
-//     one lands as "name (conflict, <device>).ext", and both devices
-//     can see both files through their mount, so both are notified.
-//   - A save made while the device could not reach storage uploads
-//     when it reconnects, and the same rule applies.
-//
-// It is skipped when this host will not bring up two unprivileged
-// FUSE mounts (the skip message names why), because a proof of a
-// mount is not a proof at all when the mount did not come up: two
-// directories and an rclone that failed would produce a green run
-// that proved nothing about a mounted path.
 func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stand-in proof skipped in -short mode")
@@ -37,8 +19,6 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	root := t.TempDir()
 	cfg, standin := standinOn(t, root, "u/conflict")
 	restart := &standinRestart{serve: standin, root: root, cfg: cfg}
-	// The device on which the conflict guard reads its own upload queue. The
-	// mount uses the same remote control for the fill, the guard and status.
 	t.Setenv(deviceEnvName, "mac")
 	deviceA := DeviceName()
 
@@ -52,11 +32,6 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		}
 	}
 
-	// Device B is its own machine: its own device name, so a conflict copy
-	// names the device that lost the save and never the same one twice.
-	// Each mount gets its own remote-control address: a FUSE mount is
-	// isolated by the kernel, but a loopback port is a host resource, and two
-	// mounts that both bind one address cannot both start.
 	rcA, rcB := "127.0.0.1:"+freePort(t), "127.0.0.1:"+freePort(t)
 	startDevice := func(home, device, rcAddrArg string) (stop func()) {
 		t.Helper()
@@ -75,9 +50,6 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		mountDir := filepath.Join(home, "Drive")
 		if !waitForMount(t, cmd, mountDir) {
 			stopStandinProcess(cmd, mountDir)
-			// The mount's own log is the real reason, not a guess: a reader of
-			// this skip needs to know whether the host refused FUSE or the
-			// mount had a bad argument.
 			if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
 				t.Logf("device %s mount log:\n%s", device, tailLines(string(log), 6))
 			}
@@ -104,9 +76,6 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	const bodyA = "A: this save was made first, on the device named mac\n"
 	const bodyB = "B: this save was made second, on the device named linux\n"
 
-	// Both devices save the same path inside one sync window. Neither has
-	// seen the other's write when it saves, so neither knows to do anything
-	// other than save — the same situation two people have on two machines.
 	if err := os.WriteFile(filepath.Join(mountA, name), []byte(bodyA), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -114,20 +83,12 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The rule is decided after the uploads have landed. Write-back timers
-	// and rclone's retry delay after a dead stand-in can spread the two
-	// uploads past the guard's 10s win watch (merge-group runs 37505697801,
-	// 37519236130), so the queues are released together first. Storage is
-	// the truth for the bytes: a mount still holding the save that lost
-	// reads as if both files were the winner (merge-group run 37516493629).
 	candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
 	rcAClient := rcClientForTestHome(t, homeA, rcA, RemoteFor(cfg))
 	rcBClient := rcClientForTestHome(t, homeB, rcB, RemoteFor(cfg))
 	releaseSavesTogether(t, rcAClient, rcBClient, name)
 	kept := proveBothSavesKept(t, root, cfg, rcAClient, rcBClient, mountA, mountB, name, bodyA, bodyB, candidates)
 
-	// And nothing was deleted: the losing device's file is a copy, not a
-	// rename, so its own listing has both files.
 	entries, err := os.ReadDir(mountA)
 	if err != nil {
 		t.Fatal(err)
@@ -142,11 +103,6 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	t.Logf("two devices, one save window: storage=stand-in, plain=%q, conflict=%q, A's listing=%v",
 		name, kept, names)
 
-	// -- the offline arm ---------------------------------------------------
-	// The storage goes away and both devices save the same file while it is
-	// unreachable. Nothing is uploaded while a device cannot reach storage,
-	// and nothing is lost when it comes back: the uploads happen on
-	// reconnect and the same rule decides what is kept.
 	const offlineName = "offline.txt"
 	const offlineA = "A: the save made while the device could not reach storage\n"
 	const offlineB = "B: the save made while the device could not reach storage\n"
@@ -163,13 +119,6 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Whichever save lands last is the plain file; the other is the conflict
-	// copy, named for the device that lost it. Either device can lose, so the
-	// rule is checked by what is kept rather than by who won. The stand-in
-	// coming back can leave rclone's queue on a minutes-long retry delay
-	// (rc.go: rclone retries forever with a 5-minute backoff), which is
-	// longer than this proof's wait — resume's own ReleaseQueuedUploads is
-	// what makes both uploads eligible in one window again.
 	candidates = []string{ConflictName(offlineName, deviceA), ConflictName(offlineName, "linux")}
 	releaseSavesTogether(t, rcAClient, rcBClient, offlineName)
 	kept = proveBothSavesKept(t, root, cfg, rcAClient, rcBClient, mountA, mountB, offlineName, offlineA, offlineB, candidates)
@@ -184,13 +133,6 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	t.Logf("after the reconnect: plain=%q, conflict=%q, both saves kept", plain, conflict)
 }
 
-// startConflictDevice brings up one device's `drive mount` for cfg and returns
-// its stop. Each device is its own machine: its own home, config, prefix and
-// VFS cache, sharing only the storage backend, which is exactly two machines. A
-// host that will not bring up an unprivileged FUSE mount skips the calling test
-// naming the host's own constraint, because a proof of a mount is not a proof
-// at all when the mount did not come up (the note on
-// TestTwoDevicesKeepBothSaves).
 func startConflictDevice(t *testing.T, cfg StorageConfig, home, device, rcAddr string) func() {
 	t.Helper()
 	cmd := exec.Command(driveBin(t), "mount",
@@ -208,9 +150,6 @@ func startConflictDevice(t *testing.T, cfg StorageConfig, home, device, rcAddr s
 	mountDir := filepath.Join(home, "Drive")
 	if !waitForMount(t, cmd, mountDir) {
 		stopStandinProcess(cmd, mountDir)
-		// The mount's own log is the real reason, not a guess: a reader of this
-		// skip needs to know whether the host refused FUSE or the mount had a
-		// bad argument.
 		if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
 			t.Logf("device %s mount log:\n%s", device, tailLines(string(log), 6))
 		}
@@ -219,15 +158,6 @@ func startConflictDevice(t *testing.T, cfg StorageConfig, home, device, rcAddr s
 	return func() { stopStandinProcess(cmd, mountDir) }
 }
 
-// TestTwoSavesSecondsApartInOneWindowBothSurvive proves the rule holds when the
-// two saves are not in the same instant. One sync window is the mount's own
-// 5-second write-back, so a save made two seconds after the other is still
-// inside it: the first has not left its mount when the second one is made. Each
-// device's upload leaves on its own timer, so the first device's save has
-// already landed and its own object is the plain path when the second one lands
-// on top of it.
-//
-// This is the case a same-instant proof cannot see, so it is its own proof.
 func TestTwoSavesSecondsApartInOneWindowBothSurvive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stand-in proof skipped in -short mode")
@@ -258,15 +188,11 @@ func TestTwoSavesSecondsApartInOneWindowBothSurvive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mountA, name), []byte(bodyA), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Two seconds later: inside the mount's 5-second write-back window, so the
-	// first save has not left device A when the second one is made.
 	time.Sleep(2 * time.Second)
 	if err := os.WriteFile(filepath.Join(mountB, name), []byte(bodyB), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Either device can be the one whose upload lands first, so the rule is
-	// checked by what is kept rather than by who won.
 	candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
 	var kept string
 	deadline := time.Now().Add(90 * time.Second)
@@ -301,10 +227,6 @@ func TestTwoSavesSecondsApartInOneWindowBothSurvive(t *testing.T) {
 	if string(plain) == string(conflict) {
 		t.Errorf("both saves are the same bytes (%q): one device's save was overwritten", plain)
 	}
-	// Both devices see both files that survived: the plain file and the one
-	// conflict copy — named for whichever device lost. There is never one per
-	// device; the two machines agreed on what to keep only by what landed on
-	// top, which is exactly what cannot be faked by two directories.
 	for _, m := range []struct{ label, dir string }{{"A", mountA}, {"B", mountB}} {
 		for _, n := range []string{name, kept} {
 			if _, err := os.Stat(filepath.Join(m.dir, n)); err != nil {
@@ -327,9 +249,6 @@ func TestTwoSavesSecondsApartInOneWindowBothSurvive(t *testing.T) {
 		plain, kept, names)
 }
 
-// standinObjectPath is the object on disk inside the loopback S3 stand-in.
-// It is the same join transferEnv.objectPath uses, so a proof that both
-// saves survived reads storage rather than a mount's dirty file.
 func standinObjectPath(root string, cfg StorageConfig, name string) string {
 	return filepath.Join(root, "data", cfg.Bucket, filepath.FromSlash(cfg.Prefix), name)
 }
@@ -343,11 +262,6 @@ func queueHasName(q Queue, name string) bool {
 	return false
 }
 
-// releaseSavesTogether waits until both devices have name in rclone's
-// upload queue, then uses resume's own ReleaseQueuedUploads so the two
-// saves land in one window. Write-back is 5s; after a dead stand-in the
-// queue can sit on a 5-minute retry delay, which is past the conflict
-// guard's 10s win watch.
 func releaseSavesTogether(t *testing.T, a, b *rcClient, name string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
@@ -384,10 +298,6 @@ func releaseSavesTogether(t *testing.T, a, b *rcClient, name string) {
 	if !seenBoth {
 		t.Fatalf("both devices did not queue %s within 20s (A queue err=%v, B queue err=%v)", name, lastA, lastB)
 	}
-	// The conflict guard hashes a save while it is still in the queue
-	// (conflict_guard.go sight). Releasing in the same instant the
-	// items appear lets a tiny file leave before the next 500ms pass,
-	// and then nothing writes a conflict copy.
 	time.Sleep(2 * conflictInterval)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -414,11 +324,6 @@ func logStandinListing(t *testing.T, root string, cfg StorageConfig) {
 	t.Logf("stand-in listing %s: %v", dir, names)
 }
 
-// proveBothSavesKept waits until storage holds a conflict copy of name,
-// checks both bodies survived there, then refreshes both mounts so each
-// device can see both files. It reads the stand-in, not the mount: the
-// device that lost still shows its own save at the plain path until the
-// directory cache expires.
 func proveBothSavesKept(t *testing.T, root string, cfg StorageConfig, rcA, rcB *rcClient, mountA, mountB, name, bodyA, bodyB string, candidates []string) string {
 	t.Helper()
 	var kept string
@@ -506,8 +411,6 @@ func waitMountSees(t *testing.T, c *rcClient, dir string, names []string) {
 	t.Fatalf("mount %s did not show %v: %v", dir, names, last)
 }
 
-// tailLines is the last n lines of s, so a skip message can carry the mount's
-// own words instead of this test's guess at them.
 func tailLines(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > n {
@@ -516,18 +419,12 @@ func tailLines(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// standinRestart is the one stand-in server's stop and start. Stopping it
-// is what a device that cannot reach storage has: the mount stays up and
-// its writes are queued on the device. Starting it again is the reconnect,
-// on the same endpoint and the same bucket, which is what makes the queue
-// upload.
 type standinRestart struct {
 	serve *exec.Cmd
 	root  string
 	cfg   StorageConfig
 }
 
-// stop takes the storage away.
 func (r *standinRestart) stop() error {
 	if err := stopProcess(r.serve); err != nil {
 		return fmt.Errorf("take the storage away: %w", err)
@@ -535,12 +432,7 @@ func (r *standinRestart) stop() error {
 	return nil
 }
 
-// start brings the same storage back, on the same endpoint.
 func (r *standinRestart) start(t *testing.T) error {
-	// The endpoint's own host and port are parsed rather than trimmed off
-	// a prefix, because a trimmed string that is not an address produces
-	// an rclone that never listens and a test that waits for a port that
-	// was never the port being served.
 	u, err := url.Parse(r.cfg.Endpoint)
 	if err != nil {
 		return fmt.Errorf("parse the stand-in endpoint %s: %w", r.cfg.Endpoint, err)

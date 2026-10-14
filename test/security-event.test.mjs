@@ -1,6 +1,3 @@
-// Security-event mail (drive#551): one template, one send per event, a mail
-// failure does not fail the action, and the usage page shows open public links.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AUTH_COOKIE_PREFIX } from "../core/auth.js";

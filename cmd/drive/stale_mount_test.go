@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-// TestUnmountClearsAStaleFindmntEntry is the issue's stubbed-findmnt proof:
-// findmnt still lists the drive folder after rclone has died, and
-// `drive unmount` with no login item must lazy-unmount that entry instead of
-// reporting success and leaving it in the mount table.
 func TestUnmountClearsAStaleFindmntEntry(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("findmnt and fusermount are the Linux unmount path")
@@ -70,9 +66,6 @@ exit 1
 	}
 }
 
-// TestRunUnmountClearsAHungFindmntEntry is the CLI half of a wedged listing:
-// findmnt never returns, and `drive unmount` must still lazy-unmount instead
-// of returning the timeout without touching the mount.
 func TestRunUnmountClearsAHungFindmntEntry(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("findmnt and fusermount are the Linux unmount path")
@@ -118,9 +111,6 @@ exit 1
 	}
 }
 
-// TestClearStaleMountDirLeavesALiveFindmntEntry is coordinator review (2):
-// a listed mount that still answers must not be lazy-unmounted. `drive mount`
-// over a working drive would otherwise detach writes still in rclone's cache.
 func TestClearStaleMountDirLeavesALiveFindmntEntry(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("findmnt and fusermount are the Linux unmount path")
@@ -158,9 +148,6 @@ exit 0
 	}
 }
 
-// TestClearStaleMountDirTreatsAHungListingAsStale is coordinator review (3):
-// a findmnt that never returns is stale without os.Lstat, so a hard NFS hang
-// is not the first probe.
 func TestClearStaleMountDirTreatsAHungListingAsStale(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("findmnt and fusermount are the Linux unmount path")

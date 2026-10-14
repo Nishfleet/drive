@@ -1,11 +1,3 @@
-// The message table is the single source for every failure string the CLI and
-// the web pages show. These tests pin its shape, the "one next step" rule and
-// the safety rules (no secrets, no keys, no other-user paths, no raw error
-// text) so a new entry cannot ship a stack, a token or a two-step fix-it list.
-// The last two tests walk the handlers the way the two page tests walk the
-// shipped pages: a handler's answer has to be the table's exact words, and no
-// module may carry a second copy of one of its sentences (drive#158).
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";

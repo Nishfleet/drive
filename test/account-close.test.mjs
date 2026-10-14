@@ -1,10 +1,3 @@
-// Account close: keys revoked at once, files after 30 days, mail at day 0
-// and day 25 (drive#235, docs/build-spec.md "Keys and safety"). The person
-// confirms by typing their email and can cancel inside the grace window.
-//
-// Tests cover the stand-in (real SQLite migrations + the in-memory file
-// store). Nothing here talks to production D1.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

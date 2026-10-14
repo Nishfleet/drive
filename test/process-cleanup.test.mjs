@@ -1,17 +1,3 @@
-// The fixtures a test starts must die with the test process (drive issue
-// #659). On 2026-10-05 the VPS held 13 leftover MinIO containers, an orphaned
-// `rclone serve s3` and a headless Chrome, all from test runs that were
-// stopped rather than finished. `t.after` never runs when a test process is
-// signalled, so every fixture a test owns is tracked and removed by the
-// SIGTERM/SIGINT handlers in test/minio-standin.mjs.
-//
-// This file proves that mechanism the only way it can be proven: a real child
-// test process starts the same stand-in container and the same `rclone serve
-// s3` a test starts, the parent stops the child with a signal, and then the
-// parent asserts the host has neither back. The child is a throwaway file
-// written into this test's temp dir, so nothing new is added to the suite's
-// tracked files.
-
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";

@@ -1,11 +1,3 @@
-// The end-state slice of the agent eval (drive issue #298).
-//
-// The reading suite's gate (test/evals.test.mjs) proves promptfoo's shape. This
-// file proves the end-state slice's: the tool is Inspect and pinned, the tasks
-// name a grader the Python module really defines, the agent's prompt carries
-// the same public docs and help text the reading suite carries, and the graded
-// facts are the account's own files — never the answer text.
-
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
