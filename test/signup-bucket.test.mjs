@@ -161,7 +161,7 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
       assert.equal(
         config.lifecycleDays,
         HIDDEN_VERSION_DAYS,
-        "hidden versions are kept thirty days",
+        "hidden versions are kept three days",
       );
       assert.equal(
         await provisionedForNoOne(made),
@@ -249,7 +249,7 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
       true,
       "the second provisioning call put the hidden-version rule back",
     );
-    assert.equal(config.lifecycleDays, HIDDEN_VERSION_DAYS, "hidden versions are kept thirty days");
+    assert.equal(config.lifecycleDays, HIDDEN_VERSION_DAYS, "hidden versions are kept three days");
     const listed = await workerFetch(
       new Request(`${TEST_BASE_URL}/api/files`, { headers: { cookie } }),
       env,

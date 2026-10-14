@@ -81,7 +81,7 @@
     - type: javascript
       value: "/delet/i.test(output) && /(create, change|can write|write)/i.test(output)"
     - type: javascript
-      value: "/(30|thirty) days?/i.test(output) && /recently deleted|put it back|undo/i.test(output)"
+      value: "/(3|three) days?/i.test(output) && /recently deleted|put it back|undo/i.test(output)"
 
 - description: take one agent tool off the drive and leave the others
   vars:

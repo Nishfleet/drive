@@ -23,10 +23,10 @@ test("the empty answer and the put-back result are plain sentences", () => {
   assert.match(page, /Put back\. The copy it replaced is under Earlier copies/);
 });
 
-test("the 30-day promise is one sentence, and the bucket keeps what the pages say", async () => {
+test("the 3-day promise is one sentence, and the bucket keeps what the pages say", async () => {
   const { HIDDEN_VERSION_DAYS } = await import("../core/s3.js");
-  const sentence = "Deleted or replaced files stay restorable for 30 days, free.";
-  assert.equal(HIDDEN_VERSION_DAYS, 30);
+  const sentence = "Deleted or replaced files stay restorable for 3 days, free.";
+  assert.equal(HIDDEN_VERSION_DAYS, 3);
   assert.ok(page.includes(sentence), "the Files page says it");
   for (const file of ["../public/terms.html", "../README.md"]) {
     const text = readFileSync(new URL(file, import.meta.url), "utf8").replace(/\s+/g, " ");

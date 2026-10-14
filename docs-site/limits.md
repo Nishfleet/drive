@@ -28,10 +28,10 @@ would rather you read it here than find out in week three.
   is restorable for 30 days in Recently deleted. `drive restore <file>` lists
   the earlier copies of a file you saved over, and `--latest` or `--copy N` puts
   one back. A file deleted from the mounted folder is not listed yet: for that,
-  ask us within the 30 days.
+  ask us within the 3 days.
 - **{{VERSION_HISTORY}}** Save a file again and the file is replaced. The copy it
-  replaced stays for 30 days and the Files page lists it under Earlier copies;
-  no command lists them yet.
+  replaced stays for 3 days and the Files page lists it under Earlier copies
+  and `drive restore` lists them.
 - **No app or a desktop icon.** The drive is a folder and a command line.
 - **Twenty live keys per account.** An account holds at most 20 live keys at
   once — its device, agent, s3 and branch keys all counted together. A mint

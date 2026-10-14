@@ -10,7 +10,7 @@ import (
 )
 
 // `drive restore` (delight item 1): put back a file that was saved over or
-// deleted. The Worker keeps the earlier copy for 30 days, free; this command
+// deleted. The Worker keeps the earlier copy for 3 days, free; this command
 // lists the copies of one file and restores one. It is two calls to the
 // account routes the Files page uses (core/files-history.js):
 // GET /api/files/versions and POST /api/files/restore-version.
@@ -75,7 +75,7 @@ func runRestore(args []string) error {
 			return err
 		}
 		if len(found.Versions) == 0 {
-			fmt.Printf("no earlier copies of %s. A copy shows up after you save over the file or delete it, and stays for 30 days.\n", path)
+			fmt.Printf("no earlier copies of %s. A copy shows up after you save over the file or delete it, and stays for 3 days.\n", path)
 			return nil
 		}
 		choice := *pick

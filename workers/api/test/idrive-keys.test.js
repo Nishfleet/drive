@@ -159,7 +159,7 @@ test("a write with an expiry sends the epoch second the vendor takes", async () 
   assert.equal(calls[0].body.expiry_on, 1767225600);
 });
 
-test("a bucket is provisioned with versioning, the 30-day rule and encryption", async () => {
+test("a bucket is provisioned with versioning, the 3-day rule and encryption", async () => {
   /** @type {Array<{method: string, url: string, query: string, body: string}>} */
   const s3Calls = [];
   const client = s3Stand(
@@ -179,9 +179,9 @@ test("a bucket is provisioned with versioning, the 30-day rule and encryption", 
   assert.equal(s3Calls[0].query, "");
   assert.equal(s3Calls[1].method, "PUT");
   assert.equal(s3Calls[1].query, "?versioning=");
-  // The 30-day hidden-version rule.
+  // The 3-day hidden-version rule.
   assert.equal(s3Calls[2].query, "?lifecycle=");
-  assert.ok(s3Calls[2].body.includes("<NoncurrentDays>30</NoncurrentDays>"));
+  assert.ok(s3Calls[2].body.includes("<NoncurrentDays>3</NoncurrentDays>"));
   assert.ok(s3Calls[2].body.includes("ExpiredObjectDeleteMarker"));
   assert.equal(s3Calls[3].query, "?encryption=");
   assert.ok(s3Calls[3].body.includes("<SSEAlgorithm>AES256</SSEAlgorithm>"));
