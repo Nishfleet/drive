@@ -1,7 +1,3 @@
-// First-file activation (delight item 3): an account with no file is nudged
-// once at 24 hours and once at 72 hours; an account that has a file, a closed
-// account and a brand-new one are not. Real D1 schema, every migration.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderEmail } from "../core/emails.js";

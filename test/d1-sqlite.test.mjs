@@ -1,23 +1,3 @@
-// The D1 stand-ins' contract, and the binding rules both of them share
-// (test/d1-sqlite.mjs and test/harness.mjs). Two paths run the meter's real SQL
-// against node:sqlite - the D1 adapter (bindForNodeSqlite) and the raw handle
-// every test reads rows back from - and both must bind a numbered placeholder
-// the way D1 does: `?N` takes the value at index N - 1, including when the
-// statement uses one index in two places.
-//
-// The raw handle used to rewrite `?1` to `?` in appearance order, so `?1` twice
-// became two placeholders carrying one bound value and the second read NULL.
-// That failure is silent: the matched rows just fall away, so a SUM over them is
-// NULL and a caller that coalesces it reads 0 (drive#163's month window summed
-// every month to 0; drive#231 files it). These tests read the same shapes back
-// through the raw handle and the adapter, so the two paths cannot drift again.
-//
-// The tests below the numbered ones are the other half of the same bargain
-// (drive#579): a stand-in for the database is only worth having if it refuses
-// what the database refuses, commits what the database commits, and hands back
-// the row a `RETURNING` clause returned. A stand-in that is laxer than D1 is
-// how a test proves something true only of itself.
-
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { test } from "node:test";

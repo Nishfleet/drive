@@ -1,33 +1,5 @@
 package main
 
-// The speed benchmarks behind every figure in `docs/benchmarks.md` and on the
-// public Benchmarks page (drive issue #99). They are Go benchmarks in this
-// package, so the whole suite is `go test` with no script anywhere: Go skips
-// every Benchmark function unless -bench is passed, so `npm test` and the CI
-// `go` job stay green without paying for a multi-gigabyte run.
-//
-//	prove the harness (local S3 stand-in, small sizes, about a minute):
-//	  go test ./cmd/drive -run '^$' -bench Bench -benchtime=1x -v
-//	measure for publishing (real storage, the sizes the issue names):
-//	  DRIVE_BENCH_ENDPOINT=https://s3.<region>.idrivee2.com \
-//	  DRIVE_BENCH_REGION=<region> DRIVE_BENCH_LINK_MBPS=<measured> \
-//	  go test ./cmd/drive -run '^$' -bench Bench -benchtime=1x -v
-//	Keys come from the environment (DRIVE_BENCH_ACCESS_KEY_ID /
-//	DRIVE_BENCH_SECRET_ACCESS_KEY), never from argv.
-//
-// The same file is the gate: a scenario the issue names and no benchmark
-// measures, or a benchmark here that no published row names, fails
-// `test/benchmarks.test.mjs`.
-//
-// Storage, keys and region are configuration only (issue #2's standing
-// decision): the same benchmarks run against the loopback stand-in and against
-// the real account. A figure measured against the stand-in is a harness proof,
-// never a published number, so every line this file prints names which of the
-// two it came from. One guard is looser on HTTPS: BenchmarkReadDuringPrefetch
-// asserts 20 ms and 2x on a loopback (or any non-HTTPS) server, and 10x the
-// control on HTTPS real storage (issue #382), because a real link is shared
-// between the user's read and the prefetch pass and a loopback server is not.
-
 import (
 	"bytes"
 	"encoding/json"
@@ -42,15 +14,12 @@ import (
 	"time"
 )
 
-// benchSizes are the sizes each scenario runs at. `full` is the size the issue
-// names and the only one that may be published; `quick` proves the harness on
-// a stand-in in about a minute and must never be published.
 type benchSizes struct {
-	video   int64 // the video file the start-time scenarios read
-	big     int64 // the file the small-edit scenario appends to
-	save    int64 // the save-the-file scenario writes
-	listN   int   // files in the list-a-folder scenario
-	read100 int64 // bytes the start-time scenarios time as "first 100 MB"
+	video   int64
+	big     int64
+	save    int64
+	listN   int
+	read100 int64
 }
 
 func benchScale() benchSizes {
@@ -60,9 +29,6 @@ func benchScale() benchSizes {
 	return benchSizes{video: 5 << 30, big: 2 << 30, save: 1 << 30, listN: 10000, read100: 100 << 20}
 }
 
-// benchStorage names the account the run measures. With no endpoint set the
-// suite brings up the loopback stand-in itself (`rclone serve s3`, the same
-// stock server the step-1 proof uses) and marks every figure as a stand-in.
 func benchStorage() StorageConfig {
 	endpoint := os.Getenv("DRIVE_BENCH_ENDPOINT")
 	cfg := testStorage()
@@ -75,8 +41,6 @@ func benchStorage() StorageConfig {
 		cfg.AccessKey = os.Getenv("DRIVE_BENCH_ACCESS_KEY_ID")
 		cfg.SecretKey = os.Getenv("DRIVE_BENCH_SECRET_ACCESS_KEY")
 		if cfg.AccessKey == "" || cfg.SecretKey == "" {
-			// A real endpoint with no keys would measure a 403 and print it as
-			// a number. Fail instead of publishing an error code as a speed.
 			fmt.Fprintln(os.Stderr, "bench: DRIVE_BENCH_ACCESS_KEY_ID and DRIVE_BENCH_SECRET_ACCESS_KEY are required with a real endpoint")
 			os.Exit(2)
 		}
@@ -93,12 +57,6 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
-// extraMountEnv is the environment for a second `drive mount` next to the
-// shared harness. The first mount already binds the shipped remote-control
-// address (127.0.0.1:5572), so a second mount with that same address dies
-// before it is up ("address already in use") and the bench skips as if FUSE
-// were missing. A free loopback port is the product's own DRIVE_RC_ADDR
-// override.
 func extraMountEnv(tb testing.TB, cfg StorageConfig) []string {
 	return append(os.Environ(),
 		"DRIVE_S3_ACCESS_KEY_ID="+cfg.AccessKey,
@@ -127,20 +85,17 @@ func TestExtraMountEnvUsesAFreeRCPort(t *testing.T) {
 	}
 }
 
-// benchStandin is a loopback S3 server plus the drive mount on it: the setup
-// every benchmark in this file shares, brought up once for the whole -bench
-// run and torn down by TestMain.
 type benchStandin struct {
 	root     string
 	home     string
-	dataDir  string // where the stand-in keeps objects, and where fixtures are written
+	dataDir  string
 	mountDir string
 	cfg      StorageConfig
 	serve    *exec.Cmd
 	mount    *exec.Cmd
 	real     bool
 	sizes    benchSizes
-	env      []string // RCLONE_CONFIG for direct rclone calls
+	env      []string
 }
 
 var (
@@ -148,17 +103,12 @@ var (
 	benchH    *benchStandin
 )
 
-// benchTeardown is called by TestMain: the stand-in server and the mount are
-// child processes, so a run that did not stop them would leave orphans behind.
 func benchTeardown() {
 	if benchH != nil {
 		benchH.close()
 	}
 }
 
-// setup brings up the shared harness once per run and skips (never fails) on a
-// host with no FUSE or no rclone, so the benchmarks are runnable anywhere the
-// product mounts.
 func benchSetup(tb testing.TB) *benchStandin {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		tb.Skip("rclone is not installed")
@@ -196,8 +146,6 @@ func benchStart(tb testing.TB) *benchStandin {
 			"--auth-key", h.cfg.AccessKey+","+h.cfg.SecretKey,
 			"--log-level", "INFO")
 	}
-	// The config is written after the stand-in port is known, so direct rclone
-	// calls (seed, objectSize, --bwlimit) hit the same endpoint as the mount.
 	if err := WriteFileAtomic(RcloneConfigPath(h.home), []byte(RcloneConfig(h.cfg)), 0o600); err != nil {
 		h.close()
 		tb.Fatal(err)
@@ -207,7 +155,6 @@ func benchStart(tb testing.TB) *benchStandin {
 	h.mount = exec.Command(driveBin(tb), "mount",
 		"--home", h.home, "--endpoint", h.cfg.Endpoint, "--bucket", h.cfg.Bucket,
 		"--prefix", h.cfg.Prefix, "--foreground")
-	// Keys reach the child through the environment, never argv (see config.go).
 	h.mount.Env = append(os.Environ(),
 		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
 		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
@@ -244,8 +191,6 @@ func (h *benchStandin) close() {
 	}
 }
 
-// seed writes a fixture of size bytes to the storage this device owns, through
-// stock rclone. Seeding is setup, never a measurement.
 func (h *benchStandin) seed(name string, size int64) error {
 	local := filepath.Join(h.root, "fixtures", name)
 	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
@@ -278,8 +223,6 @@ func (h *benchStandin) seedFolder(name string, n int) error {
 	return err
 }
 
-// rclone runs stock rclone against the device's own remote, with this device's
-// config file, and returns its stdout.
 func (h *benchStandin) rclone(args ...string) (string, error) {
 	cmd := exec.Command("rclone", args...)
 	cmd.Env = h.env
@@ -290,8 +233,6 @@ func (h *benchStandin) rclone(args ...string) (string, error) {
 	return string(out), nil
 }
 
-// objectSize is the stored byte count of one object, read from storage and not
-// from the VFS cache, so "the save has reached storage" means what it says.
 func (h *benchStandin) objectSize(name string) int64 {
 	out, err := h.rclone("lsjson", "--files-only", "--no-modtime", RemoteFor(h.cfg)+"/"+name)
 	if err != nil {
@@ -306,9 +247,6 @@ func (h *benchStandin) objectSize(name string) int64 {
 	return entries[0].Size
 }
 
-// waitStored polls storage until the object is the wanted size, so a write is
-// timed until it lands rather than until the page cache accepted it. rclone's
-// --vfs-write-back is 5s, so the first poll is already past the write-back.
 func (h *benchStandin) waitStored(name string, want int64, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -320,9 +258,6 @@ func (h *benchStandin) waitStored(name string, want int64, timeout time.Duration
 	return false
 }
 
-// storageName is the word the printed lines use for the storage they
-// measured: the loopback stand-in or real storage. Every line this file
-// prints carries one of the two.
 func (h *benchStandin) storageName() string {
 	if h.real {
 		return "real"
@@ -330,8 +265,6 @@ func (h *benchStandin) storageName() string {
 	return "stand-in"
 }
 
-// report prints one publishable line per figure: the scenario, which storage it
-// came from, the region, the measured link speed, the commit and the value.
 func (h *benchStandin) report(b *testing.B, scenario, metric string, d time.Duration, bytes int64) {
 	storage := h.storageName()
 	b.Logf("bench scenario=%s storage=%s region=%s link_mbps=%s commit=%s metric=%s value=%.3f unit=s bytes=%d",
@@ -348,9 +281,6 @@ func benchCommit() string {
 	return strings.TrimSpace(string(out))
 }
 
-// BenchmarkVideoStartFirstByte times the first byte and the first 100 MB of the
-// 5 GB video through the mount, the same scenario the competitor publishes for 64 MiB
-// and 256 MiB streams.
 func BenchmarkVideoStartFirstByte(b *testing.B) {
 	h := benchSetup(b)
 	if err := h.seed("bench-video.mp4", h.sizes.video); err != nil {
@@ -384,13 +314,9 @@ func BenchmarkVideoStartFirstByte(b *testing.B) {
 	h.report(b, "video-start-first-byte", "first-100mb", time.Since(start), got-1)
 }
 
-// BenchmarkSaveReachesStorage times a 1 GB save from the write() that starts
-// it until the whole object is in storage, read back from storage.
 func BenchmarkSaveReachesStorage(b *testing.B) {
 	h := benchSetup(b)
 	const name = "bench-save.bin"
-	// Start from no object at all, so the clock cannot credit a previous run.
-	// Keys and endpoint live in this harness's rclone config, not in argv.
 	cmd := exec.Command("rclone", "deletefile", RemoteFor(h.cfg)+"/"+name)
 	cmd.Env = h.env
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -424,8 +350,6 @@ func BenchmarkSaveReachesStorage(b *testing.B) {
 	h.report(b, "save-reaches-storage", "1gb-save", time.Since(start), h.sizes.save)
 }
 
-// BenchmarkSmallEdit appends 4 KiB to a 64 MiB file and to a 2 GB file and
-// times each until the new size is in storage. The competitor publishes the 64 MiB case.
 func BenchmarkSmallEdit(b *testing.B) {
 	h := benchSetup(b)
 	const size = 4096
@@ -458,17 +382,12 @@ func BenchmarkSmallEdit(b *testing.B) {
 	}
 }
 
-// BenchmarkListFolder times a listing of 10,000 files through the mount, which
-// is what an app does when it opens the folder.
 func BenchmarkListFolder(b *testing.B) {
 	h := benchSetup(b)
 	const folder = "bench-list"
 	if err := h.seedFolder(folder, h.sizes.listN); err != nil {
 		b.Fatal(err)
 	}
-	// The mount caches a folder for --dir-cache-time (5s), and the listing
-	// must include what the seed just wrote, so the wait is part of the setup
-	// and not of the measured listing.
 	time.Sleep(6 * time.Second)
 	start := time.Now()
 	entries, err := os.ReadDir(filepath.Join(h.mountDir, folder))
@@ -481,8 +400,6 @@ func BenchmarkListFolder(b *testing.B) {
 	}
 }
 
-// BenchmarkSmallFiles times a 4 KiB put, a 1 MiB put and a 1 MiB get, the
-// three figures the competitor publishes for files under 1 MiB.
 func BenchmarkSmallFiles(b *testing.B) {
 	h := benchSetup(b)
 	for _, c := range []struct {
@@ -538,9 +455,6 @@ func BenchmarkSmallFiles(b *testing.B) {
 	})
 }
 
-// BenchmarkVideoStartBandwidth times the first byte and the first 100 MB of the
-// video at 25, 50, 100 and 300 Mbps, with rclone's own --bwlimit, so the page
-// can publish the bandwidth a 5 GB start really needs.
 func BenchmarkVideoStartBandwidth(b *testing.B) {
 	h := benchSetup(b)
 	if err := h.seed("bench-video.mp4", h.sizes.video); err != nil {
@@ -584,9 +498,6 @@ func BenchmarkVideoStartBandwidth(b *testing.B) {
 	}
 }
 
-// BenchmarkInstallToMounted times the path a new user walks: install the
-// binary, mount the drive, and read the first file. The competitor publishes about five
-// minutes for its six-step quickstart.
 func BenchmarkInstallToMounted(b *testing.B) {
 	h := benchSetup(b)
 	if err := h.seed("bench-install.bin", 1<<20); err != nil {
@@ -644,10 +555,6 @@ func BenchmarkInstallToMounted(b *testing.B) {
 	h.report(b, "install-to-mounted", "install-to-first-file", time.Since(start), 1)
 }
 
-// BenchmarkCrossMachineSync times a new file, an edit and a delete from the
-// write on this mount until a second mount on the same storage sees it. That
-// is the save-on-A-seen-on-B scenario; two mounts on one host share only the
-// storage backend, which is the same situation as two machines.
 func BenchmarkCrossMachineSync(b *testing.B) {
 	h := benchSetup(b)
 	homeB := filepath.Join(h.root, "home-b")
@@ -720,9 +627,6 @@ func BenchmarkCrossMachineSync(b *testing.B) {
 	h.report(b, "cross-machine-delete", "sync", time.Since(start), 0)
 }
 
-// BenchmarkFileOpen times os.Open of a small file through the mount: the
-// scoreboard's "file open time" row, against the same stand-in the ratchet
-// uses so a slower open fails CI before it is published.
 func BenchmarkFileOpen(b *testing.B) {
 	h := benchSetup(b)
 	const name = "bench-open.bin"
@@ -738,16 +642,12 @@ func BenchmarkFileOpen(b *testing.B) {
 	h.report(b, "file-open", "open", time.Since(start), 4096)
 }
 
-// BenchmarkBigFolderRename times renaming a folder through the mount. The
-// competitor publishes a 200-file move; quick scale uses the harness's listN.
 func BenchmarkBigFolderRename(b *testing.B) {
 	h := benchSetup(b)
 	const src = "bench-rename-src"
 	if err := h.seedFolder(src, h.sizes.listN); err != nil {
 		b.Fatal(err)
 	}
-	// The mount caches a folder for --dir-cache-time (5s); the rename must
-	// see the seed, so the wait is setup, not the measured rename.
 	time.Sleep(6 * time.Second)
 	start := time.Now()
 	if err := os.Rename(filepath.Join(h.mountDir, src), filepath.Join(h.mountDir, "bench-rename-dst")); err != nil {
@@ -756,9 +656,6 @@ func BenchmarkBigFolderRename(b *testing.B) {
 	h.report(b, "big-folder-rename", "rename", time.Since(start), int64(h.sizes.listN))
 }
 
-// BenchmarkMountReady times a new mount from process start until the mount
-// point is live. benchSetup brings up the stand-in server the second mount
-// talks to; the clock starts after that, so this number is only the new mount.
 func BenchmarkMountReady(b *testing.B) {
 	h := benchSetup(b)
 	home := filepath.Join(h.root, "home-ready")
@@ -796,9 +693,6 @@ func BenchmarkMountReady(b *testing.B) {
 	h.report(b, "mount-ready", "ready", time.Since(start), 0)
 }
 
-// BenchmarkCLIColdStart times `drive version` in a new process: the CLI's
-// cold start. It does not mount; a zero-value harness is enough for the
-// published line to name stand-in vs real the same way every other row does.
 func BenchmarkCLIColdStart(b *testing.B) {
 	bin := driveBin(b)
 	h := &benchStandin{}
@@ -815,9 +709,6 @@ func BenchmarkCLIColdStart(b *testing.B) {
 	h.report(b, "cli-cold-start", "version", time.Since(start), 0)
 }
 
-// waitPath polls path until check(err) is true for os.Stat's error, or the
-// timeout runs out. Used so a second mount's view of a create or a delete is
-// timed until it matches, not until the first mount's page cache agreed.
 func waitPath(path string, timeout time.Duration, check func(error) bool) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -842,7 +733,6 @@ func waitFileEquals(path, want string, timeout time.Duration) bool {
 	return false
 }
 
-// The issue #227 table is stand-in harness proof, not h.report published rows.
 func BenchmarkPrefetchCLIColdStart(b *testing.B) {
 	bin := driveBin(b)
 	if out, err := exec.Command(bin, "version").CombinedOutput(); err != nil {
@@ -950,11 +840,6 @@ func BenchmarkPrefetchBrowse(b *testing.B) {
 	b.Logf("prefetch-bench metric=small-file-with value=%.6f unit=s", withFile.Seconds())
 }
 
-// prefetchOverlapTooSlow reports whether the overlapping user read is a
-// regression for this storage. A non-HTTPS endpoint has no WAN link to share,
-// so 20 ms and 2x still apply. HTTPS real storage shares one link; issue #382
-// measured a healthy overlap of 3.1x to 3.4x, and the gate there is 10x the
-// control, which those pairs pass and a 200 ms stall of the user read fails.
 func prefetchOverlapTooSlow(with, without time.Duration, https bool) bool {
 	if https {
 		return with > without*10
@@ -988,22 +873,6 @@ func TestPrefetchOverlapTooSlow(t *testing.T) {
 }
 
 func BenchmarkReadDuringPrefetch(b *testing.B) {
-	// This bench is the user-read vs prefetchOnce overlap with the same
-	// userBusy flag runPrefetchLoop sets on a file open. The inotify path is
-	// TestPrefetchWatcherSeesDirectoryOpen; spinning the watcher here would
-	// contend with the mount's own FUSE traffic.
-	//
-	// The overlap assertion at the bottom is 20 ms and 2x on a non-HTTPS
-	// server (issue #382). The loopback stand-in has no link to share, so
-	// the only thing that can slow a user read there is the overlap itself.
-	// HTTPS real storage shares one link between the prefetch pass and the
-	// user's own read, and the first read through a fresh mount pays
-	// connection costs a loopback server does not have, so the same healthy
-	// overlap is slower there than any stand-in figure can be: drive#382
-	// measured 218 ms against 64 ms (3.4x) on the iDrive e2 account, and
-	// this branch reproduced 194 ms against 62 ms (3.1x). The HTTPS gate
-	// is 10x the control, so those pairs pass and a stall that holds the
-	// pipe (a 200 ms injected delay, 25x) still fails.
 	h := benchSetup(b)
 	local := filepath.Join(h.root, "fixtures", "busy")
 	if err := os.MkdirAll(local, 0o755); err != nil {
@@ -1026,10 +895,6 @@ func BenchmarkReadDuringPrefetch(b *testing.B) {
 	}
 	time.Sleep(6 * time.Second)
 	busy := filepath.Join(h.mountDir, "busy")
-	// One prefetch pass in the background, the way the sidecar runs after a
-	// listing — not a spin loop, which would not be how production schedules
-	// work. userBusy is what inotify sets on a user file open, so the pass
-	// drops the rest of its file reads the moment the user read starts.
 	done := make(chan struct{})
 	go func() {
 		_ = prefetchOnce(busy)
@@ -1054,10 +919,6 @@ func BenchmarkReadDuringPrefetch(b *testing.B) {
 	region := envOr("DRIVE_BENCH_REGION", "unmeasured")
 	b.Logf("prefetch-bench metric=user-read-during-prefetch value=%.6f unit=s storage=%s region=%s", with.Seconds(), storage, region)
 	b.Logf("prefetch-bench metric=user-read-prefetch-off value=%.6f unit=s storage=%s region=%s", without.Seconds(), storage, region)
-	// HTTPS is the real-storage check: h.real is also true for an HTTP
-	// server on this host's own IP, which has no WAN link to share, so that
-	// path keeps the 20 ms / 2x rule. The 10x pairs live in
-	// docs/research/prefetch-overlap-bench.md and in TestPrefetchOverlapTooSlow.
 	https := strings.HasPrefix(h.cfg.Endpoint, "https://")
 	if https {
 		b.Logf("prefetch-bench metric=user-read-during-prefetch-overlap gate=real-10x storage=%s region=%s note=measured_not_2x", storage, region)

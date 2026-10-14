@@ -1,7 +1,3 @@
-// Behavioural proofs for the D1 Better Auth adapter (drive#758). The sign-in
-// tests already walk create / find / consume / increment through the Worker.
-// These hit the operators and guards those paths do not.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

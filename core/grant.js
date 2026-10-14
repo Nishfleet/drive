@@ -1,33 +1,8 @@
-// The download grant (drive#517): the proof of access the dl Worker asks for.
-//
-// rclone's S3 backend reads through a download host by appending the object's
-// in-bucket path to a fixed base URL (`--s3-download-url`, backend/s3/s3.go
-// `downloadFromURL`: `DownloadURL + bucketPath`, a plain unsigned GET with the
-// caller's Range). It sends no storage signature and no header we control, so
-// the only place a proof can ride is the base URL itself.
-//
-// The api Worker therefore mints, beside each account-folder storage key, a
-// base URL of the shape `https://<dl host>/k/<grant>/`, where `<grant>` is an
-// HMAC-SHA256-signed statement "key <keyId> of account <accountId>". The dl
-// Worker checks the signature with the same secret, then checks that key's
-// row in D1: it must belong to that account, be unrevoked and unexpired, hold
-// the `read` capability, and its prefix must cover the file asked for. The
-// grant names a key rather than carrying its own clock, so a revoke or an
-// expiry of the key ends the URL at the next request, and a renewal of an
-// agent key's hour keeps it working without a new URL.
-//
-// The secret is `DL_SIGNING_SECRET`, set on both Workers per deployment. It is
-// read from the env and not declared as a `bindings.secret()`, the same way
-// the storage master credential is (core/files.js StorageEnv): a deployment
-// without it mints no download URL and the dl Worker serves nothing.
-
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-/** The grant format's version, so a later shape can be told apart. */
 const GRANT_VERSION = 1;
 
-/** The path segment a grant rides under on the dl host. */
 export const GRANT_SEGMENT = "k";
 
 /**

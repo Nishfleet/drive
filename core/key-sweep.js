@@ -1,42 +1,10 @@
-// The nightly vendor-key sweep (drive issue #552): remove the dead rows'
-// vendor access keys and record how many keys the vendor holds.
-//
-// A minted key lives twice. Our row carries the hour and the revoke, but the
-// vendor's key does not — the iDrive e2 reseller API mints a key with no
-// expiry of its own (checked 2026-10-06, idrive.com/s3-storage-e2/reseller-api)
-// — so an expired agent key or a revoke that failed at the vendor leaves a key
-// the storage server still enforces. This sweep walks the dead rows, removes
-// their vendor keys and stamps each row as accounted for
-// (migrations/drive/0033), so the next night does not call
-// `remove_access_key` again for a key the vendor no longer holds.
-//
-// A row is stamped only when the vendor's own answer says the key is gone: a
-// successful removal, or the vendor reporting the key is not there (its
-// documented `access_key_non_existant` error, idrive.com/s3-storage-e2/
-// reseller-api, checked 2026-10-06) — that second answer is how an
-// already-removed key converges instead of erroring every night. Any other
-// refusal is a failure: the row stays unstamped for the next night and the
-// error is logged. A per-row failure never stops the rows behind it (the same
-// per-row posture src/account-close.js runs).
-//
-// The vendor's key count is read once, after the removals, and recorded in
-// the log and the answer. A provider without a removal (the S3/STS one mints
-// sessions that expire on their own and has no `revoke`) is skipped loudly:
-// its rows hold no vendor key that outlives our row.
-//
-// The sweep runs inside the site Worker's 04:00 trip (src/index.js), beside
-// the account-close cron, on the same D1 store.
+// The iDrive e2 reseller API mints a key with no expiry of its own (https://www.idrive.com/s3-storage-e2/reseller-api).
 
 import { nowSeconds } from "./db.js";
 import { IdriveKeyError } from "./idrive-keys.js";
 
-// Most rows one nightly sweep takes, so a backlog drains 100 keys a night.
 const KEY_SWEEP_LIMIT = 100;
 
-/** The vendor's own words for "there is no such key". Their error body's
- * code (`access_key_non_existant`) and the prose they also return. Both land
- * in IdriveKeyError's message (the constructor bakes `detail` into it) and
- * on `error.detail`. */
 const VENDOR_KEY_MISSING = /access_key_non_existant|does not exist/i;
 
 /**
@@ -54,10 +22,6 @@ const VENDOR_KEY_MISSING = /access_key_non_existant|does not exist/i;
 export async function runKeySweep({ devices, provider, now }) {
   const at = nowSeconds(typeof now === "function" ? now() : (now ?? Date.now()));
   if (provider == null) {
-    // The site Worker reads the same undeclared IDRIVE token cap/close already
-    // read (closed-door inheritance, not a second bindings.secret() that
-    // would fail drive-pricing deploys). Dead vendor rows with no provider
-    // are a failed trigger, not a successful no-op.
     const leftover = await devices.listSweepableKeys(at, 1);
     if (leftover.length > 0) {
       throw new Error(
@@ -84,9 +48,6 @@ export async function runKeySweep({ devices, provider, now }) {
       removed += 1;
     } catch (error) {
       if (isVendorKeyMissing(error)) {
-        // The vendor holds nothing to remove: the key is already gone there,
-        // which is the state the stamp records. Counted as removed, not
-        // failed, so the log line says the sweep finished the row.
         await devices.markVendorKeyRemoved(row.keyId, at);
         removed += 1;
         continue;

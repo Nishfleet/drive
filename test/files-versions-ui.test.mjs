@@ -1,7 +1,3 @@
-// The Files page's "Earlier copies" action (delight item 1): it asks the
-// versions route for the file, lists what comes back with a put-back button,
-// and says plainly when there is nothing to put back.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

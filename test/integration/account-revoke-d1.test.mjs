@@ -1,19 +1,3 @@
-// Account close and "sign out every device" revoke every credential an
-// account holds, over the real D1 schema (drive#497).
-//
-// Before this change `revokeLiveKeys` (core/devices.js) updated
-// only the `devices` table. The client holds the storage credential itself
-// (core/keystore.js), so a D1-only revoke left a key working at the
-// storage server until it expired, and close/sign-out left the account's
-// device tokens, share links and upload requests alone entirely.
-//
-// This proof uses a KeyProvider that models the storage server: it holds each
-// credential it minted, answers whether a pair still works, and forgets a
-// credential when the api revokes it. Real D1 rows are read back with plain
-// node:sqlite off the same engine the adapter runs on (test/d1-sqlite.mjs
-// `makeMeteredDB` applies every migrations/drive/ file), so nothing here is
-// checked against the store's own answer.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createD1DeviceSigninStore } from "../../core/device-signin.js";

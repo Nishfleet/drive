@@ -1,10 +1,5 @@
 package main
 
-// The api Worker client and the per-tool agent keys (build step 4, drive#55).
-// Every test here talks to an httptest server speaking the api Worker's own
-// routes (docs/api.md), so the CLI's paths, its bearer token and its handling
-// of a refusal are proven against the same shapes the Worker serves.
-
 import (
 	"encoding/json"
 	"errors"
@@ -19,30 +14,22 @@ import (
 	"time"
 )
 
-// fakeAPI is a stand-in api Worker: it answers the device flow and the key
-// routes, and records what the CLI sent so a test can assert the wire shape.
 type fakeAPI struct {
-	// mu guards every field: the server answers on its own goroutine while a
-	// test, standing in for the browser, approves a code on another.
-	mu           sync.Mutex
-	codes        map[string]DeviceCode // user code -> code, as the Worker holds it
-	approved     map[string]bool
-	keys         map[string]MintedKey // key id -> key
-	mintedKinds  []string
-	mintedNames  []string
-	deviceNames  []string
-	revokedIDs   []string
-	queueClears  []string // the authorization header of each DELETE /v1/queue
-	renewedIDs   []string
-	lastAuthHdr  string
-	lastPath     string
-	rejectMints  bool
-	rejectRenews bool
-	// renewBody, when set, is what the renew route answers instead of the
-	// row's own: the wrong-row answers a test needs to refuse.
-	renewBody map[string]any
-	// deviceExpiresIn, when set, is the session a device mint answers with
-	// (drive#749). Zero keeps the old stand-in: a device key with no expiry.
+	mu              sync.Mutex
+	codes           map[string]DeviceCode
+	approved        map[string]bool
+	keys            map[string]MintedKey
+	mintedKinds     []string
+	mintedNames     []string
+	deviceNames     []string
+	revokedIDs      []string
+	queueClears     []string
+	renewedIDs      []string
+	lastAuthHdr     string
+	lastPath        string
+	rejectMints     bool
+	rejectRenews    bool
+	renewBody       map[string]any
 	deviceExpiresIn int
 	keyKinds        map[string]string
 }
@@ -105,9 +92,6 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mintedKinds = append(f.mintedKinds, body.Kind)
 		f.mintedNames = append(f.mintedNames, body.Name)
-		// The hour an agent key is minted with (drive issue #106): the api
-		// Worker answers POST /v1/keys with the second the credential stops
-		// working at, and only an agent key gets one.
 		var expiresAt *int64
 		var expiresIn int
 		if body.Kind == "agent" {
@@ -144,7 +128,6 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, keysPath+"/key_") && strings.HasSuffix(r.URL.Path, "/renew") && r.Method == http.MethodPost:
 		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, keysPath+"/"), "/renew")
 		f.renewedIDs = append(f.renewedIDs, id)
-		// 409 is what a revoked key answers, the same shape the Worker serves.
 		if f.rejectRenews {
 			writeTestJSON(w, 409, map[string]string{"error": "That key is revoked."})
 			return
@@ -154,10 +137,6 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		// The row comes back with a fresh hour and no secret: renewing replaces
-		// the window, never the credential. The window sits renewAnswerOffset
-		// further out than a mint's, so a test can tell an answer that was
-		// decoded and stored from one that was left at the mint's value.
 		at := time.Now().Add(agentKeyTTL + renewAnswerOffset).Unix()
 		key.ExpiresAt = &at
 		f.keys[id] = key
@@ -213,15 +192,8 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// testDeviceToken is the stand-in signed-in device's token. It is one
-// constant so the wire assertion composes the header instead of spelling a
-// `Bearer <token>` literal, the shape the repo's own secret scan refuses to
-// carry in any tracked file (test/pr-gate.test.mjs, gate 4).
 const testDeviceToken = "dtok_for_this_device"
 
-// testDeviceTokenExpiry is the epoch second the stand-in poll answers as the
-// token's window end (drive#557). A real Worker computes now + 30 days; the
-// tests pin the number so Login writing it down is a comparison, not a clock.
 const testDeviceTokenExpiry = int64(1_800_000_000)
 
 func writeTestJSON(w http.ResponseWriter, status int, body any) {
@@ -244,8 +216,6 @@ func TestSignInShowsTheCodeThenPollsUntilApproved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Approve from "the browser" while the terminal is polling: the first poll
-	// answers pending, the second is approved.
 	go func() {
 		api.mu.Lock()
 		defer api.mu.Unlock()
@@ -379,10 +349,6 @@ func TestA401TriggersOneReSignInAndTheCallThenSucceeds(t *testing.T) {
 	}
 }
 
-// The share and request commands send their own requests, so they reach the
-// re-sign-in through withFreshDeviceToken rather than APIClient.do. Same rule:
-// a 401 runs the device flow once and the call is retried once with the new
-// token; any other failure is returned untouched (drive#557).
 func TestShareLinksReSignInOnceOnA401(t *testing.T) {
 	home := t.TempDir()
 	origOpen := openURL
@@ -436,8 +402,6 @@ func TestShareLinksReSignInOnceOnA401(t *testing.T) {
 		t.Fatalf("device flow ran %d times, want 1", codeCalls)
 	}
 
-	// A refusal that is not a 401 is the Worker's answer, not a dead sign-in:
-	// no device flow, no retry.
 	tokens = nil
 	err = withFreshDeviceToken(home, "", &out, func(token string) error {
 		tokens = append(tokens, token)
@@ -478,8 +442,6 @@ func TestMintAndRevokeUseTheWorkersRoutesAndTheBearerToken(t *testing.T) {
 }
 
 func TestAMintedKeyCarriesNoDeleteFiles(t *testing.T) {
-	// The spec's rule, read from the Worker's own answer, not restated here:
-	// an agent key is list/read/write and never deleteFiles.
 	api := newFakeAPI()
 	server := httptest.NewServer(api)
 	defer server.Close()
@@ -505,17 +467,12 @@ func TestAWorkersRefusalIsTheSentenceAPersonReads(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the refused mint to fail")
 	}
-	// The table's words frame the Worker's own sentence, so the person reads
-	// what happened and the one next step, and the service's own words are
-	// between them.
 	if !strings.Contains(err.Error(), "The drive's api refused the request.") {
 		t.Fatalf("the table words were lost: %v", err)
 	}
 	if !strings.Contains(err.Error(), "Unknown key kind") {
 		t.Fatalf("the Worker's own sentence was lost: %v", err)
 	}
-	// The raw HTTP status stays in the chain (DRIVE_DEBUG shows it), not on the
-	// line the first words are read from.
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || !strings.Contains(apiErr.Status, "400") {
 		t.Fatalf("the refusal's status is not in the error chain: %v", err)
@@ -584,8 +541,6 @@ func TestAgentKeysAreOneFilePerDeviceAndKeepEveryTool(t *testing.T) {
 }
 
 func TestAConnectedToolGetsItsOwnKeyInItsMCPEntry(t *testing.T) {
-	// The whole point of drive#55: two tools, two keys, in the entry the drive
-	// writes itself.
 	home := t.TempDir()
 	api := newFakeAPI()
 	server := httptest.NewServer(api)
@@ -647,7 +602,6 @@ func TestRevokingAToolTakesOnlyThatToolsKey(t *testing.T) {
 	defer server.Close()
 	client, _ := NewAPIClient(server.URL, "dtok")
 	env := Env{Home: home, Minter: ToolMinter{Client: client, Home: home}}.withDefaults()
-	// Two tools connected, so two keys exist.
 	for _, name := range []string{"cursor", "kiro"} {
 		tool, _ := toolByName(name)
 		if err := mintToolKey(env, tool); err != nil {
@@ -661,7 +615,6 @@ func TestRevokingAToolTakesOnlyThatToolsKey(t *testing.T) {
 	if len(api.revokedIDs) != 0 {
 		t.Fatal("a local disconnect alone must not claim a server-side revoke")
 	}
-	// The key store is what a server-side revoke goes through.
 	key, err := agentKeyFor(home, "cursor")
 	if err != nil || key == nil {
 		t.Fatalf("cursor has no key to revoke: %v (%v)", key, err)
@@ -678,8 +631,6 @@ func TestRevokingAToolTakesOnlyThatToolsKey(t *testing.T) {
 }
 
 func TestAConnectedToolKeepsTheExistingKeyOnASecondRun(t *testing.T) {
-	// `drive init` is safe to run again: a second run must not leave the tool
-	// holding a key nobody knows about.
 	home := t.TempDir()
 	api := newFakeAPI()
 	server := httptest.NewServer(api)
@@ -697,17 +648,6 @@ func TestAConnectedToolKeepsTheExistingKeyOnASecondRun(t *testing.T) {
 	}
 }
 
-// ---- the one-hour agent credential (drive issue #106) ----
-//
-// An agent key is minted with an hour and the api Worker renews the window on
-// every request that proves the tool is still using it. The CLI's two halves of
-// that are here: it carries and shows the expiry the mint answers with, and it
-// asks for a renewal when a stored key is about to run out.
-
-// renewAnswerOffset is how far past a mint's window the fake Worker's renew
-// answer sits. It is not a rule the real Worker has; it exists so a test can
-// tell an expiry that was decoded from the answer and written to disk from one
-// that was left at the mint's value.
 const renewAnswerOffset = agentKeyTTL / 2
 
 func TestAnAgentKeyCarriesItsExpiryAndADeviceKeyDoesNot(t *testing.T) {
@@ -748,9 +688,6 @@ func TestExpiryLabelNamesTheInstantOrTheAbsenceOfOne(t *testing.T) {
 	at := time.Date(2026, 10, 2, 13, 4, 0, 0, time.UTC)
 	seconds := at.Unix()
 	want := "expires " + at.Local().Format("2006-01-02 15:04")
-	// A key this file holds from before the hour carries no expiry, and what
-	// the api Worker renews it on is what the display says. "no expiry" would
-	// be a promise the api no longer keeps.
 	if got := expiryLabel(nil); got != "renews while this tool uses it" {
 		t.Fatalf("a key with no expiry reads %q", got)
 	}
@@ -759,9 +696,6 @@ func TestExpiryLabelNamesTheInstantOrTheAbsenceOfOne(t *testing.T) {
 	}
 }
 
-// TestInitShowsTheExpiryTheToolHolds is the wiring behind that label: a
-// person runs `drive init` and the line they read is the one the api Worker
-// answers with, never the mint's value the CLI already had.
 func TestInitShowsTheExpiryTheToolHolds(t *testing.T) {
 	stubAgentPath(t)
 	home := t.TempDir()
@@ -786,9 +720,6 @@ func TestInitShowsTheExpiryTheToolHolds(t *testing.T) {
 		t.Fatal("a key minted with the hour must carry it")
 	}
 
-	// A key stored before the hour holds no expiry, and the line says what the
-	// api Worker renews it on. "no expiry" would be a promise the api no longer
-	// keeps, so this is the branch a person with an older key reads.
 	key.ExpiresAt = nil
 	if err := saveAgentKey(home, "cursor", MintedKey(*key)); err != nil {
 		t.Fatal(err)
@@ -805,8 +736,6 @@ func TestInitShowsTheExpiryTheToolHolds(t *testing.T) {
 		t.Fatalf("renewed %v, want no renewal for a key with no expiry on disk", api.renewedIDs)
 	}
 
-	// A key minted with an hour reads as that hour's instant, and a renew moves
-	// it, so the same line carries the Worker's own answer.
 	almost := time.Now().Add(time.Minute).Unix()
 	key.ExpiresAt = &almost
 	if err := saveAgentKey(home, "cursor", MintedKey(*key)); err != nil {
@@ -866,7 +795,6 @@ func TestAnIdleToolsKeyIsRenewedAndOneWithTimeLeftIsNot(t *testing.T) {
 	if err := mintToolKey(env, cursor); err != nil {
 		t.Fatal(err)
 	}
-	// A key minted a moment ago has an hour left, so a second run reuses it.
 	if err := mintToolKey(env, cursor); err != nil {
 		t.Fatal(err)
 	}
@@ -877,16 +805,12 @@ func TestAnIdleToolsKeyIsRenewedAndOneWithTimeLeftIsNot(t *testing.T) {
 		t.Fatalf("minted %v, want exactly one key", api.mintedNames)
 	}
 
-	// Now the stored key is nearly out of hour: the tool sat idle, so nothing
-	// renewed it and its next request would be refused.
 	key, err := agentKeyFor(home, "cursor")
 	if err != nil || key == nil {
 		t.Fatalf("cursor has no key: %v (%v)", key, err)
 	}
 	almost := time.Now().Add(time.Minute).Unix()
 	key.ExpiresAt = &almost
-	// agentKey and MintedKey are field-for-field the same shape, so the
-	// conversion is the plain one the store itself uses.
 	if err := saveAgentKey(home, "cursor", MintedKey(*key)); err != nil {
 		t.Fatal(err)
 	}
@@ -899,8 +823,6 @@ func TestAnIdleToolsKeyIsRenewedAndOneWithTimeLeftIsNot(t *testing.T) {
 	if len(api.renewedIDs) != 1 || api.renewedIDs[0] != "key_cursor" {
 		t.Fatalf("renewed %v, want key_cursor", api.renewedIDs)
 	}
-	// The renewal did not mint a second key, and it did not change the
-	// credential the tool's MCP entry holds.
 	if len(api.mintedNames) != 1 {
 		t.Fatalf("minted %v, want the same one key", api.mintedNames)
 	}
@@ -911,9 +833,6 @@ func TestAnIdleToolsKeyIsRenewedAndOneWithTimeLeftIsNot(t *testing.T) {
 	if after.AccessKeyID != key.AccessKeyID || after.Secret != key.Secret {
 		t.Fatal("a renewal replaced the credential, so the tool's own entry broke")
 	}
-	// The expiry written is the answer the Worker gave, not the mint's value the
-	// CLI already had: a stored expiry left at the mint's reads wrong to a
-	// person, and it is what would make the very next command renew again.
 	answered := api.keys["key_cursor"].ExpiresAt
 	if answered == nil {
 		t.Fatal("the fake Worker sent no expiry with the renewal")
@@ -924,8 +843,6 @@ func TestAnIdleToolsKeyIsRenewedAndOneWithTimeLeftIsNot(t *testing.T) {
 	if after.ExpiresAt == nil || !time.Unix(*after.ExpiresAt, 0).After(time.Unix(almost, 0)) {
 		t.Fatalf("the stored expiry %v is not past the %d the key had before", after.ExpiresAt, almost)
 	}
-	// Which is what stops the loop: the key now has an hour left, so a second
-	// command reuses it instead of asking again.
 	if err := mintToolKey(env, cursor); err != nil {
 		t.Fatal(err)
 	}
@@ -959,8 +876,6 @@ func TestARenewalThatIsRefusedIsReported(t *testing.T) {
 	if err == nil {
 		t.Fatal("a refused renewal must be reported, not swallowed")
 	}
-	// The words are the one message table's, so this reads like every other
-	// failure the CLI prints, and the next step is an exact command.
 	if !strings.Contains(err.Error(), "The cursor key's hour could not be restarted") {
 		t.Fatalf("the failure reads %q, and must name the tool and what failed", err)
 	}
@@ -972,10 +887,6 @@ func TestARenewalThatIsRefusedIsReported(t *testing.T) {
 	}
 }
 
-// TestARenewalAnswerAboutAnotherKeyIsRefused: a 200 is not proof the Worker
-// answered the question it was asked. An answer naming another key, a kind that
-// is not a machine credential, or a row with no hour on it is refused, so a
-// broken answer can never be written to disk as this tool's expiry.
 func TestARenewalAnswerAboutAnotherKeyIsRefused(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1007,8 +918,6 @@ func TestARenewalAnswerAboutAnotherKeyIsRefused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			api := newFakeAPI()
-			// A key on disk whose hour is nearly out, so the next command asks
-			// to renew it, and the Worker answers with the wrong row.
 			api.keys["key_cursor"] = MintedKey{KeyID: "key_cursor", AccessKeyID: "ak_cursor", Secret: "sk_cursor", Capabilities: []string{"list", "read", "write"}}
 			api.renewBody = tc.body
 			server := httptest.NewServer(api)
@@ -1029,24 +938,18 @@ func TestARenewalAnswerAboutAnotherKeyIsRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// The client says why: the reason is what DRIVE_DEBUG shows, and it
-			// has to be the reason the check refused the answer for.
 			if _, err := client.RenewKey("key_cursor"); err == nil {
 				t.Fatal("a wrong renewal answer must be refused by the client")
 			} else if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("the failure reads %q, and must say %q", err, tc.want)
 			}
 
-			// And the tool that asked for it is told, in the one table's words,
-			// rather than storing the answer.
 			if err = mintToolKey(env, cursor); err == nil {
 				t.Fatal("a wrong renewal answer must be refused, not stored")
 			}
 			if !strings.Contains(err.Error(), "The cursor key's hour could not be restarted") {
 				t.Fatalf("the failure reads %q, and must be the table's own entry", err)
 			}
-			// And the key on disk is exactly what it was: a wrong answer never
-			// becomes somebody's stored expiry.
 			after, err := agentKeyFor(home, "cursor")
 			if err != nil || after == nil {
 				t.Fatalf("cursor's key is gone: %v (%v)", after, err)

@@ -1,60 +1,12 @@
-// Dodo test-mode usage push (drive issue #51, build step 6 remainder).
-//
-// Each closed UTC hour becomes one ingest event at test.dodopayments.com,
-// keyed by account and hour (docs/build-spec.md "the meter pushes each hour's
-// total to Dodo, keyed by account and hour, so a repeat push is ignored").
-// The amount is monthBillCents() — the bill up to the maximum, in integer
-// cents, never the raw meter — and the event's metadata carries the invoice's
-// dollar lines (storage and downloads; drive#463 removed the membership).
-//
-// The Dodo host is configurable via DODO_BASE_URL (env, read in src/index.js),
-// defaulting to the test server. Switching to live is Nish's call, and the
-// bearer key only leaves for one of the two hosts Dodo serves its API on, in
-// https and no other form — see resolveDodoUrl() (drive issue #323, owner
-// comment 2026-10-03T06:35Z; drive issue #576 replaced the dodopayments.com
-// suffix with an exact match on those two names). No card is taken here.
-//
-// Catch-up hours omit `timestamp`. Dodo's ingest docs (test.dodopayments.com
-// /events/ingest, "Time Validation"): a timestamp older than 1 hour is
-// rejected; omit it and the event defaults to now. The hour we mean is the
-// event_id, not the ingest clock, so a 12-hour catch-up is one batch of
-// "now" events whose amount_units still sum to the month's capped bill.
-//
-// fetch is an argument so node --test can record the request; production
-// passes the platform's fetch. A missing API key skips the ingest rather
-// than failing the meter's rollup: the meter is the source of truth, and a
-// deploy that has not set the key must still roll hours.
-//
-// That skip is deliberately silent, which is the problem this module's
-// detector below answers (drive issue #334). A deploy that never set the key,
-// or set it on the wrong Worker, rolls metered hours every hour and bills
-// nobody, and nothing said so: the health endpoint excludes secrets on
-// purpose, so such a deployment looks healthy. unpushedBillingHours() names
-// the gap between the hours the meter rolled and the hours this table holds,
-// and billingPushGap() is the report a person reads. The skip itself is
-// untouched: it still returns {pushed: 0} and never throws, because a
-// Cloudflare retry of a rollup over a missing key is worse than the loss it
-// would try to fix.
-
 import { monthBillCents, size30Window } from "./billing.js";
 import { fetchWithTimeoutAndRetry } from "./fetch-retry.js";
 import { HOUR_MS, hourStart } from "./meter.js";
 import { monthStart, size30Through } from "./meter-usage.js";
 
-// The two hosts Dodo serves its API on, named once because the check that
-// guards the bearer key is an exact match against them and nothing else
-// (drive issue #576). A suffix match is what this replaced: it accepted the
-// marketing root and every subdomain, including ones Dodo does not serve the
-// API on, so the one value the key's host comes from was a shape rather than
-// a name. Naming the live host here does not select it — the default below is
-// still the test server and only DODO_BASE_URL can move the push.
 export const DODO_TEST_HOST = "test.dodopayments.com";
 const DODO_LIVE_HOST = "live.dodopayments.com";
 export const DODO_API_HOSTS = Object.freeze([DODO_TEST_HOST, DODO_LIVE_HOST]);
 
-// The test-mode host and ingest path are split so the host can be overridden
-// by DODO_BASE_URL while the path stays fixed. The default stays the test
-// server; switching to live is a single env var that Nish sets.
 export const DODO_TEST_BASE_URL = `https://${DODO_TEST_HOST}`;
 export const DODO_INGEST_PATH = "/events/ingest";
 export const DODO_TEST_INGEST_URL = `${DODO_TEST_BASE_URL}${DODO_INGEST_PATH}`;
@@ -62,17 +14,6 @@ export const DODO_EVENT_NAME = "drive.usage";
 
 const INGEST_BATCH = 1000;
 
-/**
- * How far back the gap detector looks, in hours. Two days is chosen so the
- * detector is a cheap bounded read on every probe rather than a
- * walk of every push the deployment has ever made: the question an operator
- * has is "is money being lost right now", and two days is long enough that the
- * two nightly runs and a deploy cannot outrun the window, and short enough
- * that the statement is one indexed range on billing_pushes_hour_idx and
- * usage_minutes_hour_idx (migrations/drive/0005_meter.sql,
- * 0013_billing_pushes.sql). It is exported and named so the window is a
- * tested constant rather than a literal buried in a query.
- */
 export const BILLING_PUSH_GAP_HOURS = 48;
 
 /**
@@ -375,12 +316,6 @@ export async function pushBillingHours(db, hours, options = {}) {
   }
 
   const already = await loadedPushes(db, uniqueHours);
-  // The high-water mark is per account AND per month: a catch-up that spans
-  // a month boundary must not subtract the old month's pushed total from the
-  // new month's bill (a normal hourly run crosses midnight on the 1st, and a
-  // backlog catches up 12 hours at a time). Re-seed from the month's own rows
-  // whenever the month changes, so each month's delta is measured against
-  // that month alone. `uniqueHours` is sorted, so the month only moves forward.
   /** @type {Map<string, number>} */
   let running = new Map();
   /** @type {number|null} */
@@ -406,10 +341,6 @@ export async function pushBillingHours(db, hours, options = {}) {
         downloadBytes: size30.downloadBytes,
       });
       const previously = running.get(accountId) ?? 0;
-      // High-water: a reroll that lowered this month's bill (a late hide)
-      // must not send a negative unit to Dodo. amount_units stays 0 until
-      // the bill passes what was already pushed, so Dodo never uncharges
-      // and never sees a negative delta.
       const amountUnits = Math.max(0, bill.totalCents - previously);
       running.set(accountId, previously + amountUnits);
       const eventId = billingEventId(accountId, hour);
@@ -447,14 +378,6 @@ export async function pushBillingHours(db, hours, options = {}) {
       apiKey,
       batch.map((item) => item.event),
     );
-    // Record the batch we just ingested before the next POST, so a later
-    // batch's failure cannot leave those events without a local row. The
-    // insert is conflict-safe on the table's own two keys (drive#503): two
-    // overlapping cron runs both POST the same hours — Dodo dedupes them on
-    // event_id, so no double charge — and the second run's plain INSERT threw
-    // on `billing_pushes_dodo_event_id_idx`, which failed the whole run and
-    // with it every later hour in that run's batch. `DO NOTHING` leaves the
-    // row the first run wrote and lets the run continue.
     await db.batch(
       batch.map((item) =>
         db
@@ -590,11 +513,6 @@ async function customersForHour(db, hour) {
     )
     .bind(hour)
     .all();
-  // The WHERE clause already excludes a NULL or empty dodo_customer_id, so
-  // this guard is the second line, not the first: it still fails loudly if a
-  // caller or a future query hands this a row the filter did not remove,
-  // because silently coercing a missing customer to the string "null" would
-  // send a real account to Dodo under an id that is not a Dodo customer.
   /** @type {Array<{accountId: string, customerId: string}>} */
   const rows = [];
   for (const row of result.results ?? []) {
@@ -616,11 +534,6 @@ async function customersForHour(db, hour) {
  * @param {Array<Record<string, unknown>>} events
  */
 async function ingestEvents(fetchImpl, ingestUrl, apiKey, events) {
-  // The push carries the meter's own deadline and one retry (drive#570): a
-  // stalled Dodo call answers named after 15 s instead of holding the hourly
-  // push open, and a 5xx is retried once before the hour is marked failed.
-  // The retry is safe because the ingest is idempotent by event id — a
-  // repeated hour is ignored, which is the idempotency test already pinned.
   const response = await fetchWithTimeoutAndRetry(
     fetchImpl,
     ingestUrl,

@@ -1,21 +1,3 @@
-// Drift test for issue #580 (drive).
-// Ensures every env.X read currently in the codebase is either
-// (a) declared as a binding in the site or api Worker config, or
-// (b) explicitly allowlisted as intentionally undeclared
-// with a one-line reason.
-//
-// This replaces the literal equality test from #580's finish line,
-// which would have forced all 15 names as required secrets and broken
-// the per-deployment STORAGE_*/IDRIVE_* closed-door design.
-//
-// The allowlist captures the closed-door secrets (cf beta.7 inheritance)
-// and the intentional per-deployment choices, plus known test-seam /
-// doc-comment / import-path false positives.
-//
-// Run: node --test test/drift-secrets.test.mjs   (Node 22.23.1+)
-//
-// Reference: planner decision B, p<0.9 needsNish → option B chosen.
-
 import assert from "node:assert";
 import { describe, test } from "node:test";
 

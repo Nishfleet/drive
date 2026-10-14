@@ -62,9 +62,6 @@ func TestRunCapPrintsParseCapUsdReasonOnABadAmount(t *testing.T) {
 		gotAmount = body.Amount
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			// The Worker's own parseCapUsd() sentence (core/cap.js
-			// `capShapeError`). It is the sentence both surfaces read, so it
-			// names no command and no page (drive#421).
 			"error": `A spending cap is a dollar amount like 20 or 12.50, got "abc". Type a number like that again.`,
 		})
 	}))
@@ -74,10 +71,6 @@ func TestRunCapPrintsParseCapUsdReasonOnABadAmount(t *testing.T) {
 	if err == nil {
 		t.Fatal("got no error for a bad amount, want parseCapUsd's reason")
 	}
-	// The amount goes to the Worker as typed: this CLI holds no second parser
-	// that could refuse one the Worker accepts. "$20" is such an amount — the
-	// dollar sign is stripped there — so a local fast-fail would break a write
-	// the api answers.
 	if gotAmount != "abc" {
 		t.Errorf("posted amount = %q, want the typed string so parseCapUsd sees it", gotAmount)
 	}
@@ -92,11 +85,6 @@ func TestRunCapPrintsParseCapUsdReasonOnABadAmount(t *testing.T) {
 	}
 }
 
-// A cap swap that needs the mount back up resolves the storage secret the way
-// `drive mount` does, from this CLI's own 0600 config file and then the
-// environment (issue #75), and it does it at the start of the restart so an
-// absent config stops right here. The mount a key was swapped for is never
-// started on an empty secret.
 func TestRunCapRestartResolvesTheSecretBeforeItRestartsTheMount(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		answer := CapAnswer{CapLine: "Cap $20.00: $0.00 counted this month, $20.00 left."}
@@ -115,9 +103,6 @@ func TestRunCapRestartResolvesTheSecretBeforeItRestartsTheMount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// /bin/true stands in for rclone: ResolveRclone must succeed so the run
-	// reaches the restart. ReadSecretKey finds no config file and DRIVE_S3_*
-	// holds nothing, so the request never builds a config and never unmounts.
 	t.Setenv("DRIVE_S3_ENDPOINT", "")
 	t.Setenv("DRIVE_S3_BUCKET", "")
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "")
@@ -132,12 +117,6 @@ func TestRunCapRestartResolvesTheSecretBeforeItRestartsTheMount(t *testing.T) {
 	}
 }
 
-// The success half: the secret the restart resolves reaches the mount. The
-// environment is ReadSecretKey's first source (issue #75), so a run with the
-// secret exported must write that secret into the rclone config the mount
-// reads. A fake rclone stands in for the binary; the restart stops at the
-// systemctl request a unit test cannot satisfy, after the config is written,
-// so the file is the proof the resolved value reached the mount.
 func TestRunCapRestartWritesTheResolvedSecretIntoTheMountConfig(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		answer := CapAnswer{CapLine: "Cap $20.00: $0.00 counted this month, $20.00 left."}
@@ -163,8 +142,6 @@ func TestRunCapRestartWritesTheResolvedSecretIntoTheMountConfig(t *testing.T) {
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", secret)
 	t.Setenv("DRIVE_DOWNLOAD_URL", "")
 
-	// The error, if any, is the systemctl request this test environment cannot
-	// satisfy. The config file, not the error, is the proof.
 	_ = runCap([]string{"--api", srv.URL, "--home", home, "--rclone", "/bin/true", "$20"})
 
 	conf, err := os.ReadFile(RcloneConfigPath(home))
@@ -187,8 +164,6 @@ func TestRestartMountLeavesTheVFSCache(t *testing.T) {
 	home := t.TempDir()
 	writeMeta(t, DefaultCacheDir(home), "queued.bin", queuedMeta)
 
-	// The stop half of a restart: Unmount an absent login item is a no-op,
-	// and it must not delete the cache a queued upload still lives in.
 	if err := Unmount("linux", home); err != nil {
 		t.Fatal(err)
 	}
@@ -207,13 +182,6 @@ func TestRestartMountLeavesTheVFSCache(t *testing.T) {
 	}
 }
 
-// The swapped key is what the mount has to sign with, and the Worker is the
-// only thing that knows it: the credential is minted server-side (the api
-// holds the storage master credential) and never exists on the device until
-// the swap response carries it. So a restart has to prefer the answer's
-// credential over the secret this CLI already had, and write the session token
-// with it — a scoped key signs with all three or storage answers InvalidTokenId
-// (measured against the pinned MinIO, issue #241).
 func TestRunCapRestartWritesTheWorkersSwappedCredential(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		answer := CapAnswer{CapLine: "Cap $0.00 reached: read-only."}
@@ -237,8 +205,6 @@ func TestRunCapRestartWritesTheWorkersSwappedCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The pre-cap values the CLI already holds. They must NOT reach the config
-	// the mount reads after the swap.
 	t.Setenv("DRIVE_S3_ENDPOINT", "http://127.0.0.1:39181")
 	t.Setenv("DRIVE_S3_BUCKET", "drive-standin")
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "stale-write-access-key")
@@ -246,8 +212,6 @@ func TestRunCapRestartWritesTheWorkersSwappedCredential(t *testing.T) {
 	t.Setenv("DRIVE_S3_SESSION_TOKEN", "stale-write-session-token")
 	t.Setenv("DRIVE_DOWNLOAD_URL", "")
 
-	// The error, if any, is the systemctl request this test environment cannot
-	// satisfy. The config file, not the error, is the proof.
 	_ = runCap([]string{"--api", srv.URL, "--home", home, "--rclone", "/bin/true", "0"})
 
 	got, err := os.ReadFile(RcloneConfigPath(home))
@@ -281,9 +245,6 @@ func TestRunCapRestartWritesTheWorkersSwappedCredential(t *testing.T) {
 	}
 }
 
-// A raise mints a write credential with no session token when the deployment
-// uses permanent keys, and then no session_token line must be written at all:
-// an empty value would sign with an empty token.
 func TestRunCapRestartWritesNoSessionTokenWhenTheSwappedKeyHasNone(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		answer := CapAnswer{CapLine: "Cap $20.00: $0.00 counted this month, $20.00 left."}
@@ -334,10 +295,6 @@ func TestRunCapRestartWritesNoSessionTokenWhenTheSwappedKeyHasNone(t *testing.T)
 	}
 }
 
-// The swapped access key and session token are server-supplied strings written
-// into rclone's INI. LoadStorageConfig already refuses a newline in the env
-// copies; the restart must refuse the swapped copies the same way, or a
-// newline injects an extra rclone option (issue #241 in-run review).
 func TestRunCapRestartRejectsASwappedCredentialThatWouldInjectAnOption(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -410,8 +367,6 @@ func TestRunCapRestartRejectsASwappedCredentialThatWouldInjectAnOption(t *testin
 	}
 }
 
-// drive#459: after `drive login` and no DRIVE_API_URL, cap reaches the api
-// address login saved instead of failing with "That did not work".
 func TestRunCapReadsTheAPIBaseDriveLoginSaved(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

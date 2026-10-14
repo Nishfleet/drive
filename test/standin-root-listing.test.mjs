@@ -1,24 +1,3 @@
-// The drive root listing on real storage (drive issue #118).
-//
-// `createS3Store().list()` built its `list-type=2` prefix as
-// `${key(path)}${path === "/" ? "/" : "/"}` — both arms a slash — so the drive
-// root asked `rclone serve s3` for prefix `u/<account>//` and got nothing back:
-// the Web Files page showed an empty drive against real storage while the
-// in-memory store, whose root prefix is `/`, listed fine. The prefix is one
-// separator now, and gate 2 of test/pr-gate.test.mjs pins it per PR. This file
-// is the half a fake cannot show: the stand-in keys its objects exactly the way
-// `rclone serve s3` keys a file — a folder for every segment of the path, one
-// object per key — and the real run happens against `rclone serve s3` itself,
-// uncaptured, on this host's rclone.
-//
-// Nothing here is a new dependency or a script: `rclone` is the same stand-in
-// server test/standin-search.test.mjs and test/two-mount-sync.test.mjs start,
-// and DRIVE_STANDIN_ENDPOINT points the same code at real storage.
-//
-//   DRIVE_STANDIN_ENDPOINT  S3 endpoint (default: a local `rclone serve s3`)
-//   DRIVE_STANDIN_BUCKET    bucket name (default: "drive")
-//   DRIVE_STANDIN_RCLONE    explicit path to the rclone binary
-
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

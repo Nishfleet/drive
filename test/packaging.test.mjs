@@ -1,17 +1,3 @@
-// The one-line install (drive issue #105 / #509), checked here rather than
-// trusted.
-//
-// GoReleaser builds the .deb, the .rpm and the Homebrew cask. The issue's
-// promise is that those packages depend on rclone, so one `apt install`,
-// `dnf install` or `brew install` brings the CLI and rclone together. This
-// file matches that promise against `.goreleaser.yaml`, so a later edit that
-// drops the dependency fails the suite instead of shipping a package that
-// installs drive alone.
-//
-// drive#509: the pasted install lines in the docs, the CLI help and the
-// get-started page are generated from this same YAML. A short `brew install
-// drive` cannot resolve after a release; the derived lines are the ones that
-// can.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";

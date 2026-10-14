@@ -1,28 +1,3 @@
-// One key revoked through another store instance over the same D1 database
-// (drive issue #404).
-//
-// The unit proofs (workers/api/test/key-revoke.test.js, keystore.test.js) run
-// against the in-memory stand-in with no deviceStore bound at all, so they can
-// only prove a revoke reaches the rows THAT instance holds. Issue #404 is the
-// claim that a revoke has to reach further than that: the store the api Worker
-// builds when a deployment binds a database (index.js `storeFor`) puts every
-// device row in D1, and a revoke that lands on one isolate's Map is invisible
-// to the next one. The unit proofs cannot see that, so this file proves it on
-// the real schema.
-//
-// Each test builds TWO stores over ONE `makeMeteredDB()` — the stand-in for
-// two Worker isolates that replaced each other, each with its own Map. A key
-// is minted through the first, so the first holds a cached copy of its row,
-// and the revoke goes through the second. The acceptance bullet from the issue
-// is the assertion that follows: the first store's `authenticate` is `null` for
-// that pair, because the answer is read off the D1 row the second store
-// revoked and not off the copy the first one holds.
-//
-// Every storage assertion reads the row back with plain node:sqlite
-// statements, off the same engine, so a revoke that only touched a Map would
-// leave `revoked_at` NULL in D1 and the storage route would keep answering
-// 201 from the isolating instance.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createD1DeviceStore } from "../../core/devices.js";

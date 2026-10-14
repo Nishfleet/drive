@@ -1,19 +1,3 @@
-// Accessibility and 375px layout on the built pages (drive issue #546).
-//
-// drive#527 added an axe pass for the signed-in pages. This is the same engine
-// over the pages that pass does not cover: the built home page, the share
-// upload page and the built docs (benchmarks), plus a scrollWidth check on
-// every built docs page at 375px. A wide docs table used to widen the page
-// instead of scrolling inside it, and the home hero tagline was 2.4:1 on the
-// orange; both are fixed in the same issue and both are proven here.
-//
-// No new browser tool: puppeteer-core is a declared devDependency, the same
-// one test/files-page-click.test.mjs uses, and the same Chrome the Lighthouse
-// run in .github/workflows/ci.yml drives on this runner. axe-core is a
-// declared devDependency and is the engine behind Lighthouse's accessibility
-// category, so this gate runs the same rules. Any violation fails, whatever
-// its impact, because this page set is meant to be clean.
-
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";

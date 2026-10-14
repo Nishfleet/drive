@@ -1,14 +1,3 @@
-// The account's webhook endpoints (polish gap 19, drive#901), on the site
-// Worker behind the account gate and the global same-origin check:
-//
-//   GET    /api/webhooks                   the endpoints and the event names
-//   POST   /api/webhooks                   add one: {url, events?}; the secret is in the answer, once
-//   DELETE /api/webhooks/:id               remove one and its log
-//   POST   /api/webhooks/:id/test          send a webhook.test event now
-//   GET    /api/webhooks/:id/deliveries    the last 20 deliveries
-//
-// Another account's endpoint id is a 404, never a different answer.
-
 import { errorResponse, json, readJsonObject } from "./http.js";
 import { failureMessage } from "./messages.js";
 import { unauthorizedResponse } from "./status.js";
@@ -21,7 +10,6 @@ import {
   WEBHOOK_EVENTS,
 } from "./webhooks.js";
 
-/** Where the account's webhook endpoints are managed. */
 export const WEBHOOK_ENDPOINT = "/api/webhooks";
 
 const NO_SUCH = "No webhook endpoint with that id on this account.";

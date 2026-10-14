@@ -1,10 +1,3 @@
-// Fair-use pause (drive#364): a limit, never a fee. Tests first.
-//
-// The check is live + ghost + this upload <= max(break-even, floor x size30),
-// built from monthBillCents() and the storage-provider config. Worked cases
-// use $15 per TB, read from a price config, so they stay true when #642
-// moves the shipped maximum.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

@@ -1,11 +1,3 @@
-// The eval suite for drive issue #222.
-//
-// This file proves the structure the issue requires, not the model's
-// answers: task count and shape, hard tasks carry why_hard, graders
-// are programmatic and a different family from the agent model, the
-// held-out split is not committed, and the context (docs + drive
-// --help) is real and matches the shipped code.
-
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -666,9 +658,9 @@ test("the money graders follow the page they are handed, so the retired figures 
     (t) => t.description === "is there a free tier, and what sign-up needs from me",
   );
   assert.ok(capTask && billTask && ceilingTask, "the three money tasks are in the train split");
-  const capGrader = capTask.assert[0]; // reads the security page's cap
-  const billGrader = billTask.assert[0]; // reads the pricing page's 0.8 TB row
-  const ceilingGrader = ceilingTask.assert[1]; // reads the pricing page's ceiling
+  const capGrader = capTask.assert[0];
+  const billGrader = billTask.assert[0];
+  const ceilingGrader = ceilingTask.assert[1];
 
   // A re-priced page no grader has seen: cap $25, the 800 GB row billing
   // $12.50, the ceiling $15. A grader that still names any typed figure —

@@ -1,5 +1,3 @@
-// Split out of src/share.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-
 import { sendEmail } from "../core/email-send.js";
 import { safeFileName } from "../core/files.js";
 import { json } from "../core/http.js";
@@ -74,8 +72,6 @@ export function createD1LinkStore(db) {
   return {
     shares: {
       async create(record) {
-        // A token collision is a 2^128 accident, and the primary key is what
-        // makes it visible rather than silently overwriting somebody's link.
         await db
           .prepare(
             `INSERT INTO shares (${SHARE_COLUMNS}) ` +
@@ -117,14 +113,6 @@ export function createD1LinkStore(db) {
         return Number(row?.n ?? 0);
       },
       async revoke(token, accountId, at) {
-        // A second revoke is the same answer, and the first time stands: the
-        // owner's list must not re-date a revocation that already happened.
-        // COALESCE keeps the existing value when the row is already revoked,
-        // and the WHERE clause is what makes another account's token a miss.
-        // The ?N run in textual ascending order — the new value is in the SET
-        // clause, which textually precedes the WHERE — so binding by number
-        // (D1) and binding positionally (the repo's node:sqlite test adapter)
-        // agree on the same statement.
         const row = await one(
           `UPDATE shares SET revoked_at = COALESCE(revoked_at, ?1) ` +
             "WHERE token = ?2 AND account_id = ?3 " +
@@ -135,15 +123,6 @@ export function createD1LinkStore(db) {
       },
       async addDownload(token, bytes) {
         const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
-        // The reservation and the per-link byte cap are the same statement
-        // (drive issue #549): two concurrent downloads that would together
-        // pass the cap cannot both succeed, because the WHERE clause sees the
-        // other's increment. A NULL cap is a link minted before the cap
-        // existed: it keeps serving. A miss is an unknown token or a full
-        // link, and the route refuses both. ?1 and ?3 are the same size, so
-        // each placeholder number appears once in textual order for the
-        // node:sqlite test adapter (the same rule the upload reservation
-        // follows).
         const row = await one(
           "UPDATE shares SET download_count = download_count + 1, " +
             "download_bytes = download_bytes + ?1 " +
@@ -211,14 +190,6 @@ export function createD1LinkStore(db) {
       },
       async addUpload(token, bytes) {
         const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
-        // One statement is the reservation: two concurrent uploads that would
-        // together pass the link total cannot both succeed, because the
-        // WHERE clause sees the other's increment. A miss is a full link,
-        // and the handler writes nothing (issue #208).
-        // ?1 and ?3 are the same size: D1 binds by number, the node:sqlite
-        // test adapter binds positionally after stripping digits, so each
-        // placeholder number appears once in textual order (the same rule
-        // the revoke statement already follows).
         const row = await one(
           "UPDATE upload_requests SET upload_count = upload_count + 1, " +
             "upload_bytes = upload_bytes + ?1 " +
@@ -241,12 +212,6 @@ export function createD1LinkStore(db) {
       },
       async recordArrival(token, name, bytes) {
         const size = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
-        // The arrival is appended in the same shape the digest reads back
-        // (drive issue #684). ?1 is the byte count and ?2 the stored name, in
-        // that textual order, so each placeholder number appears once and in
-        // ascending order for the node:sqlite test adapter. json_insert's
-        // `$[#]` appends, and D1's SQLite carries JSON1, so this is one
-        // statement with no read-modify-write race on the row.
         const row = await one(
           "UPDATE upload_requests SET pending_uploads = " +
             "json_insert(pending_uploads, '$[#]', json_object('bytes', ?1, 'name', ?2)) " +
@@ -257,23 +222,7 @@ export function createD1LinkStore(db) {
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
       async markDigestSent(token, at, count) {
-        // The clear walks the front of the array in chunks: json_remove's
-        // argument list is bounded by SQLITE_MAX_FUNCTION_ARG (127 stock), so
-        // a queue deeper than one chunk cannot be handed a single call. The
-        // chunks and the stamp go in one D1 batch, which is a transaction, so
-        // a failure part-way leaves the whole queue and the old stamp in
-        // place, and the next run mails the same list once instead of mailing
-        // the half a torn clear left behind.
-        //
-        // The clear removes only the arrivals the digest actually read,
-        // from the front of the array, so an upload accepted during the send
-        // window stays queued for the next run instead of being wiped unseen
-        // (drive issue #684). json_remove reads the column's old value, unlike
-        // a correlated subquery in SET. A count of zero is the drain for a
-        // row the digest could not read at all: parseArrivals already decided
-        // it holds no arrivals, and json_remove refuses a value that is not
-        // JSON, so the drain writes the empty list outright rather than
-        // walking the row and failing on it every night.
+        // SQLITE_MAX_FUNCTION_ARG is 127 by default, which bounds json_remove's argument list.
         const statements = [];
         if (count === 0) {
           statements.push(
@@ -305,8 +254,6 @@ export function createD1LinkStore(db) {
         return row === null || row === undefined ? null : toRequestRecord(row);
       },
       async listPendingDigests() {
-        // Only rows carrying arrivals, so the nightly job walks the links that
-        // have something to say and nothing else.
         const rows = await many(
           `SELECT ${REQUEST_COLUMNS} FROM upload_requests ` +
             "WHERE pending_uploads IS NOT NULL AND pending_uploads <> '[]' " +
@@ -316,11 +263,6 @@ export function createD1LinkStore(db) {
         return rows.map(toRequestRecord);
       },
       async stampMalwareNotice(token, at) {
-        // The quiet window's write half (drive issue #826): the time of the
-        // last notice actually sent, so the route mails a repeated known-bad
-        // refusal only when this stamp is NULL or out of the window. The
-        // stamp follows the mail, never the refusal, so an owner address
-        // that is missing stays unstamped and the loud log keeps repeating.
         await db
           .prepare("UPDATE upload_requests SET malware_notice_at = ?1 WHERE token = ?2")
           .bind(at, token)
@@ -389,9 +331,6 @@ function parseArrivals(raw) {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    // A row that is not the JSON this store wrote is treated as no arrivals
-    // rather than throwing: the digest is a notification, and one malformed
-    // row must not stop every other link's mail.
     return { arrivals: [], rawCount: 0 };
   }
   if (!Array.isArray(parsed)) {
@@ -447,20 +386,12 @@ export async function sendArrivalDigests(db, input) {
   let sent = 0;
   let skipped = 0;
   for (const record of pending) {
-    // The stamp, not the schedule, is what bounds a link to one mail a day.
     if (record.digestAt !== null && input.now - record.digestAt < DIGEST_MIN_INTERVAL_MS) {
       continue;
     }
     try {
       const queue = parseArrivals(record.pendingUploads);
       if (queue.arrivals.length === 0) {
-        // A row the digest query selected (its queue is not the empty
-        // literal) but the parse found no arrivals in: malformed JSON, or an
-        // array of nulls. It is logged and drained, because nothing but
-        // recordArrival ever writes this column back, so re-listing it every
-        // night would walk a queue that can never yield a mail. The raw
-        // count is cleared, junk entries included, so the drain leaves
-        // nothing behind either way.
         console.error(
           `upload digest: the link for account ${record.accountId} has an arrival queue that parses to nothing; clearing it`,
         );
@@ -490,14 +421,9 @@ export async function sendArrivalDigests(db, input) {
           })),
         },
       });
-      // Only the arrivals this digest read are cleared, so a drop accepted
-      // during the send stays queued for the next run.
       await links.requests.markDigestSent(record.token, input.now, queue.rawCount);
       sent += 1;
     } catch (cause) {
-      // One link's read or send must not hold every later link's mail. The
-      // arrivals stay queued (markDigestSent only runs after the send), so a
-      // transient failure is retried on the next nightly run.
       console.error(
         `upload digest: the link for account ${record.accountId} could not be mailed: ${String(cause)}`,
       );
@@ -506,8 +432,6 @@ export async function sendArrivalDigests(db, input) {
   }
   return { sent, skipped };
 }
-
-// ---------------------------------------------------------------- minting
 
 /**
  * The record for a new share. Kept separate from the handler so a test mints
@@ -569,13 +493,9 @@ export function newRequestRecord({
     maxFiles,
     digestAt: null,
     pendingUploads: "[]",
-    // A minted link has never been noticed, so the quiet window reads null
-    // and the first known-bad refusal mails (drive issue #826).
     malwareNoticeAt: null,
   };
 }
-
-// ---------------------------------------------------------------- handlers
 
 /**
  * @param {string} message
@@ -635,12 +555,6 @@ export function shareContentChanged(minted, live) {
   return storedShareEtag(live) !== pin;
 }
 
-// A store or storage failure: the cause is logged with the route that hit it
-// and never returned. Every share route here is reachable by a logged-out
-// stranger holding one token, so an internal message (a binding name, a path,
-// a query error) is never a thing to hand back; the caller gets the message
-// table's generic words, which is the same answer any unexpected failure in
-// the Worker gets (core/messages.js `unexpected`).
 /**
  * @param {string} where
  */
@@ -649,11 +563,6 @@ export function serverFailure(where) {
   return json({ error: failureMessage("unexpected") }, 500);
 }
 
-// One cap answer for both public upload routes: the resolver is called with
-// the account that minted the token, and a state outside the two is a
-// TypeError rather than a page that quietly opens. A caller that forgets the
-// cap cannot serve a read-only drive, and a drive that is not at its cap is
-// not refused by someone else's.
 /**
  * @param {unknown} resolver
  * @param {string} accountId
@@ -722,10 +631,6 @@ export async function ownerNameFor(resolver, accountId) {
     return "";
   }
   const name = owner.name.trim();
-  // A name is a display name, not a fallback address: a signup flow that
-  // seeded `name` from the email would otherwise publish the address to a
-  // stranger holding the link (drive issue #684). Anything that looks like an
-  // address is left off the page, the same as a blank name.
   if (name.length === 0 || name.includes("@")) {
     return "";
   }

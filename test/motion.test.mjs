@@ -1,8 +1,3 @@
-// Motion with purpose (high-end gaps item 10). Every page links the shared
-// stylesheet, so the reduced-motion switch lives there once; this fails when
-// the switch is gone, when a page animates without linking it, or when a
-// transition or animation runs 250 ms or longer.
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";

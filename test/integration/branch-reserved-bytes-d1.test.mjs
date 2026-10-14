@@ -1,12 +1,3 @@
-// Integration test for drive#801's branch reservation column: the real
-// migration under migrations/drive/, applied to a real SQLite database. A
-// mocked binding cannot see the schema, so both directions are proven here:
-// WRITE — the claim INSERT stores the byte total the guard measured, and a
-// plain SELECT finds it on the real row; READ — the guard's own sum over the
-// 'creating' rows sees a queued create's bytes, releases them when the row
-// leaves 'creating', and reads a row written before the column as zero rather
-// than as a guess.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
