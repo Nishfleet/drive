@@ -1,20 +1,7 @@
-// What a key can and cannot do (drive issue #98).
-//
-// The powers are decisions from docs/build-spec.md ("Keys and safety"), and
-// they are read from one place: core/keyprovider.js holds the one
-// kind-to-capabilities table, and core/cap.js already re-exports it so the
-// pricing Worker and the api Worker cannot disagree. This module adds nothing
-// of its own; it turns that table into the plain booleans the docs pages need,
-// so the Security and Agents pages and the enforcement code read the same
-// source instead of two copies that can drift.
 import { deleteSwitchesFor, IDRIVE_KEY_REACH } from "../core/idrive-keys.js";
 import { CAPABILITIES_BY_KIND } from "../core/keyprovider.js";
 import { HIDDEN_VERSION_DAYS } from "../core/s3.js";
 
-// The agent tools `drive init` connects. The CLI's own list is in Go
-// (cmd/drive/tools.go); the docs cannot import Go, so the list is declared
-// once here in the order the CLI prints it, and test/docs.test.mjs pins the two
-// lists to each other, so adding a tool in Go without the docs fails CI.
 export const AGENT_TOOLS = Object.freeze(["claude", "codex", "gemini", "cursor", "kiro"]);
 
 /** @typedef {{canRead: boolean, canWrite: boolean, canDelete: boolean, capabilities: ReadonlyArray<string>}} Powers */
@@ -40,8 +27,6 @@ function powersFor(kind) {
   };
 }
 
-// The two kinds a person actually meets: their own device key and the key an
-// agent tool gets. Both read the same table the api Worker enforces.
 export const KEY_POWERS = Object.freeze({
   device: powersFor("device"),
   agent: powersFor("agent"),
@@ -68,14 +53,9 @@ export const KEY_POWERS = Object.freeze({
 function storagePowersFor(kind) {
   const switches = deleteSwitchesFor(powersFor(kind).capabilities);
   return {
-    // The provider refuses a delete only when the mint sets this switch.
     canDelete: !switches.disable_delete_object,
-    // Whether the key can also remove the hidden copy a delete leaves.
     canDestroyHidden: !switches.disable_delete_version,
-    // How long a delete by this key can be undone. A key that can destroy the
-    // hidden copy gives no guarantee, so that is zero.
     undoDays: switches.disable_delete_version ? HIDDEN_VERSION_DAYS : 0,
-    // A key limited to a bucket reaches every file in the account's bucket.
     reachesWholeDrive: IDRIVE_KEY_REACH === "bucket",
   };
 }

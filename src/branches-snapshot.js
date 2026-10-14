@@ -1,5 +1,3 @@
-// Split out of src/branches.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-
 import {
   accountFirstChargedAt,
   accountStoredBytes,
@@ -246,7 +244,6 @@ export function bytesOf(files) {
   return n;
 }
 
-// Bytes under `root` from the store listing. Branch copies skip the file index (drive#553).
 /** @param {FileStore} store @param {string} root */
 export async function storedBytesUnder(store, root) {
   return bytesOf((await listFiles(store, root)).values());
@@ -280,9 +277,6 @@ export async function accountActiveBranchCount(db, accountId) {
   return Number(/** @type {{active?: unknown} | null | undefined} */ (row)?.active ?? 0);
 }
 
-/** The sentinel a check passes when it has no branch row of its own to leave
- * out of the reservation sum (drive#801). Branch ids start at 1 (migration
- * 0015), so `id != 0` excludes nothing and skips no real row. */
 export const NO_RESERVATION_YET = 0;
 
 /** The bytes every create still queued on this account has reserved: the
@@ -399,11 +393,6 @@ export async function copyFolder(store, source, dest, options = {}) {
   /** @type {Array<{rel: string, fp: Fingerprint}>} */
   const copiedFiles = [];
   const only = options.only;
-  // How many paths this copy has to write, when it was told: that is the end of
-  // the walk (drive#842). A windowed copy knows its own 80 files and stops the
-  // moment it has them, so the 1,250th batch of a 100,000-file branch lists the
-  // same 80 files the first one did — without this it would re-read the listing
-  // from the top on every batch and pay the whole branch 1,250 times over.
   const wanted = only === undefined ? null : Object.keys(only).length;
   let written = 0;
   let current = options.cursor?.current ?? source;
@@ -434,15 +423,6 @@ export async function copyFolder(store, source, dest, options = {}) {
       if (rel === null) {
         continue;
       }
-      // The claim's listing decides what is in the branch, and the live walk
-      // only finds where it now lives. A path the claim never measured
-      // arrived after it and is not written. A path the source deleted after
-      // it is measured, is never found here, and stays in the snapshot as a
-      // file the original lost — the diff reports it, the copy does not
-      // resurrect it. The fingerprint recorded is the frozen one, because the
-      // snapshot answers "what the source held when the branch was taken",
-      // while the size handed to the copy is the live one so a file that grew
-      // is still copied whole rather than cut at the frozen length.
       const frozen = only === undefined ? undefined : only[rel];
       if (frozen === undefined && only !== undefined) {
         at += 1;
@@ -468,16 +448,7 @@ export async function copyFolder(store, source, dest, options = {}) {
       copied += 1;
       written += 1;
     }
-    // Where this batch has read to in the folder's own listing: past the last
-    // file it took, and unchanged when it took none so the walk moves on to the
-    // next folder rather than re-reading the same tail forever.
     const reached = take.length === 0 ? skip : take[take.length - 1].at + 1;
-    // A windowed copy stops as soon as it has its own files, which can be
-    // before the folder it is walking has given up the rest of its entries. The
-    // folders found so far are kept, so a batch that gave up mid-folder can
-    // still finish it on the next run and nothing under it is skipped
-    // (drive#842). This is a stop, not an end: the walk has more of the source
-    // left, so `exhausted` is false however much of the window it filled.
     if (take.length < rest.length || (wanted !== null && written >= wanted)) {
       return {
         copiedFiles,
@@ -491,12 +462,6 @@ export async function copyFolder(store, source, dest, options = {}) {
     pending = pending.slice(1);
     skip = 0;
   }
-  // The walk ran out: there is no folder left to queue, whether because the
-  // window it was filling is full or because the source ended. `exhausted` is
-  // what says the source ended — the two answers a caller needs are separate,
-  // and on a source that shrank after the claim the file count it was promised
-  // never arrives, so a copy that waits for that count starts over forever
-  // (drive#842, in-run review).
   return {
     copiedFiles,
     cursor: { current: current || "", skip: 0, pending },
@@ -584,8 +549,6 @@ export function diffFromListings(snapshot, current, source) {
   };
 }
 
-// ---------------------------------------------------------------- the table
-
 /** A row as this module uses it: camelCase names, and the snapshot already
  * resolved by `readSnapshot` from the namespace. A D1 row is untyped
  * (`Record<string, unknown>`), so each column is read by name and given the shape
@@ -601,18 +564,8 @@ export function toBranch(row, snapshot) {
     branchPrefix: String(row.branch_prefix),
     state: String(row.state),
     createdAt: String(row.created_at),
-    // Whose key made the branch's changes (migration 0004, issue #13). The
-    // rewind screen reads it for "Rewind <agent>'s work" and the activity list
-    // reads the same value for "changed by <agent or person>" — one column on
-    // the one log that already exists, never a second store. Absent on a row
-    // written before the migration, it reads as "no key recorded", which is
-    // what a branch a person made in the app is.
     changedBy: typeof row.changed_by_key_id === "string" ? row.changed_by_key_id : "",
     snapshot,
-    // Where the snapshot itself lives (migration 0012), and the byte length of
-    // the value there. A row written before the backfill (drive#321) has an
-    // empty key and zero bytes; nothing reads a snapshot for such a row any
-    // more (drive#329).
     snapshotKey: typeof row.snapshot_key === "string" ? row.snapshot_key : "",
     snapshotBytes: typeof row.snapshot_bytes === "number" ? row.snapshot_bytes : 0,
     jobKind: typeof row.job_kind === "string" ? row.job_kind : "",
@@ -627,10 +580,6 @@ export function toBranch(row, snapshot) {
       typeof row.source_changed_count === "number"
         ? row.source_changed_count
         : Number(row.source_changed_count ?? 0) || 0,
-    // What the claim measured for this row (migration 0040, drive#801). Kept
-    // after the copy runs, as the record of what the claim reserved; it is
-    // never cleared. Absent on a row written before the column, which reads as
-    // zero: nobody measured it, or its bytes are in the store now.
     reservedBytes:
       typeof row.reserved_bytes === "number"
         ? row.reserved_bytes
@@ -638,10 +587,6 @@ export function toBranch(row, snapshot) {
   };
 }
 
-/** The columns every branch read selects. The open-row pin and the newest-closed
- * fallback share this list so a generation cannot drop a column the other still
- * reads.
- */
 export const BRANCH_COLUMNS =
   "id, name, source_prefix, branch_prefix, snapshot_key, snapshot_bytes, " +
   "state, created_at, changed_by_key_id, job_kind, job_cursor, job_done, job_total, job_error, " +
