@@ -892,6 +892,33 @@ function runwayNoticeTemplate(data = {}) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Bill dropped -- the biggest size in the last 30 days fell, so the monthly bill
+// did (src/bill-drop.js). { fromLine, toLine } are formatted dollars.
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function billDroppedTemplate(data = {}) {
+  const fromLine = requireText(data.fromLine, "fromLine");
+  const toLine = requireText(data.toLine, "toLine");
+  const subject = `Your monthly bill just dropped to ${toLine}`;
+  const lines = [
+    `The biggest size your drive reached in the last 30 days has aged out, so your monthly bill went from ${fromLine} to ${toLine}.`,
+    "",
+    "Nothing to do. You pay for the biggest size in the last 30 days, so a big delete shows up in the bill once that peak is 30 days old.",
+  ];
+  const html_lines = [
+    `<p>The biggest size your drive reached in the last 30 days has aged out, so your monthly bill went from ${escapeHtml(fromLine)} to ${escapeHtml(toLine)}.</p>`,
+    "<p>Nothing to do. You pay for the biggest size in the last 30 days, so a big delete shows up in the bill once that peak is 30 days old.</p>",
+  ];
+  const unsubscribe =
+    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+      ? data.unsubscribeUrl
+      : null;
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
+}
+
 // The kind names every caller and the test suite use. Order is the spec's.
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
@@ -910,6 +937,7 @@ export const EMAIL_KINDS = Object.freeze([
   "security-event",
   "first-file-nudge",
   "runway-notice",
+  "bill-dropped",
 ]);
 
 /**
@@ -932,6 +960,7 @@ const TEMPLATES = Object.freeze({
   "security-event": securityEventTemplate,
   "first-file-nudge": firstFileNudgeTemplate,
   "runway-notice": runwayNoticeTemplate,
+  "bill-dropped": billDroppedTemplate,
 });
 
 /**
