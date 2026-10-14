@@ -122,6 +122,7 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "device-approve-notice",
     "upload-arrivals",
     "security-event",
+    "first-file-nudge",
   ]);
 });
 
@@ -427,6 +428,8 @@ function dataFor(kind) {
         deviceName: "office laptop",
         happenedAt: "2026-10-06T09:00:00.000Z",
       };
+    case "first-file-nudge":
+      return { ...base, hours: 24 };
     default:
       throw new Error(`no test data for ${kind}`);
   }
