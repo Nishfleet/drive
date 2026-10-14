@@ -20,6 +20,7 @@ import { listMeteredAccounts } from "../core/meter-usage.js";
 import { checkYesterdayDraws, drawPendingHours, settleBalances } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
 import { CLOSE_SCHEDULE, runAccountCloseCron } from "./account-close.js";
+import { runActivationNudges } from "./activation.js";
 import { dodoEnv, ownerFor, prepaidPauseFromEnv, sentryFor, storeFor } from "./index-support.js";
 import { KNOWN_BAD_FEED_SCHEDULE, loadKnownBadFeed } from "./malware.js";
 import { METER_JOB_KINDS, meterJobsQueue, sendMeterJobs } from "./meter-jobs.js";
@@ -562,6 +563,16 @@ export async function runScheduled(event, env, context, store) {
         // and the sweep removes what that credential minted.
         const provider = keyProviderFor(env);
         await runKeySweep({ devices, provider, now: event.scheduledTime });
+        // First-file activation (delight item 3): a nudge at 24 and 72 hours to
+        // an account that still has no file. One account's failure is counted
+        // and logged inside the pass, so it never fails the close trip.
+        const nudges = await runActivationNudges({
+          db: env.DRIVE_DB,
+          email: env.EMAIL,
+          mailFrom: secrets.MAIL_FROM ?? "",
+          now: event.scheduledTime,
+        });
+        console.log(`activation: nudged=${nudges.sent} failed=${nudges.failed}`);
       },
       sentryFor(env),
     );

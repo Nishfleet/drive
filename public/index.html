@@ -8,14 +8,6 @@
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="manifest" href="/site.webmanifest">
   <meta name="description" content="A Finder drive for people and their agents. Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.">
-  <!-- drive issue #37: canonical, Open Graph and the JSON-LD a Rich Results /
-       AI-answer crawler reads. Every value mirrors src/seo.js, and every price
-       in those mirrors core/pricing.js, the one price source; test/seo.test.mjs
-       fails CI when the tags and that config drift apart. The maximum stated
-       here is the current rule from drive#642 (Nish 2026-10-05): min(2¢ × size30 GB,
-       $15 × max(1, size30 TB)), size30 being the biggest size in the last 30 days. Issue
-       #23 made that config the single source the visible copy, these tags and
-       llms.txt all render from, so the page can no longer contradict itself. -->
   <!-- rel="canonical" declares a URL for a crawler to read; the browser never
        fetches it as a subresource, so there is nothing whose bytes an integrity
        hash could verify. That is why the nosemgrep rule id is on the tag: this
@@ -59,21 +51,9 @@
   }
 }
   </script>
-  <!-- drive#152: the one face preloaded is the 900 display weight the price
-       and the headings are set in, because it is the largest text in the first
-       viewport. The other five files load on use, with font-display: swap
-       (public/site.css), so no text waits for a font. Same origin, no
-       third-party request. -->
   <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
-/* The home page, drive#152: direction B ("loud, price-first") with the
-   receipt from direction C as the "you saved" block. The palette and the three
-   faces are the --drive-* and --font-* tokens in public/site.css; this block
-   only lays the page out. Every price below is gated against src/pricing.js
-   and src/billing.js by test/pricing-copy.test.mjs and test/home-page.test.mjs,
-   and the slider asks /api/quote, so the page never works out a bill. */
-
 body {
   background: var(--drive-paper);
   color: var(--drive-ink);
@@ -108,8 +88,6 @@ a {
   margin: 0 auto;
   padding: 0 40px;
 }
-
-/* ---- masthead ----------------------------------------------------------- */
 
 .masthead {
   position: absolute;
@@ -151,9 +129,6 @@ a {
   line-height: 1;
 }
 
-/* The tagline sits on the orange hero field. The shared --ink-soft from
-   site.css reads at 2.4:1 there and fails the accessibility budget, so it
-   takes the same ink as the masthead links (about 6:1). */
 .tagline {
   color: var(--drive-ink);
   font-size: 14px;
@@ -204,8 +179,6 @@ a {
 .site-nav .btn:hover {
   text-decoration: none;
 }
-
-/* ---- hero: one loud colour field ---------------------------------------- */
 
 .hero {
   background: var(--drive-orange);
@@ -270,9 +243,6 @@ a {
   text-transform: uppercase;
 }
 
-/* drive#586: the rate line is a sentence now ("Pay 2 cents per GB from your
-   balance."), so it is set smaller than the old two-word number to stay
-   within the hero column. */
 .price-heading .amount {
   display: block;
   font-size: clamp(48px, 5vw, 76px);
@@ -329,7 +299,6 @@ a {
   max-width: 22em;
 }
 
-/* the Finder window floating on the field */
 .stage {
   position: relative;
   padding-top: 40px;
@@ -596,7 +565,6 @@ a {
   cursor: pointer;
 }
 
-/* the ticker under the hero */
 .ticker {
   margin-top: 84px;
   overflow: hidden;
@@ -635,8 +603,6 @@ a {
     transform: translateX(-50%);
   }
 }
-
-/* ---- shared section bits ------------------------------------------------ */
 
 .s {
   padding: 120px 0;
@@ -686,8 +652,6 @@ a {
 .dark .sub {
   color: #c9bfae;
 }
-
-/* ---- Finder features: a split list, not cards --------------------------- */
 
 .feat {
   display: grid;
@@ -762,10 +726,6 @@ a {
   margin: 4px 0 0;
   color: var(--drive-ink-soft);
 }
-
-/* ---- Real work on the drive (drive #113) ---------------------------------
-   One column of rows, not cards: the job, the exact command that ran it, and
-   the figure the recorded run measured. */
 
 .demos {
   padding: 0 0 120px;
@@ -855,8 +815,6 @@ a {
   color: var(--drive-ink-soft);
 }
 
-/* ---- agents --------------------------------------------------------------- */
-
 .ag-grid {
   display: grid;
   grid-template-columns: 0.9fr 1.1fr;
@@ -936,8 +894,6 @@ a {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-
-/* ---- calculator ----------------------------------------------------------- */
 
 .calc {
   display: grid;
@@ -1188,8 +1144,6 @@ a {
   color: var(--drive-ink-soft);
 }
 
-/* ---- worked examples and the 60%-full strip ------------------------------ */
-
 .examples {
   padding: 0 0 120px;
 }
@@ -1331,8 +1285,6 @@ a {
   color: var(--drive-ink-soft);
 }
 
-/* ---- cap + the receipt ---------------------------------------------------- */
-
 .cap {
   background: var(--drive-paper-deep);
 }
@@ -1394,9 +1346,6 @@ a {
   color: var(--drive-ink-soft);
 }
 
-/* The receipt (from direction C): thermal paper on the cap block, torn at the
-   foot, with a rubber stamp for the saving. Paper is the one surface that is
-   not the page's own paper, on purpose. */
 .receipt {
   margin: 26px 12px 0;
   padding: 26px 28px 46px;
@@ -1550,8 +1499,6 @@ a {
   color: var(--drive-ink-soft);
 }
 
-/* ---- FAQ and Business ----------------------------------------------------- */
-
 .faq-grid {
   display: grid;
   grid-template-columns: 0.8fr 1.2fr;
@@ -1701,8 +1648,6 @@ details p {
   font-weight: 600;
 }
 
-/* ---- footer --------------------------------------------------------------- */
-
 .site-foot {
   padding: 72px 0 40px;
   background: var(--drive-ink);
@@ -1765,8 +1710,6 @@ details p {
   max-width: 34em;
   color: var(--drive-term-dim);
 }
-
-/* ---- narrower screens ----------------------------------------------------- */
 
 @media (max-width: 1000px) {
   .hero-grid,
@@ -1950,9 +1893,6 @@ details p {
   }
 }
 
-/* Drive#92: the one place the reduced-motion reset reaches a rule that would
-   otherwise win on specificity, so it is spelled with !important on purpose.
-   It stops the ticker, the caret and the bar transitions. */
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;
@@ -2303,17 +2243,9 @@ details p {
   </footer>
 
   <script>
-// The two failure strings this page can show without a server reply. They are
-// the same words as src/messages.js ("offline" and "unexpected"); this file is
-// a static asset and cannot import the module, so test/messages.test.mjs reads
-// this page and fails CI when either string drifts from the table.
 const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
 const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
 
-// ---- Waitlist and Business contact form -----------------------------------
-// Without JavaScript the form still posts to /api/waitlist, so this only
-// upgrades the response from a page reload to an inline confirmation. It must
-// never fail silently: every path writes a line into the live region.
 const form = document.getElementById("waitlist");
 const note = document.getElementById("form-note");
 const emailInput = document.getElementById("email");
@@ -2326,10 +2258,6 @@ function say(message, kind) {
   note.classList.toggle("is-done", kind === "done");
 }
 
-// "Join the waitlist" and "Talk to us" are the same real action as the form,
-// each tagged so the row records where the person came from. preventDefault
-// is load-bearing: without it the anchor's own fragment navigation moves
-// focus away from the field.
 for (const link of document.querySelectorAll("[data-waitlist-source]")) {
   link.addEventListener("click", (event) => {
     event.preventDefault();
@@ -2343,9 +2271,6 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   submit.disabled = true;
   say("Sending…", "pending");
-  // The only safe text this page may show on failure: the table's own
-  // fallback, replaced by one of our constants or by the server's table-built
-  // message. The raw Error message is never shown (drive#28).
   let userMessage = UNEXPECTED_MESSAGE;
   try {
     const sentSource = sourceInput.value;
@@ -2376,8 +2301,6 @@ form.addEventListener("submit", async (event) => {
       );
       return;
     }
-    // One confirmation for every accepted address: the server answers the
-    // same whether or not it was already on file (drive#28).
     say("Thanks. That address is on the waitlist.", "done");
     form.reset();
     sourceInput.value = sentSource;
@@ -2389,12 +2312,6 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-// ---- The slider -------------------------------------------------------------
-// Every figure comes from GET /api/quote, which is quoteForStoredTb() in
-// src/billing.js: monthBillCents(), the invoice's own function. The page does
-// no bill arithmetic: the bill, our maximum and a usual 1 TB plan's price for
-// the same size (usualPlanMonthlyUsd() in src/pricing.js) all come back in
-// the quote.
 const quoteForm = document.getElementById("quote");
 const range = document.getElementById("quote-gb");
 const sizeOut = document.getElementById("quote-size");
@@ -2419,8 +2336,6 @@ function show(gb, quote) {
   sayQuote(
     `${sizeLabel(gb)} kept all month: ${quote.labels.bill} this month. Our maximum: ${quote.labels.maximum}. A usual 1 TB plan: ${quote.labels.plan}.`,
   );
-  // Which line of the price table this size falls on, read from the quote:
-  // under the maximum, at the flat maximum, or past 1 TB.
   const band = quote.tb > 1 ? "slope" : quote.billUsd < quote.maximumUsd ? "rate" : "flat";
   for (const li of document.querySelectorAll(".bands li")) {
     li.classList.toggle("on", li.dataset.band === band);
@@ -2483,8 +2398,6 @@ range.addEventListener("input", () => {
   sizeOut.textContent = sizeLabel(gb);
   range.style.setProperty("--p", `${((gb - range.min) / (range.max - range.min)) * 100}%`);
   clearTimeout(timer);
-  // A reply still in flight is for the old size now, so retire its ticket
-  // before the debounce: it can no longer paint over the new size.
   latest += 1;
   timer = setTimeout(() => fetchQuote(gb), 120);
 });
@@ -2494,7 +2407,6 @@ quoteForm.addEventListener("submit", (event) => {
   fetchQuote(Number(range.value));
 });
 
-// ---- Agent picker and the copy button --------------------------------------
 const agentNames = {
   claude: "Claude Code",
   codex: "Codex",

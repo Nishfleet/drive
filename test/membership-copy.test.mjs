@@ -91,6 +91,9 @@ function dataFor(kind) {
       replyTo: REPLY_TO,
     };
   }
+  if (kind === "first-file-nudge") {
+    return { hours: 72, replyTo: REPLY_TO };
+  }
   throw new Error(`no test data for ${kind}`);
 }
 

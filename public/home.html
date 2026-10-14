@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en" class="drive">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storagebun — your drive</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="description" content="Your balance, what you store, your devices and the next step, on one screen.">
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="/site.css">
+  <style>
+body {
+  padding: 0 clamp(20px, 5vw, 72px) 72px;
+}
+
+.masthead,
+main,
+.footer {
+  max-width: 940px;
+}
+
+main {
+  padding-top: clamp(28px, 5vh, 48px);
+}
+
+h1 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(34px, 5.4vw, 52px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.lede {
+  max-width: 60ch;
+  color: var(--ink-soft);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin: 28px 0 0;
+}
+
+.tile {
+  padding: 20px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+  min-height: 150px;
+}
+
+.tile h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.big {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(34px, 5vw, 46px);
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+.tile p {
+  margin: 6px 0 0;
+}
+
+.tile .more {
+  color: var(--ink-soft);
+}
+
+.next-step {
+  margin: 16px 0 0;
+  border-color: var(--drive-orange, currentColor);
+}
+
+.status {
+  margin: 28px 0 0;
+  padding: 16px 18px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.status .what {
+  margin: 0;
+  font-weight: 600;
+}
+
+.status .next {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.footer {
+  margin: 48px auto 0;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+.footer a {
+  color: var(--ink-soft);
+}
+
+.legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#home-heading">Skip to your drive</a>
+  <!-- shell:app-header current="/home" -->
+  <header class="masthead">
+    <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
+    <a href="/home" aria-current="page">Home</a>
+    <a href="/files">Your files</a>
+    <a href="/">Pricing</a>
+    <a href="/get-started">Get started</a>
+    <a href="/usage">Usage</a>
+    <a href="/devices">Devices</a>
+    <a href="/signin" id="nav-signin">Sign in</a>
+      <noscript>
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout">
+          <button type="submit">Sign out</button>
+        </form>
+        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+        <form method="POST" action="/api/signin">
+          <input type="hidden" name="step" value="signout-all">
+          <button type="submit">Sign out everywhere</button>
+        </form>
+      </noscript>
+      <button type="button" id="nav-signout" hidden>Sign out</button>
+      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+  </header>
+  <!-- /shell:app-header -->
+
+  <main>
+    <h1 id="home-heading" tabindex="-1">Your drive</h1>
+    <p class="lede" id="home-lede">Your balance, what you store and your devices, in one place.</p>
+
+    <div class="status" id="home-status" role="status" aria-live="polite" hidden>
+      <p class="what"></p>
+      <p class="next"></p>
+      <p><button type="button" id="home-retry" hidden>Try again</button></p>
+    </div>
+
+    <div class="grid" id="home-grid" aria-busy="true">
+      <section class="tile" aria-labelledby="balance-title">
+        <h2 id="balance-title">Balance</h2>
+        <p class="big" id="balance-amount">…</p>
+        <p class="more" id="balance-line"></p>
+        <p><a href="/usage">Top up</a></p>
+      </section>
+      <section class="tile" aria-labelledby="stored-title">
+        <h2 id="stored-title">Stored this month</h2>
+        <p class="big" id="stored-now">…</p>
+        <p class="more" id="stored-cost"></p>
+        <p><a href="/usage">See usage</a></p>
+      </section>
+      <section class="tile" aria-labelledby="devices-title">
+        <h2 id="devices-title">Devices</h2>
+        <p class="big" id="devices-count">…</p>
+        <p class="more" id="devices-line"></p>
+        <p><a href="/devices">Manage devices</a></p>
+      </section>
+    </div>
+
+    <section class="tile next-step" id="next-step" aria-labelledby="next-title" hidden>
+      <h2 id="next-title">Next step</h2>
+      <p class="big" id="next-what"></p>
+      <p class="more" id="next-line"></p>
+      <p><a id="next-link" href="/files">Your files</a></p>
+    </section>
+  </main>
+  <!-- shell:footer -->
+  <footer class="footer">
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
+    <p>A Finder drive for people and their agents.</p>
+    <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
+  </footer>
+  <!-- /shell:footer -->
+  <script>
+const BALANCE_ENDPOINT = "/api/balance";
+const USAGE_ENDPOINT = "/api/usage";
+const DEVICES_ENDPOINT = "/api/devices";
+const SIGNIN_ENDPOINT = "/api/signin";
+const LOAD_FAILED = "We could not load your drive. Check your connection and try again.";
+const SIGNED_OUT = "Sign in to see your drive.";
+
+const gridEl = document.getElementById("home-grid");
+const statusEl = document.getElementById("home-status");
+const retryEl = document.getElementById("home-retry");
+const nextEl = document.getElementById("next-step");
+const navSignin = document.getElementById("nav-signin");
+const navSignout = document.getElementById("nav-signout");
+const navSignoutAll = document.getElementById("nav-signout-all");
+
+function sayStatus(text, retry) {
+  const parts = String(text).split(". ");
+  statusEl.querySelector(".what").textContent = parts[0] ? `${parts[0]}.` : text;
+  statusEl.querySelector(".next").textContent = parts.slice(1).join(". ");
+  retryEl.hidden = !retry;
+  statusEl.hidden = false;
+  gridEl.hidden = true;
+  nextEl.hidden = true;
+}
+
+function showSessionNav(signedIn) {
+  navSignin.hidden = signedIn;
+  navSignout.hidden = !signedIn;
+  navSignoutAll.hidden = !signedIn;
+}
+
+async function getJson(url) {
+  const response = await fetch(url, { headers: { accept: "application/json" } });
+  const payload = await response.json().catch(() => null);
+  return { status: response.status, ok: response.ok, payload };
+}
+
+function setText(id, text) {
+  document.getElementById(id).textContent = text;
+}
+
+function nextStep(balanceCents, deviceCount) {
+  if (balanceCents <= 0) {
+    return { what: "Add $10 to open your drive", line: "Your balance pays for storage. It never expires.", href: "/usage", label: "Top up" };
+  }
+  if (deviceCount === 0) {
+    return { what: "Add a computer", line: "Run drive login on it, then your drive shows up in Finder.", href: "/get-started", label: "Get started" };
+  }
+  return { what: "Open your files", line: "Browse, upload and share from here.", href: "/files", label: "Your files" };
+}
+
+async function read() {
+  statusEl.hidden = true;
+  gridEl.hidden = false;
+  gridEl.setAttribute("aria-busy", "true");
+  let balance;
+  let usage;
+  let devices;
+  try {
+    [balance, usage, devices] = await Promise.all([
+      getJson(BALANCE_ENDPOINT),
+      getJson(USAGE_ENDPOINT),
+      getJson(DEVICES_ENDPOINT),
+    ]);
+  } catch (_error) {
+    sayStatus(LOAD_FAILED, true);
+    return;
+  }
+  if ([balance, usage, devices].some((r) => r.status === 401)) {
+    showSessionNav(false);
+    sayStatus(SIGNED_OUT, false);
+    return;
+  }
+  if (
+    !balance.ok ||
+    typeof balance.payload?.balance !== "string" ||
+    !devices.ok ||
+    !Array.isArray(devices.payload?.keys)
+  ) {
+    sayStatus(LOAD_FAILED, true);
+    return;
+  }
+  showSessionNav(true);
+  setText("balance-amount", balance.payload.balance);
+  setText("balance-line", balance.payload.balance_line || "");
+  const labels = usage.ok ? usage.payload?.labels : null;
+  setText("stored-now", labels?.storedNow ?? "—");
+  setText("stored-cost", labels?.cost ?? "");
+  const count = devices.payload.keys.length;
+  setText("devices-count", String(count));
+  setText("devices-line", count === 0 ? "None yet." : count === 1 ? "One can use your drive." : `${count} can use your drive.`);
+  const step = nextStep(Number(balance.payload.balance_cents) || 0, count);
+  setText("next-what", step.what);
+  setText("next-line", step.line);
+  const link = document.getElementById("next-link");
+  link.href = step.href;
+  link.textContent = step.label;
+  nextEl.hidden = false;
+  gridEl.setAttribute("aria-busy", "false");
+}
+
+async function postSignout(step) {
+  navSignout.disabled = true;
+  navSignoutAll.disabled = true;
+  let response;
+  try {
+    response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ step }),
+    });
+  } catch (_error) {
+    sayStatus(LOAD_FAILED, true);
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  if (!response.ok) {
+    sayStatus(LOAD_FAILED, true);
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  location.reload();
+}
+
+navSignout.addEventListener("click", () => {
+  postSignout("signout");
+});
+navSignoutAll.addEventListener("click", () => {
+  postSignout("signout-all");
+});
+retryEl.addEventListener("click", () => {
+  read();
+});
+read();
+  </script>
+  <script type="module" src="/close-banner.js"></script>
+</body>
+</html>
