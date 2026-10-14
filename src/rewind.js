@@ -1,4 +1,3 @@
-
 import { RECENTLY_DELETED_DAYS } from "../core/files.js";
 import { scopeStore } from "../core/files-scope.js";
 import { json } from "../core/http.js";
