@@ -22,6 +22,7 @@ const PUBLIC_PAGES = [
   "terms",
 ];
 const APP_PAGES = /** @type {Record<string, string>} */ ({
+  home: "/home",
   files: "/files",
   usage: "/usage",
   devices: "/devices",
