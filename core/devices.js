@@ -1,17 +1,3 @@
-// The D1 key store for cap enforcement (drive issue #64): `accounts.cap_cents`
-// and `devices` with `b2_key_id` / `capabilities` (migrations/drive/0010).
-//
-// The in-memory key store (keystore.js) is the stand-in a deployment without
-// a database keeps; this module is the real rows. Cap enforcement
-// (core/cap.js `enforceCap` / `applyCapSwap`) talks to a KeyProvider
-// (`mint` / `revoke` / `swapToReadOnly`) that reads and persists those rows,
-// so a swap that ran on one Worker instance is the row the next instance
-// sees. The storage-side revoke / swap is still the vendor's key API (#173);
-// until then a minted session expires on its own and the row here is what
-// makes the api's own storage API refuse a write immediately. Drive#173 (2026-10-03)
-// measured the vendor's side: iDrive e2 has no key API over S3, so the expiry
-// is the whole of the withdrawal there.
-
 import { agentCapGate, agentCapPlan, capKeyRow } from "./agent-caps.js";
 import { applyCapSwap, READ_ONLY_CAPABILITIES } from "./cap.js";
 import { first, newId, nowSeconds, run, sha256Hex } from "./db.js";
@@ -33,17 +19,7 @@ import { bucketForKeyPrefix, mintTtlSeconds } from "./keyprovider.js";
 export function createD1DeviceStore(db, options = {}) {
   const now = options.now ?? (() => Date.now());
   const inner = options.keyProvider;
-  // Whether this deployment's provider mints credentials that die on their
-  // own (the STS path, s3-keys.js `namesSession`). When it does, a device
-  // row whose `expires_at` is null is not a permanent key: it is a row the
-  // pre-#544 code wrote over a session that has since died, and the
-  // authenticate below refuses it instead of reading the null as forever
-  // (drive#713). A provider that names no session — iDrive's key pairs, the
-  // stand-in — leaves those rows exactly the permanent keys they say they
-  // are.
   const providerNamesSessions = inner !== undefined && inner.namesSession === true;
-  // One provider revoke, retried: enough for a blip, small enough that a
-  // request is not held long when the vendor is down for real.
   const PROVIDER_REVOKE_ATTEMPTS = 3;
   const PROVIDER_REVOKE_PAUSE_MS = 100;
 
@@ -59,9 +35,6 @@ export function createD1DeviceStore(db, options = {}) {
       device.prepaidPausedFrom === undefined || device.prepaidPausedFrom === null
         ? null
         : JSON.stringify(device.prepaidPausedFrom);
-    // The reason a freeze wrote, or null. Null is written as null and never as
-    // a blank, because the read below hands an absent reason back as absent and
-    // a blank is not the same claim to make twice.
     const cappedReason =
       device.cappedReason === undefined ||
       device.cappedReason === null ||
@@ -104,13 +77,7 @@ export function createD1DeviceStore(db, options = {}) {
       device.createdAt,
       device.lastSeenAt,
       device.revokedAt,
-      // Null is written as null, not as 0: a key that never expires is a
-      // different claim from one that expired at the epoch.
       device.expiresAt ?? null,
-      // The lifetime the mint gave, or null on a row written before the column
-      // existed. Null there means "the kind's own hour is the ceiling", which is
-      // what an old row is held to: it is never handed a longer life than a new
-      // one.
       device.ttlSeconds ?? null,
     );
   }
@@ -186,11 +153,6 @@ export function createD1DeviceStore(db, options = {}) {
     );
   }
 
-  /**
-   * Stand-in credential when no storage provider is configured: the api's
-   * own storage API is what verifies it, so the pair never has to exist
-   * outside this Worker.
-   */
   async function mintCredential(/** @type {KeyScope} */ scope) {
     if (inner !== undefined) {
       const minted = await inner.mint(scope);
@@ -280,24 +242,15 @@ export function createD1DeviceStore(db, options = {}) {
     }
     const plan = agentCapPlan([capKeyRow(device)], status);
     if (plan.swaps.length === 0) {
-      // Already where the cap put it: a second request on a capped key plans
-      // no swap, so the key is left exactly as the first one left it.
       return { device, capped: true };
     }
     await applyCapSwap(plan, store.keyProviderFor(device.accountId));
-    // The row as it stands now, not the row this call read: the answer has to
-    // be the key the store holds, or the caller would write with powers that
-    // have already been withdrawn.
     const swapped = deviceFromRow(
       await first(db, "SELECT * FROM devices WHERE id = ?1 AND revoked_at IS NULL", device.id),
     );
     return { device: swapped ?? device, capped: true };
   }
 
-  // The account's live device rows, oldest first, as this module reads them: one
-  // statement for every answer about a device that is still signed in
-  // (`listCapKeys` for the cap plan, `listLive` for the first-run page's poll),
-  // so the two cannot disagree about which rows are live.
   /**
    * @param {string} accountId
    * @returns {Promise<Device[]>}
@@ -314,8 +267,6 @@ export function createD1DeviceStore(db, options = {}) {
     );
   }
 
-  // Shared by the groups below. Functions are passed as late-bound wrappers because
-  // a group is built before the helpers another group owns are destructured.
   /** @type {import("./devices-rows.js").DeviceStoreContext} */
   const ctx = {
     db,
@@ -394,26 +345,12 @@ export function createD1DeviceStore(db, options = {}) {
         if (device === null) {
           throw new Error(`No key ${keyId} on this account to swap.`);
         }
-        // The old credential is withdrawn at the vendor before the
-        // replacement is minted: a cap swap that left the old key live at
-        // the storage server would not cap anything (drive#371).
         await revokeCredentialAtProvider(device.accessKeyId);
         const credential = await mintCredential({
           prefix: device.prefix,
           capabilities: READ_ONLY_CAPABILITIES,
-          // The cap swap keeps the key inside the bucket the old key was
-          // scoped to, so the replacement credential is limited to the same
-          // boundary: an account's own bucket for an account key, and the
-          // team's for a key on a team prefix (drive#371, drive#462).
           bucket: bucketForKeyPrefix(accountId, device.prefix),
         });
-        // The swap keeps the row's own lifetime and its own id: the hour
-        // restarts on the new credential, and the key a person sees listed
-        // is the one that was there before. Nothing about the swap widens
-        // the window — the named record holds the powers it took, and the
-        // capabilities become READ_ONLY_CAPABILITIES, never more. The other
-        // record is left on the row (`...device`): the cap and the pause
-        // must not wipe each other's restore.
         const ttl = mintTtlSeconds(device.kind, credential.expiresIn);
         const updated = {
           ...device,
@@ -421,8 +358,6 @@ export function createD1DeviceStore(db, options = {}) {
           secretHash: await sha256Hex(credential.secret),
           [record]: [...device.capabilities],
           capabilities: [...READ_ONLY_CAPABILITIES],
-          // The freeze's own reason, on the row it froze. A caller that names
-          // nothing leaves the row's reason as it was.
           ...(options.cappedReason === undefined || options.cappedReason === null
             ? {}
             : { cappedReason: String(options.cappedReason) }),
@@ -461,10 +396,6 @@ export function createD1DeviceStore(db, options = {}) {
             ),
           );
           const credential = await mintCredential(scope);
-          // The hour the minted credential lives. A key this account already
-          // holds on the same prefix (the one being swapped) names the kind, so
-          // a swap keeps the lifetime the key had; with no sibling the kind is
-          // an agent key, which is what a cap swap replaces.
           const kind = sibling?.kind ?? "agent";
           const ttl = mintTtlSeconds(kind, credential.expiresIn);
           const device = {
@@ -480,10 +411,6 @@ export function createD1DeviceStore(db, options = {}) {
             expiresAt: ttl === null ? null : nowSeconds(now()) + ttl,
             lastSeenAt: null,
             revokedAt: null,
-            // The freeze's reason, or null. This row is the one the swap that
-            // mints its own replacement leaves live, so it is the one that
-            // carries the marker; a person's own key and the raise's
-            // replacement both leave it null, which is "no reason recorded".
             ...(options.cappedReason === undefined || options.cappedReason === null
               ? {}
               : { cappedReason: String(options.cappedReason) }),
@@ -496,8 +423,6 @@ export function createD1DeviceStore(db, options = {}) {
             sessionToken: credential.sessionToken,
             expiresIn: credential.expiresIn,
             expiresAt: device.expiresAt,
-            // The scope's own bucket, in the one answer that carries a
-            // credential and the row that holds it (drive#462).
             bucket: scope.bucket,
           };
         },
@@ -523,9 +448,6 @@ export function createD1DeviceStore(db, options = {}) {
             keyId,
             accountId,
           );
-          // The api's row is revoked; the vendor's credential is withdrawn
-          // in the same request, so a revoked key does not keep working at
-          // the storage server until something else expires it (drive#371).
           await revokeCredentialAtProvider(device.accessKeyId);
         },
 

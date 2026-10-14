@@ -1,14 +1,3 @@
-// The transactional emails drive sends. docs/build-spec.md names the money
-// ones (welcome, 80% of cap, read-only reached, payment failed, monthly
-// receipt) and "Keys and safety" names the close ones (day 0 and day 25).
-// The copy lives here so the api Worker, the meter, the billing webhook and
-// the close cron read one source, and test/emails.test.mjs pins the sentences
-// rather than letting a later run quietly reword a customer's inbox.
-//
-// Plain data and pure renderers only -- no Worker or DOM imports -- so
-// node --test exercises every template without a runtime, the same shape as
-// core/pricing.js and core/status.js.
-
 import { DEFAULT_CAP_USD } from "./cap-default.js";
 import { emailShell } from "./email-layout.js";
 import { escapeHtml } from "./escape-html.js";
@@ -17,54 +6,22 @@ import { absoluteUrl } from "./seo.js";
 
 export { DEFAULT_CAP_USD };
 
-// The card-update link the payment-failed mail carries (drive#575): the
-// billing-portal route on this deployment's origin. The path is spelled here
-// rather than imported from src/portal.js because this module is plain data
-// and pure renderers — importing the route module drags the meter, the
-// account store and the auth stack into every email render's load order, and
-// the module-load cycle that follows breaks the Worker. The path cannot
-// drift: test/portal.test.mjs pins this exact URL against PORTAL_ENDPOINT.
 const PORTAL_URL = absoluteUrl("/api/billing/portal");
 
-// The one absolute link every template carries in its footer (drive#522): a
-// template with no link is a dead end in an inbox, and the site is the only
-// place a person can act. Same origin the rest of the product links through
-// absoluteUrl, so a change of SITE.origin moves every email with it.
 const HOME_URL = absoluteUrl("/");
-// The usage page is where a person cancels a close, so the close-lane emails
-// link there instead of opening a drive that is closed or already gone.
 const USAGE_URL = absoluteUrl("/usage.html");
-// The default footer link every kind gets unless it names its own.
 const HOME_LINK = Object.freeze({ label: "Open your drive", url: HOME_URL });
 const USAGE_LINK = Object.freeze({
   label: "Manage your account or cancel closing",
   url: USAGE_URL,
 });
 
-// The sender name every drive email carries. The address itself is a
-// deployment setting (env.MAIL_FROM), because drive has no sending domain of
-// its own yet: a placeholder domain in this file would make every send fail
-// while looking configured, and the domain is a deployment decision, not a
-// code one.
 export const FROM_NAME = "Storagebun";
 
-// The local part of the reply address every drive email carries
-// (drive#522). The full address is support@<the sending domain>, so a reply
-// lands on whatever domain the deployment actually sends from and cannot be a
-// no-reply address or a mailbox nobody reads (sendEmail derives the domain
-// from the deployment's MAIL_FROM and passes the full address into the
-// renderer). Every template footer names it, so no inbox is a dead end.
 export const REPLY_TO_LOCAL = "support";
 
-// The one rate the receipt's "you saved" line is measured against, from
-// docs/build-spec.md ("How the money is worked out"). Kept here rather than
-// re-derived so the saved line cannot disagree with the bill it sits under.
 export const RATE_USD_PER_GB = 0.02;
 
-// The two "you saved" sentences, verbatim from drive#39 (orchestrator,
-// 2026-09-30). A capped month compares the meter against the bill; an
-// uncapped month compares the ceiling against the bill. The line is hidden
-// when the saving is zero or less.
 export const SAVED_COPY = Object.freeze({
   capped: "Our price cap saved you",
   uncapped: "You paid",
@@ -88,9 +45,6 @@ export function savedLine(month) {
       month
     );
   const { meteredUsd, billUsd, ceilingUsd, capped } = fields;
-  // Required, and a real boolean: the flag picks the saving's baseline, so a
-  // truthy string would silently move a customer's receipt from one sentence
-  // to another.
   if (typeof capped !== "boolean") {
     throw new TypeError(`capped must be true or false, got ${String(capped)}`);
   }
@@ -113,10 +67,6 @@ export function savedLine(month) {
     : `${SAVED_COPY.uncapped} ${dollars} ${SAVED_COPY.uncappedSuffix}`;
 }
 
-// Dollars as a person reads them: always two decimals, so an inbox line never
-// shows "$12" next to a bill that says "$12.00". The output contains only
-// digits, a dot and a leading $ -- no HTML-special characters -- so it can
-// be embedded directly into the text and HTML parts without escaping.
 /**
  * @param {number} value
  * @returns {string}
@@ -125,11 +75,8 @@ function usd(value) {
   return `$${value.toFixed(2)}`;
 }
 
-// Every email ends the same way, so the footer is written once.
 const SIGN_OFF = "-- Storagebun";
 
-// Money that must be present: a missing amount is a bug in the caller, not a
-// $0 that hides it (issue rule: never swallow an error).
 /**
  * @param {unknown} value
  * @param {string} name
@@ -142,10 +89,6 @@ function requireMoney(value, name) {
   return value;
 }
 
-// ---------------------------------------------------------------------------
-// 1) Welcome -- sent after sign-up. The footer carries the link and the reply
-//    address every template has, so no per-account numbers are needed here.
-// ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data] the shared footer data
  *   (`replyTo`); the welcome itself has no numbers, and the uniform call shape
@@ -153,11 +96,6 @@ function requireMoney(value, name) {
  */
 export function welcomeTemplate(data = {}) {
   const subject = "Your drive is ready";
-  // Each command is named exactly once, in the list, and the prose below says
-  // what the pair does rather than repeating them (drive#557): the sign-in is
-  // the constant SIGN_IN_COMMAND and the setup is INSTALL_COMMAND, so this
-  // email cannot drift from the first-run page, the home page or the failure
-  // table into telling someone that one command signs them in when it does not.
   const steps = `  ${SIGN_IN_COMMAND}\n  ${INSTALL_COMMAND}`;
   const explanation = `Signing in opens the browser and mints this machine's key; the setup that follows makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Both are safe to run again.`;
   const lines = [
@@ -184,9 +122,6 @@ export function welcomeTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
-// ---------------------------------------------------------------------------
-// 2) Cap warning -- 80% of the spending cap reached. { capUsd }
-// ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
@@ -211,9 +146,6 @@ export function capWarningTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
-// ---------------------------------------------------------------------------
-// 3) Read-only reached -- the cap has been hit. { capUsd }
-// ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
@@ -237,9 +169,6 @@ export function readOnlyTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
-// ---------------------------------------------------------------------------
-// 4) Payment failed -- a charge did not go through. { amountUsd }
-// ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
@@ -266,22 +195,7 @@ export function paymentFailedTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
-// ---------------------------------------------------------------------------
-// 5) Monthly receipt -- this month's bill and, when there is one, the saved
-//    line. { monthIso, billUsd, meteredUsd, ceilingUsd, capped }
-// ---------------------------------------------------------------------------
-// The month the receipt is for, as an instant: the first millisecond of the
-// UTC month (`monthStart`, src/meter.js), sent as "2026-10-01T00:00:00.000Z".
-// The month is NAME rather than "this month" (drive#559) because a mail is
-// read days later and "this month" is whatever month the reader is in now. It
-// is a month, never a day, so the guard is the month shape itself: a value
-// that is not the first instant of a UTC month is refused rather than guessed
-// at, and no caller text reaches the subject.
 const MONTH_ISO = /^\d{4}-(0[1-9]|1[0-2])-01T00:00:00\.000Z$/;
-// Twelve names, one per month, in one place and in one order: the month a
-// customer reads out of their inbox. A table rather than the runtime's locale
-// table, because the receipt's words are a decision (docs/build-spec.md) and
-// an email reader's zone must not turn "October" into "Oktobri".
 const MONTH_NAMES = Object.freeze([
   "January",
   "February",
@@ -318,17 +232,9 @@ function monthLabel(value) {
 export function monthlyReceiptTemplate(data = {}) {
   const { billUsd, meteredUsd, ceilingUsd, capped } = data;
   const bill = requireMoney(billUsd, "billUsd");
-  // The month the rest of the numbers describe. It is checked first, before
-  // anything is rendered, so a receipt with no month in it never renders at
-  // all rather than going out with a name missing from its subject.
   const month = monthLabel(data.monthIso);
-  // requireMoney() both checks and types: what it hands back is the number
-  // the sentence templates below print.
   const metered = requireMoney(meteredUsd, "meteredUsd");
   const ceiling = requireMoney(ceilingUsd, "ceilingUsd");
-  // savedLine()'s own check is the one that refuses a missing or non-boolean
-  // `capped`, so it is passed through as read rather than defaulted here: a
-  // receipt that guessed the baseline would state the wrong saving.
   const saved = savedLine({
     meteredUsd: metered,
     billUsd: bill,
@@ -339,14 +245,8 @@ export function monthlyReceiptTemplate(data = {}) {
   const lines = [
     `Your Storagebun bill for ${month} is ${usd(bill)}.`,
     "",
-    // The same sentence the usage page states (src/usage.js USAGE_LABELS.monthNote):
-    // a month read in two zones is two different months, so one surface says
-    // the rule once and in the same words.
     "Storagebun bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.",
     "",
-    // drive#545: "min(metered, ceiling)" is code jargon on a customer mail.
-    // The two numbers already on the receipt say the same fact in the
-    // reader's words.
     `Your use this month meters to ${usd(metered)}, and the most we charge for it is ${usd(ceiling)}.`,
   ];
   const html_lines = [
@@ -379,13 +279,6 @@ function requireDays(value, name) {
  * @returns {string}
  */
 function requireDay(value, name) {
-  // "3 Nov (UTC)", the shape purgeOnDate() sends since drive#689: a day
-  // number, the month's short name, and the zone the day is in. The close
-  // window is 30 days, so the year never belongs in the sentence.
-  // The zone is required, not optional: drive#689 named it because a bare
-  // day was the UTC day, and this is the gate that stops a close email
-  // going out with the silence back in it.
-  // en-GB's numeric day never pads, so neither does the guard.
   if (
     typeof value !== "string" ||
     !/^[1-9]\d? (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \(UTC\)$/.test(value)
@@ -397,9 +290,6 @@ function requireDay(value, name) {
   return value;
 }
 
-// ---------------------------------------------------------------------------
-// 6) Account closed -- day 0 receipt. { graceDays, reminderDays, purgeOn }
-// ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data]
  */
@@ -427,9 +317,6 @@ function accountClosedTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, link: USAGE_LINK });
 }
 
-// ---------------------------------------------------------------------------
-// 7) Close reminder -- day 25. { graceDays, reminderDays, purgeOn }
-// ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data]
  */
@@ -437,10 +324,6 @@ export function accountCloseReminderTemplate(data = {}) {
   const graceDays = requireDays(data.graceDays, "graceDays");
   const reminderDays = requireDays(data.reminderDays, "reminderDays");
   const purgeOn = requireDay(data.purgeOn, "purgeOn");
-  // `due` is the late retry: a reminder the mailer dropped between day 25 and
-  // day 29 is re-sent on day 30 or later, when the old "in 5 days, on <date>"
-  // copy would name a date already gone and the purge runs in the same pass.
-  // The caller sets it from the real remaining window (src/account-close.js).
   const due = data.due === true;
   const left = graceDays - reminderDays;
   const subject = due
@@ -464,9 +347,6 @@ export function accountCloseReminderTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, link: USAGE_LINK });
 }
 
-// ---------------------------------------------------------------------------
-// 8) Files deleted -- the day-30 purge ran (drive#522). { purgedOn, graceDays }
-// ---------------------------------------------------------------------------
 /**
  * The last email a closing account receives, sent the moment the purge
  * deletes its objects: it says the files are gone, so a person who never
@@ -516,11 +396,7 @@ export function filesDeletedTemplate(data = {}) {
  * @returns {string}
  */
 function requireReplyTo(value) {
-  if (
-    typeof value !== "string" ||
-    // local@domain, no whitespace, no <>, no quotes, a dot in the domain.
-    !/^[^\s<>@"']+@[^\s<>@"'*]+\.[^\s<>@"'*]+$/.test(value)
-  ) {
+  if (typeof value !== "string" || !/^[^\s<>@"']+@[^\s<>@"'*]+\.[^\s<>@"'*]+$/.test(value)) {
     throw new TypeError(
       `replyTo must be an email address (support@drive.example), got ${String(value)}`,
     );
@@ -528,19 +404,6 @@ function requireReplyTo(value) {
   return value;
 }
 
-// ---------------------------------------------------------------------------
-// Shared tail: sign-off, link, reply address, text/HTML assembly, and the shape
-// every send reads.
-//
-// The link and the reply address are here rather than in each template
-// (drive#522): every kind in EMAIL_KINDS spelling its own footer is that many places
-// for a template to ship with a dead end, and the two facts — where a person
-// goes next, and where a reply lands — are the same for all of them. `finish`
-// is the only way a template returns, so this cannot be forgotten. The link
-// defaults to the home page and the close-lane templates pass the usage page
-// instead, because a closed account has no drive to open. `replyTo` is
-// supplied by sendEmail from the deployment's own sending domain.
-// ---------------------------------------------------------------------------
 /**
  * @param {{subject: string, lines: string[], html_lines: string[], replyTo: unknown, saved?: string|null, link?: {label: string, url: string}, unsubscribe?: string|null}} parts
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
@@ -557,8 +420,6 @@ function finish({
   if (typeof replyTo !== "string" || replyTo === "") {
     throw new TypeError(`the ${subject} email needs a reply address`);
   }
-  // Validated here, once, so the templates that pass it straight through
-  // cannot print an unvalidated value into a header or a tag.
   const address = requireReplyTo(replyTo);
   const text = [
     ...lines,
@@ -573,7 +434,6 @@ function finish({
   ].join("\n");
   const html = emailShell({
     subject,
-    // The first line of the message is what an inbox shows beside the subject.
     preheader: lines.find((line) => line.trim() !== "") ?? subject,
     bodyHtml: html_lines.join("\n"),
     button: link,
@@ -586,11 +446,6 @@ function finish({
   return { subject, text, html, saved };
 }
 
-// ---------------------------------------------------------------------------
-// 8) Top-up receipt -- money moved onto the balance (drive#586). Sent only
-//    when the signed webhook credits a payment, never for usage.
-//    { amountUsd, balanceUsd, auto }
-// ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data]
  */
@@ -619,10 +474,6 @@ function topUpReceiptTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
-// ---------------------------------------------------------------------------
-// 9) Low balance -- the balance is at $2 or less, sent once per crossing
-//    (drive#586). { balanceUsd, autoTopUpUsd }
-// ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data]
  */
@@ -642,11 +493,6 @@ function lowBalanceTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
-// ---------------------------------------------------------------------------
-// Fair-use pause (drive#364) -- young deletes would cost more than this
-// account pays. { copy } is the same sentence the usage page and
-// `drive status` print, so the inbox cannot disagree with them.
-// ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data]
  */
@@ -665,10 +511,6 @@ export function fairUsePauseTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
-// ---------------------------------------------------------------------------
-// 10) Device approve notice -- a signed-in owner approved a CLI.
-//     { deviceName, requestedAt }
-// ---------------------------------------------------------------------------
 /**
  * @param {unknown} value
  * @param {string} name
@@ -705,12 +547,6 @@ function deviceApproveNoticeTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
-// ---------------------------------------------------------------------------
-// 11) Upload arrivals -- one mail a day per upload link, listing the day's
-//     drops (drive issue #684). { ownerName, folder, arrivals: [{name,
-//     sizeLabel}] }. sizeLabel is preformatted by the caller (src/share.js)
-//     so this module stays free of the byte-formatting helpers.
-// ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data]
  */
@@ -746,12 +582,6 @@ function uploadArrivalsTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
-// ---------------------------------------------------------------------------
-// 12) Security event -- one template for keys, links, logout and cap
-//     (drive#551). { event, deviceName, happenedAt, detail? }
-// ---------------------------------------------------------------------------
-/** The event names the template accepts. One sentence each, so a caller cannot
- *  smuggle free text into the subject. */
 export const SECURITY_EVENT_COPY = Object.freeze({
   "agent-key-minted": "An agent key was minted",
   "team-key-minted": "A team key was minted",
@@ -761,14 +591,9 @@ export const SECURITY_EVENT_COPY = Object.freeze({
   "signed-out-everywhere": "Every device was signed out",
   "device-logged-out": "A device was signed out",
   "cap-changed": "The spending cap was changed",
-  // A refusal, not a change: the mint or drop of a file whose SHA-256 is on
-  // the stock known-bad list (drive issue #826). The mail says what happened
-  // and where, which is all the recipient needs to decide to look at it.
   "malware-refused": "A known-bad file was refused",
 });
 
-// USAGE_URL is the same absolute /usage.html the close-lane templates pass
-// to finish (defined at the top of this file). The revoke CTA is that page.
 const SECURITY_LINK = Object.freeze({
   label: "Revoke access on the usage page",
   url: USAGE_URL,
@@ -819,10 +644,6 @@ function securityEventTemplate(data = {}) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// First-file nudge -- sent once at 24 hours and once at 72 hours to an account
-// that has no file yet (delight item 3). { hours: 24 | 72 }
-// ---------------------------------------------------------------------------
 /**
  * @param {Record<string, unknown>} [data] `hours` (24 or 72) and the shared footer data
  */
@@ -856,7 +677,6 @@ function firstFileNudgeTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
-// The kind names every caller and the test suite use. Order is the spec's.
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
   "cap-warning",
@@ -918,7 +738,5 @@ export function renderEmail(kind, data = {}) {
       `The ${String(kind)} email needs a replyTo address; sendEmail derives one from the deployment's MAIL_FROM`,
     );
   }
-  // Object.hasOwn just proved the key is a template name, so the index is one
-  // of TEMPLATES' own keys rather than an arbitrary string.
   return TEMPLATES[/** @type {keyof typeof TEMPLATES} */ (kind)](data);
 }
