@@ -321,22 +321,22 @@ test("the newest parked copy of a path is the one restore finds", () => {
   assert.equal(findTrashName(entries, "/c.txt"), null);
 });
 
-test("a deleted file is restorable for 30 days and not one day later", () => {
+test("a deleted file is restorable for 3 days and not one day later", () => {
   const day = 24 * 60 * 60 * 1000;
-  assert.equal(RECENTLY_DELETED_DAYS, 30);
-  assert.equal(isRestorable(now - 29 * day, now), true);
-  assert.equal(isRestorable(now - 30 * day, now), true);
-  assert.equal(isRestorable(now - 31 * day, now), false);
+  assert.equal(RECENTLY_DELETED_DAYS, 3);
+  assert.equal(isRestorable(now - 2 * day, now), true);
+  assert.equal(isRestorable(now - 3 * day, now), true);
+  assert.equal(isRestorable(now - 4 * day, now), false);
   // A clock that went backwards is not a file from the future.
   assert.equal(isRestorable(now + day, now), false);
 });
 
-test("a file past the 30 days has no Restore button and says why", () => {
+test("a file past the 3 days has no Restore button and says why", () => {
   const day = 24 * 60 * 60 * 1000;
   const [fresh, stale] = trashRows(
     /** @type {import("../core/files.js").FileEntry[]} */ ([
       { name: trashName("/fresh.md", now - day), path: "/fresh.md", kind: "file" },
-      { name: trashName("/stale.md", now - 31 * day), path: "/stale.md", kind: "file" },
+      { name: trashName("/stale.md", now - 4 * day), path: "/stale.md", kind: "file" },
     ]),
     now,
   );
@@ -344,11 +344,11 @@ test("a file past the 30 days has no Restore button and says why", () => {
   assert.equal(fresh.restorable, true);
   assert.equal(fresh.restoreLabel, "Restore");
   assert.equal(fresh.goneLabel, "");
-  // The promise is 30 days, so past it the page does not offer what it cannot do.
+  // The promise is 3 days, so past it the page does not offer what it cannot do.
   assert.ok(stale);
   assert.equal(stale.restorable, false);
   assert.notEqual(stale.restoreLabel, "Restore");
-  assert.match(stale.goneLabel, /30 days/);
+  assert.match(stale.goneLabel, /3 days/);
 });
 
 test("the trash folder is hidden in the drive root, not deeper in it", () => {
@@ -1373,12 +1373,12 @@ test("restore: a file that is not in Recently deleted says so", async () => {
   assert.match((await response.json()).error, /not in Recently deleted/);
 });
 
-test("restore: a file past the 30 days is gone, and the Worker says so", async () => {
+test("restore: a file past the 3 days is gone, and the Worker says so", async () => {
   const { store, upload } = drive();
   const day = 24 * 60 * 60 * 1000;
   await upload("/", "old.md", "from a month ago", "text/markdown");
-  // Deleted 31 days before the clock this test reads.
-  const deletedAt = now - 31 * day;
+  // Deleted 4 days before the clock this test reads.
+  const deletedAt = now - 4 * day;
   /** @param {number} clock */
   const at = (clock) => /** @param {Request} request */ (request) =>
     handleFilesRequest(request, store, account, clock);
@@ -1400,7 +1400,7 @@ test("restore: a file past the 30 days is gone, and the Worker says so", async (
     }),
   );
   assert.equal(response.status, 410);
-  assert.match((await response.json()).error, /30 days/);
+  assert.match((await response.json()).error, /3 days/);
 });
 
 // ---------------------------------------------------------------- a move the storage makes
@@ -3780,7 +3780,7 @@ test("the purge judges by the name, so a stray file under .trash is left alone",
   const store = createMemoryStore();
   const scoped = scopeStore(store, { id: "acct-a" });
   await scoped.write(`${TRASH_PATH}/not-a-trash-key`, "bytes", "text/plain");
-  await park(store, "acct-a", "/expired.txt", now - 31 * 24 * 60 * 60 * 1000);
+  await park(store, "acct-a", "/expired.txt", now - 4 * 24 * 60 * 60 * 1000);
 
   const purged = await purgeExpiredTrash(db, store, now);
 
@@ -3812,8 +3812,8 @@ test("a purge needs its database and refuses to run without one", async () => {
 
 test("a parked file is expired past the window and never before it opens", () => {
   const day = 24 * 60 * 60 * 1000;
-  assert.equal(isTrashExpired(now - 30 * day, now), false);
-  assert.equal(isTrashExpired(now - 30 * day - 1, now), true);
+  assert.equal(isTrashExpired(now - 3 * day, now), false);
+  assert.equal(isTrashExpired(now - 3 * day - 1, now), true);
   // A future-dated name waits for now to catch up rather than vanishing
   // a day before its own window opens.
   assert.equal(isTrashExpired(now + day, now), false);
@@ -3826,7 +3826,7 @@ test("the entrypoint's trash trip runs the purge on its own schedule", async () 
     .bind(now)
     .run();
   const store = createMemoryStore();
-  await park(store, "acct-a", "/expired.txt", now - 31 * 24 * 60 * 60 * 1000);
+  await park(store, "acct-a", "/expired.txt", now - 4 * 24 * 60 * 60 * 1000);
   const env = { DRIVE_DB: db };
   // The same direct-drive wrapper the fetch calls use above: the handler type
   // is optional on ExportedHandler and takes the injectable store as a fourth

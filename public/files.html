@@ -659,7 +659,7 @@ const REWIND_ENDPOINT = "/api/rewind";
 // test/files.test.mjs reads it out of this line so the page cannot drift
 // from the module. The underscore says the reader is the test, not the
 // script, so a linter leaves the line alone (drive#92).
-const _RECENTLY_DELETED_DAYS = 30;
+const _RECENTLY_DELETED_DAYS = 3;
 const PAGE_LINE = "Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.";
 // The rewind tab's own line: it names what the list holds, and what the one
 // button on a row does. The other two views keep the files line they have
@@ -692,7 +692,7 @@ const EMPTY_STATES = {
   },
   trash: {
     what: "Nothing has been deleted.",
-    next: "Files you delete land here for 30 days, ready to put back.",
+    next: "Files you delete land here for 3 days, ready to put back.",
   },
 };
 
@@ -709,7 +709,7 @@ const UPLOAD_COPY = {
   done: "Uploaded.",
 };
 const DELETE_COPY = {
-  confirm: "Delete this file? You can restore it from Recently deleted for 30 days.",
+  confirm: "Delete this file? You can restore it from Recently deleted for 3 days.",
   done: "Moved to Recently deleted.",
 };
 const RESTORE_COPY = { done: "Put back." };
@@ -753,7 +753,7 @@ function whenLabel(iso) {
   return at.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
-// The day a parked file leaves Recently deleted: always a day in the next 30,
+// The day a parked file leaves Recently deleted: always a day in the next 3,
 // so it reads as a day and a month in the reader's own calendar.
 function dayLabel(iso) {
   if (!iso) return "";

@@ -62,7 +62,7 @@ export const BRANCHES_FOLDER = ".branches";
 /** The drive path branches are copied into. */
 export const BRANCHES_PATH = `/${BRANCHES_FOLDER}`;
 /** How long a deleted file stays restorable (build-spec.md "Old versions"). */
-export const RECENTLY_DELETED_DAYS = 30;
+export const RECENTLY_DELETED_DAYS = 3;
 
 // ---------------------------------------------------------------- file kinds
 
@@ -318,7 +318,7 @@ export const EMPTY_STATES = Object.freeze({
   }),
   trash: Object.freeze({
     what: "Nothing has been deleted.",
-    next: "Files you delete land here for 30 days, ready to put back.",
+    next: "Files you delete land here for 3 days, ready to put back.",
   }),
 });
 
@@ -334,7 +334,7 @@ export const UPLOAD_COPY = Object.freeze({
 
 export const DELETE_COPY = Object.freeze({
   button: "Delete",
-  confirm: "Delete this file? You can restore it from Recently deleted for 30 days.",
+  confirm: "Delete this file? You can restore it from Recently deleted for 3 days.",
   done: "Moved to Recently deleted.",
 });
 
