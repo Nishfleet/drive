@@ -542,10 +542,18 @@ function requireReplyTo(value) {
 // supplied by sendEmail from the deployment's own sending domain.
 // ---------------------------------------------------------------------------
 /**
- * @param {{subject: string, lines: string[], html_lines: string[], replyTo: unknown, saved?: string|null, link?: {label: string, url: string}}} parts
+ * @param {{subject: string, lines: string[], html_lines: string[], replyTo: unknown, saved?: string|null, link?: {label: string, url: string}, unsubscribe?: string|null}} parts
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
  */
-function finish({ subject, lines, html_lines, replyTo, saved = null, link = HOME_LINK }) {
+function finish({
+  subject,
+  lines,
+  html_lines,
+  replyTo,
+  saved = null,
+  link = HOME_LINK,
+  unsubscribe = null,
+}) {
   if (typeof replyTo !== "string" || replyTo === "") {
     throw new TypeError(`the ${subject} email needs a reply address`);
   }
@@ -560,6 +568,7 @@ function finish({ subject, lines, html_lines, replyTo, saved = null, link = HOME
     SIGN_OFF,
     "",
     `Reply to this email and it reaches us: ${address}`,
+    ...(unsubscribe === null ? [] : ["", `Stop these reminders: ${unsubscribe}`]),
     "",
   ].join("\n");
   const html = emailShell({
@@ -568,7 +577,11 @@ function finish({ subject, lines, html_lines, replyTo, saved = null, link = HOME
     preheader: lines.find((line) => line.trim() !== "") ?? subject,
     bodyHtml: html_lines.join("\n"),
     button: link,
-    footerHtml: `<p style="margin:0 0 6px">${SIGN_OFF}</p><p style="margin:0">Reply to this email and it reaches us: ${address}</p>`,
+    footerHtml: `<p style="margin:0 0 6px">${SIGN_OFF}</p><p style="margin:0">Reply to this email and it reaches us: ${address}</p>${
+      unsubscribe === null
+        ? ""
+        : `<p style="margin:6px 0 0"><a href="${unsubscribe}">Stop these reminders</a></p>`
+    }`,
   });
   return { subject, text, html, saved };
 }
@@ -836,7 +849,11 @@ function firstFileNudgeTemplate(data = {}) {
     "<p>No computer handy? Open Files in the browser and press Upload.</p>",
     "<p>You pay only for what you store, so an empty drive costs nothing.</p>",
   ];
-  return finish({ subject, lines, html_lines, replyTo: data.replyTo });
+  const unsubscribe =
+    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+      ? data.unsubscribeUrl
+      : null;
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
 // The kind names every caller and the test suite use. Order is the spec's.

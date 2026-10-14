@@ -43,6 +43,7 @@ import {
   handleTopUpRequest,
   TOPUP_ENDPOINT,
 } from "../core/topup.js";
+import { handleUnsubscribe, UNSUBSCRIBE_PATH } from "../core/unsubscribe.js";
 import { handleWebhookRequest, WEBHOOK_ENDPOINT } from "../core/webhook-routes.js";
 import { ACCESS_SIGNIN_PATH, handleAccessSignin } from "./access-signin.js";
 import {
@@ -658,6 +659,7 @@ export function createApp() {
   );
 
   // The send lane: closed with no EMAIL_SEND_TOKEN set (core/email-send.js).
+  app.get(UNSUBSCRIBE_PATH, (c) => handleUnsubscribe(c.req.raw, c.env));
   app.post(SEND_EMAIL_PATH, (c) => handleSendEmailRequest(c.req.raw, c.env));
 
   // The health endpoint the outside monitor polls (issues #96, #36).

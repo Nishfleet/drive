@@ -9,6 +9,7 @@
 // and the search index, so a file that arrived by either feed counts.
 
 import { sendEmail } from "../core/email-send.js";
+import { unsubscribeUrl } from "../core/unsubscribe.js";
 
 // An account older than this was not signed up recently enough for a nudge to
 // read as one; the pass skips it rather than mailing an old account.
@@ -25,6 +26,8 @@ const NUDGES = Object.freeze([
  * @param {import("@cloudflare/workers-types").D1Database} input.db
  * @param {unknown} input.email the mail binding
  * @param {string} input.mailFrom
+ * @param {string} [input.secret] signs the unsubscribe link; no link is printed without it
+ * @param {string} [input.origin] the site's origin, for that link
  * @param {number} input.now epoch milliseconds
  * @returns {Promise<{sent: number, failed: number}>}
  */
@@ -42,6 +45,7 @@ export async function runActivationNudges(input) {
         `SELECT a.id AS id, a.email AS email FROM accounts a
          WHERE a.closed_at IS NULL
            AND a.${nudge.column} IS NULL
+           AND a.nudges_off IS NULL
            AND a.email IS NOT NULL AND a.email <> ''
            AND a.created_at <= datetime(?1, 'unixepoch', ?2)
            AND a.created_at > datetime(?1, 'unixepoch', ?3)
@@ -64,7 +68,13 @@ export async function runActivationNudges(input) {
             to: row.email,
             from: input.mailFrom,
             kind: "first-file-nudge",
-            data: { hours: nudge.hours },
+            data: {
+              hours: nudge.hours,
+              unsubscribeUrl:
+                input.secret && input.origin
+                  ? await unsubscribeUrl(input.origin, input.secret, row.id)
+                  : undefined,
+            },
           });
           sent += 1;
         } catch (error) {
