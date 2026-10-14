@@ -741,8 +741,14 @@ async function drainAccountRerolls(db, at) {
 export const VERSION_RETENTION_DAYS = 35;
 export const VERSION_RETENTION_MS = VERSION_RETENTION_DAYS * 24 * HOUR_MS;
 
+// An account on the 1-year history add-on keeps its rows for the whole window
+// (?2 is that window's cutoff): the meter counts those copies toward its bill
+// and the Files page lists them, so the ledger must still hold them.
 export const PRUNE_VERSIONS_SQL = `DELETE FROM file_versions
-  WHERE hidden_at IS NOT NULL AND hidden_at < ?1`;
+  WHERE hidden_at IS NOT NULL AND hidden_at < ?1
+    AND NOT (hidden_at >= ?2
+      AND account_id IN (SELECT id FROM accounts WHERE history_days > 30))`;
+export const LONG_VERSION_RETENTION_DAYS = 370;
 export const FAIR_USE_DECISIONS_PRUNE_SQL = "DELETE FROM fair_use_decisions WHERE decided_at < ?1";
 // The partial index that predicate reads (migrations/drive/
 // 0023_file_versions_hidden_at.sql), so the nightly delete is a range read

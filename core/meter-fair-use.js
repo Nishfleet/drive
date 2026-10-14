@@ -5,6 +5,7 @@ import { sendEmail } from "./email-send.js";
 import { HOUR_MS, hourStart, toMillis } from "./meter.js";
 import {
   FAIR_USE_DECISIONS_PRUNE_SQL,
+  LONG_VERSION_RETENTION_DAYS,
   OLDEST_REROLL_SQL,
   PRUNE_VERSIONS_SQL,
   ROLLED_THROUGH_READ_SQL,
@@ -67,7 +68,10 @@ export async function pruneHiddenVersions(db, now = Date.now()) {
       skipped: "an account re-roll still reaches back past the cutoff hour",
     };
   }
-  const result = await db.prepare(PRUNE_VERSIONS_SQL).bind(cutoff).run();
+  const result = await db
+    .prepare(PRUNE_VERSIONS_SQL)
+    .bind(cutoff, at - LONG_VERSION_RETENTION_DAYS * HOUR_MS * 24)
+    .run();
   if (typeof result.meta?.changes !== "number") {
     throw new TypeError("the retention delete reported no change count");
   }
