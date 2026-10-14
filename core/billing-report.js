@@ -1,5 +1,3 @@
-// Split out of core/billing.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-
 /** @typedef {import("./billing.js").BillingConfig} BillingConfig */
 import {
   BILLING_CONFIG,
@@ -69,8 +67,6 @@ export function fairUseLimitBytes(input) {
     return Number.MAX_SAFE_INTEGER;
   }
   const config = billingConfig(input.config ?? BILLING_CONFIG);
-  // The bill follows size30 (drive#642), so the monthly payment is the bill
-  // for exactly this size30, the same function every other price reads.
   const payCents = monthBillCents({
     size30Bytes,
     config,
@@ -105,8 +101,6 @@ export function fairUseLine(status) {
   const why = status.allowed
     ? "Young deletes still count toward the pause until they age out."
     : `Uploads pause because young deletes still count until ${date}.`;
-  // remaining 0 and allowed together means this exact size still fits, but
-  // another byte will not. "Uploads are open" would contradict "no room left".
   const opens =
     remaining === 0 && status.allowed
       ? "Another upload will not fit."
@@ -292,16 +286,11 @@ export function capStatus(size30Bytes, capUsd, config = BILLING_CONFIG, download
       downloadBytes: downloads.downloadBytes ?? 0,
       config: billingConfig(config),
     }).totalCents / 100;
-  // Read-only when the counted spend would exceed the cap, not at it: a bill
-  // that lands exactly on the cap is what the person agreed to pay. Passing the
-  // cap is what cuts writes off.
   const atCap = counted > cap;
   return Object.freeze({
     capUsd: cap,
     countedUsd: counted,
     remainingUsd: Math.max(0, cap - counted),
-    // "read_only" once the cap is hit; the drive stays read-only until the cap
-    // is raised. `active` is the one state a live mount acts on.
     state: atCap ? "read_only" : "active",
   });
 }
@@ -339,10 +328,6 @@ export function capLine(cap) {
   if (fields.state === "active") {
     return `Cap ${formatUsd(capUsd)}: ${formatUsd(countedUsd)} counted this month, ${formatUsd(remainingUsd)} left.`;
   }
-  // Two sentences: the message table's words first (what happened, and the one
-  // thing to do), then the numbers and the promise that matters most at the
-  // cap: nothing was deleted, and the uploads still waiting in the VFS cache
-  // go up once the cap is raised (build-spec.md, "Keys and safety").
   return (
     failureMessage("cap-reached") +
     `\nCap ${formatUsd(capUsd)} reached: ${formatUsd(countedUsd)} counted this month. ` +
@@ -413,10 +398,7 @@ export function usageSummary(usage, config = BILLING_CONFIG) {
           })();
   const todayDrawMillicents =
     fields.todayDrawMillicents === undefined
-      ? // The monthly figure the draw divides by 30 is the same total main
-        // already draws from (storage on size30 plus download overage, as
-        // monthBillCents works it out), the same number core/prepaid.js uses.
-        dailyDrawMillicents(
+      ? dailyDrawMillicents(
           monthBillCents({ size30Bytes, downloadBytes, config }).totalMillicents,
           0,
         ).drawMillicents
@@ -556,8 +538,6 @@ export function handleUsageRequest(
   balanceLine = null,
   monthIso = "",
 ) {
-  // The gate is first, before the method: an anonymous request learns nothing
-  // about whether it could write, only that it is not signed in.
   if (!account) {
     return unauthorizedResponse();
   }
@@ -571,25 +551,11 @@ export function handleUsageRequest(
     typeof account.capUsd === "number" && Number.isFinite(account.capUsd)
       ? account.capUsd
       : BILLING_CONFIG.defaultCapUsd;
-  // The month these numbers belong to, named (drive#559): the first instant of
-  // the UTC month, sent by the caller (src/index.js) from the one boundary the
-  // meter, the cap walk and the invoice read. A month that is not one is a
-  // caller bug, so it fails the read rather than shipping a page with a
-  // heading nobody can check a statement against.
   if (typeof monthIso !== "string" || Number.isNaN(new Date(monthIso).getTime())) {
     throw new TypeError(
       `handleUsageRequest needs the month's first instant, got ${String(monthIso)}`,
     );
   }
-  // The month's own numbers, when the route read them (drive#496). The route
-  // passes the account store's `monthUsage` result — `monthUsageThrough` behind
-  // `usageSummary`'s shape, the same metered month the cap and the invoice
-  // read — so /api/usage reports what the drive actually holds and has
-  // downloaded rather than the empty month this used to build. Without it
-  // (the unit tests that call the handler directly, and a deployment with no
-  // DRIVE_DB) the empty month stands and the response is still well formed;
-  // a real deployment always has the binding, and the route passes the read
-  // whenever it can.
   const metered = account.usage;
   const empty =
     metered !== null && typeof metered === "object"
@@ -604,32 +570,11 @@ export function handleUsageRequest(
           storedDaily: [],
           downloadBytes: 0,
           capUsd,
-          // The write-cap basis is a provisioned account's own (unchanged): the cap
-          // line this endpoint reports still matches the cap enforceCap() stops
-          // writes at (src/index.js capStateFor). The card on file is the account's
-          // own stamp, read from the accounts row (drive#417); until it is really on
-          // file there is no charge to report, so the honest label is "no charge
-          // yet" and the page shows no bill. It is absent (false) for a caller that
-          // names no card, so the check fails closed.
           cardAdded: true,
           cardOnFile: account.cardOnFile === true,
         });
-  // The cap line rides on the response rather than inside usageSummary(): the
-  // summary is money (numbers only, which is what the usage page's chart and
-  // the invoice read), and building the line here is what lets the Go CLI print
-  // the Worker's words instead of carrying its own copy of them.
-  //
-  // The upload line rides beside it for the same reason (drive issue #308): the
-  // page renders a string the Worker assembled from the one word table, so no
-  // surface ships a second spelling of "Uploading 3 files" or a second byte
-  // formatter. A queue is checked on the way in by uploadProgress(), which
-  // throws on a value that is not a queue, so a broken report fails the read
-  // rather than printing a plausible line about bytes nobody counted.
   const uploadLine = upload === null ? null : uploadProgress(upload).label;
   const fairUseLineText = fairUseLineFromAccount(account);
-  // The month rides on the answer finished: the instant, not a name, because
-  // the page writes the month's name in the browser's own words and a date
-  // rendered on the server is a UTC date (drive#559).
   const openPublicLinks =
     typeof account.openPublicLinks === "number" &&
     Number.isFinite(account.openPublicLinks) &&
@@ -691,8 +636,6 @@ function fairUseLineFromAccount(account) {
       now,
     }).line.copy;
   } catch {
-    // A snapshot that the check cannot turn into a limit (a break-even past
-    // the safe integer range) hides the line rather than 500ing the usage page.
     return null;
   }
 }
