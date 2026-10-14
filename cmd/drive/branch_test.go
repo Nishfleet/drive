@@ -10,13 +10,6 @@ import (
 	"time"
 )
 
-// `drive branch`, `drive branches`, `drive diff`, `drive approve` and
-// `drive discard` against a stand-in that serves BOTH /api/branches* and
-// /v1/keys (drive#156): one host fronts both families, the same shape
-// credentials.APIBase uses in production.
-
-// branchCall is one request the CLI made. The body is read in the handler
-// because the server closes it once the handler returns.
 type branchCall struct {
 	Method string
 	Path   string
@@ -24,8 +17,6 @@ type branchCall struct {
 	Body   map[string]string
 }
 
-// branchMintSecret is a distinctive secret the stand-in mints, so a test can
-// prove runBranch never prints it (drive#75).
 const branchMintSecret = "sk_branch_secret_must_not_print"
 
 type branchStandIn struct {
@@ -402,7 +393,7 @@ func TestRunApproveAndDiscard(t *testing.T) {
 }
 
 func TestBranchCommandsNeedASignedInDevice(t *testing.T) {
-	home := t.TempDir() // no credentials.json
+	home := t.TempDir()
 	err := runBranches([]string{"--api", "https://api.example.invalid", "--home", home})
 	if err == nil || !strings.Contains(err.Error(), "not signed in") {
 		t.Fatalf("err = %v, want the not-signed-in sentence", err)
@@ -415,7 +406,7 @@ func TestDefaultBranchName(t *testing.T) {
 		"/Photos/2":  "2",
 		"/":          "root",
 		"":           "root",
-		"/My Photos": "branch", // the space is not a legal branch name
+		"/My Photos": "branch",
 	} {
 		if got := defaultBranchName(in); got != want {
 			t.Errorf("defaultBranchName(%q) = %q, want %q", in, got, want)

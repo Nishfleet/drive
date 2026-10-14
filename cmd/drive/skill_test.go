@@ -8,9 +8,6 @@ import (
 	"testing"
 )
 
-// TestEveryToolHasASkillLocation guards the promise the spec makes: every tool
-// `drive init` connects also gets a skill note. A new registry row without a
-// skill path is a silent gap, so the test fails instead.
 func TestEveryToolHasASkillLocation(t *testing.T) {
 	env, _ := testEnv(t)
 	for _, tool := range tools() {
@@ -25,10 +22,6 @@ func TestEveryToolHasASkillLocation(t *testing.T) {
 	}
 }
 
-// TestSkillPathsAreEachToolsOwnDocumentedLocation pins the five paths, so a
-// future edit cannot quietly move a note somewhere the tool does not read.
-// Each is the personal-skill (or global steering) location from the tool's
-// current docs, checked 2026-09-30; see the table in skill.go.
 func TestSkillPathsAreEachToolsOwnDocumentedLocation(t *testing.T) {
 	env, _ := testEnv(t)
 	cases := map[string]string{
@@ -62,8 +55,6 @@ func TestSkillPathsAreEachToolsOwnDocumentedLocation(t *testing.T) {
 	}
 }
 
-// TestSkillPathReportsAToolWithNoDocumentedLocation: a tool with no skill
-// location reports it instead of a path, so nothing is written to a guess.
 func TestSkillPathReportsAToolWithNoDocumentedLocation(t *testing.T) {
 	env, _ := testEnv(t)
 	if path, ok := (Tool{Name: "vim"}).SkillPath(env); ok {
@@ -71,10 +62,6 @@ func TestSkillPathReportsAToolWithNoDocumentedLocation(t *testing.T) {
 	}
 }
 
-// TestSkillFileStartsWithTheFrontmatterItsLoaderNeeds: the four SKILL.md
-// tools document YAML frontmatter with name and description, and the loaders
-// read it from the very start of the file. Kiro steering needs no name or
-// description, so its file only makes the default inclusion explicit.
 func TestSkillFileStartsWithTheFrontmatterItsLoaderNeeds(t *testing.T) {
 	for _, name := range toolNames() {
 		t.Run(name, func(t *testing.T) {
@@ -106,10 +93,6 @@ func TestSkillFileStartsWithTheFrontmatterItsLoaderNeeds(t *testing.T) {
 	}
 }
 
-// TestConnectWritesTheSkillNote proves the note the spec asks for: where the
-// drive is, that there is a search, and to branch before large edits. Every
-// command it names is held to the command table by
-// TestNotesNameOnlyRealCommands (command_table_test.go).
 func TestConnectWritesTheSkillNote(t *testing.T) {
 	for _, name := range toolNames() {
 		t.Run(name, func(t *testing.T) {
@@ -132,10 +115,6 @@ func TestConnectWritesTheSkillNote(t *testing.T) {
 	}
 }
 
-// TestSkillNoteLoadsOutsideTheDriveFolder is the point of a skill note: the
-// file must sit in the tool's own skills directory, not inside the drive
-// folder, so a session that never opens the drive still gets it. The in-folder
-// note is the same content at a path only a session started there reads.
 func TestSkillNoteLivesOutsideTheDriveFolder(t *testing.T) {
 	env, _ := testEnv(t)
 	tool, err := toolByName("claude")
@@ -155,8 +134,6 @@ func TestSkillNoteLivesOutsideTheDriveFolder(t *testing.T) {
 	}
 }
 
-// TestWriteSkillIsIdempotent: `drive init` must be safe to run again, and a
-// second connect must not append the note twice.
 func TestWriteSkillIsIdempotent(t *testing.T) {
 	env, _ := testEnv(t)
 	tool, err := toolByName("claude")
@@ -180,8 +157,6 @@ func TestWriteSkillIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestWriteSkillUpdatesTheNoteInPlace: when the drive folder moves, the note
-// must follow it rather than keeping a stale path next to a fresh copy.
 func TestWriteSkillUpdatesTheNoteInPlace(t *testing.T) {
 	env, _ := testEnv(t)
 	tool, err := toolByName("claude")
@@ -207,9 +182,6 @@ func TestWriteSkillUpdatesTheNoteInPlace(t *testing.T) {
 	}
 }
 
-// TestWriteSkillKeepsTextAfterTheDriveBlock: a user who adds a line after the
-// drive's block keeps it; a rewrite replaces only the block between the begin
-// and end markers.
 func TestWriteSkillKeepsTextAfterTheDriveBlock(t *testing.T) {
 	env, _ := testEnv(t)
 	tool, err := toolByName("claude")
@@ -237,10 +209,6 @@ func TestWriteSkillKeepsTextAfterTheDriveBlock(t *testing.T) {
 	}
 }
 
-// TestWriteSkillRefusesAFileTheDriveDidNotWrite: the skill path is the drive's
-// own name ("drive"). A file the user put there is not the drive's to
-// clobber, and replacing it silently would be the exact failure the spec is
-// fixing, so the collision is reported and the file is left alone.
 func TestWriteSkillRefusesAFileTheDriveDidNotWrite(t *testing.T) {
 	env, _ := testEnv(t)
 	tool, err := toolByName("claude")
@@ -262,9 +230,6 @@ func TestWriteSkillRefusesAFileTheDriveDidNotWrite(t *testing.T) {
 	}
 }
 
-// TestWriteSkillRefusesAHalfDelimitedBlock: a file that mentions the begin
-// marker but has no end marker (or a foreign file that merely contains the
-// string) must be a collision, never a silent rewrite or delete.
 func TestWriteSkillRefusesAHalfDelimitedBlock(t *testing.T) {
 	env, _ := testEnv(t)
 	tool, err := toolByName("codex")
@@ -282,9 +247,6 @@ func TestWriteSkillRefusesAHalfDelimitedBlock(t *testing.T) {
 	}
 }
 
-// TestRevokeRemovesTheDriveNoteAndNothingElse. The note is the drive's own
-// file, so revoke takes it away, and the dedicated drive skill directory goes
-// too when nothing is left in it.
 func TestRevokeRemovesTheDriveNoteAndNothingElse(t *testing.T) {
 	for _, name := range toolNames() {
 		t.Run(name, func(t *testing.T) {
@@ -305,7 +267,7 @@ func TestRevokeRemovesTheDriveNoteAndNothingElse(t *testing.T) {
 			}
 			dir := filepath.Dir(path)
 			if filepath.Base(dir) != skillName {
-				return // a shared directory (Kiro's steering dir) is kept
+				return
 			}
 			if _, err := os.Stat(dir); !os.IsNotExist(err) {
 				t.Fatalf("the drive's own empty skill directory %s was left behind", dir)
@@ -314,9 +276,6 @@ func TestRevokeRemovesTheDriveNoteAndNothingElse(t *testing.T) {
 	}
 }
 
-// TestRevokeKeepsKirosSharedSteeringDirectory: ~/.kiro/steering holds the
-// user's other steering files and may have existed before the drive; revoking
-// the drive's file must not delete it.
 func TestRevokeKeepsKirosSharedSteeringDirectory(t *testing.T) {
 	env, _ := testEnv(t)
 	tool, err := toolByName("kiro")
@@ -366,9 +325,6 @@ func TestRevokeOnAnAbsentNoteIsFine(t *testing.T) {
 	}
 }
 
-// TestConnectPreflightsTheSkillBeforeRegistering: a collision at the skill
-// path must be refused before the tool is registered, so the failure leaves no
-// half-applied state (a server registered without its note).
 func TestConnectPreflightsTheSkillBeforeRegistering(t *testing.T) {
 	env, runner := testEnv(t)
 	tool, err := toolByName("claude")
@@ -388,9 +344,6 @@ func TestConnectPreflightsTheSkillBeforeRegistering(t *testing.T) {
 	}
 }
 
-// TestConnectFailsLoudlyWhenTheSkillCannotBeWritten: a connected tool whose
-// note silently did not land is the exact failure the spec is fixing, so it
-// is reported instead of swallowed.
 func TestConnectFailsLoudlyWhenTheSkillCannotBeWritten(t *testing.T) {
 	env, _ := testEnv(t)
 	tool, err := toolByName("claude")
@@ -398,7 +351,6 @@ func TestConnectFailsLoudlyWhenTheSkillCannotBeWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	path, _ := tool.SkillPath(env)
-	// A directory where the skill file belongs: the write cannot succeed.
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -411,10 +363,6 @@ func TestConnectFailsLoudlyWhenTheSkillCannotBeWritten(t *testing.T) {
 	}
 }
 
-// TestConnectWritesTheSkillNoteBeforeRegistering pins the ordering: the note
-// is written first, so a registration that fails afterwards still leaves the
-// note in place -- the silent gap the note exists to close is a tool that is
-// registered and unexplained, and the note must outlive the registration.
 func TestConnectWritesTheSkillNoteBeforeRegistering(t *testing.T) {
 	env, runner := testEnv(t)
 	runner.fail = errors.New("tool refused")
@@ -435,10 +383,6 @@ func TestConnectWritesTheSkillNoteBeforeRegistering(t *testing.T) {
 	}
 }
 
-// TestRevokeKeepsUserTextBetweenTheFrontmatterAndTheBlock: the rewrite path
-// (planSkill) preserves text between the drive's frontmatter and its block, so
-// revoke must preserve the same span. Dropping it there would delete text the
-// user wrote.
 func TestRevokeKeepsUserTextBetweenTheFrontmatterAndTheBlock(t *testing.T) {
 	env, _ := testEnv(t)
 	tool, err := toolByName("claude")
@@ -458,9 +402,6 @@ func TestRevokeKeepsUserTextBetweenTheFrontmatterAndTheBlock(t *testing.T) {
 	if got := readFile(t, path); got != mine {
 		t.Fatalf("revoke changed the user's text between the markers:\n%q\nwant\n%q", got, mine)
 	}
-	// What is left after the revoke is the user's own text at the drive's own
-	// name, so a reconnect refuses it as a collision rather than gobbling it:
-	// the same rule as a file the drive never wrote.
 	if err := tool.Connect(env); err == nil {
 		t.Fatal("expected the connect to refuse the user's text as a collision")
 	}
@@ -469,10 +410,6 @@ func TestRevokeKeepsUserTextBetweenTheFrontmatterAndTheBlock(t *testing.T) {
 	}
 }
 
-// TestWriteSkillRefusesASecondDriveBlock: a file that somehow holds two drive
-// blocks is not a file the drive wrote (a partial revoke or a manual paste),
-// and rewriting only the first would leave the second, so it is refused as a
-// collision instead of being rewritten.
 func TestWriteSkillRefusesASecondDriveBlock(t *testing.T) {
 	env, _ := testEnv(t)
 	tool, err := toolByName("claude")
@@ -494,8 +431,6 @@ func TestWriteSkillRefusesASecondDriveBlock(t *testing.T) {
 	}
 }
 
-// TestRevokeKeepsUserTextAfterTheEndMarker: the same user text survives a
-// revoke as survives a rewrite, so the user's notes outlive the note.
 func TestRevokeKeepsUserTextAfterTheEndMarker(t *testing.T) {
 	env, _ := testEnv(t)
 	tool, err := toolByName("claude")

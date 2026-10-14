@@ -42,10 +42,6 @@ func testDeviceConfig() StorageConfig {
 	}
 }
 
-// TestAgentMountPlanCarriesTheAgentKey holds the agent path's plan to the
-// tool's own key and to nothing else (drive#514): the plan's remote carries the
-// agent key id, the device mount's credential files are never in argv, and
-// there is no remote control because the agent path runs no background loops.
 func TestAgentMountPlanCarriesTheAgentKey(t *testing.T) {
 	home := t.TempDir()
 	key := testAgentKey()
@@ -105,9 +101,6 @@ func TestAgentRcloneEnvCarriesRcloneOwnSecretName(t *testing.T) {
 	}
 }
 
-// TestAgentMountedDirSeesTheAgentMountPoint keeps the agent path out of the
-// person's drive folder: a tool inside the person's mount could delete past
-// the server's own allowlist, which is the bug this issue fixes.
 func TestAgentMountedDirSeesTheAgentMountPoint(t *testing.T) {
 	if got, want := AgentMountDir("/home/u", "claude"), filepath.Join("/home/u", "Drive-agents", "claude"); got != want {
 		t.Errorf("agent mount dir = %q, want %q", got, want)
@@ -118,8 +111,6 @@ func TestAgentMountedDirSeesTheAgentMountPoint(t *testing.T) {
 	}
 }
 
-// TestAgentStateReportsMissingKey says what a person sees before the key is
-// on disk, so a per-tool failure is a named failure and not a bare error.
 func TestAgentStateReportsMissingKey(t *testing.T) {
 	env, _ := testEnv(t)
 	bad := BuildAgentMountPlan("linux", env.Home, "/usr/bin/rclone", "claude", StorageConfig{})
@@ -142,9 +133,6 @@ func TestWindowsAgentPathLeavesTheToolInTheDrive(t *testing.T) {
 	}
 }
 
-// TestAgentToolsDoNotShareCredentialFiles pins that two connected tools write
-// to two config files and two env files, so connecting one cannot replace the
-// key another tool mounts with after a restart.
 func TestAgentToolsDoNotShareCredentialFiles(t *testing.T) {
 	home := t.TempDir()
 	a := BuildAgentMountPlan("linux", home, "/usr/bin/rclone", "claude", AgentMountConfig(testDeviceConfig(), testAgentKey()))
@@ -160,10 +148,6 @@ func TestAgentToolsDoNotShareCredentialFiles(t *testing.T) {
 	}
 }
 
-// TestUnmountAgentWithoutSystemdStillLetsRevokeGo covers a host with no user
-// bus: connect started the mount detached, so there is a login item file but
-// no unit to disable. A clean unmount must count as stopped, or `drive agents
-// revoke` exits before it withdraws the key.
 func TestUnmountAgentWithoutSystemdStillLetsRevokeGo(t *testing.T) {
 	home := t.TempDir()
 	item := AgentLoginItemPath("linux", home, "claude")
@@ -173,7 +157,7 @@ func TestUnmountAgentWithoutSystemdStillLetsRevokeGo(t *testing.T) {
 	if err := os.WriteFile(item, []byte("[Unit]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", t.TempDir()) // no systemctl: "executable file not found"
+	t.Setenv("PATH", t.TempDir())
 	if err := UnmountAgent("linux", home, "claude"); err != nil {
 		t.Fatalf("an absent systemd must not block revoke: %v", err)
 	}
@@ -182,9 +166,6 @@ func TestUnmountAgentWithoutSystemdStillLetsRevokeGo(t *testing.T) {
 	}
 }
 
-// TestOneToolsAgentPathDoesNotReachTheNextTool pins the loop in initAgents: a
-// tool that has an agent path gets it, and a later tool with none keeps the
-// drive folder instead of inheriting the earlier tool's path.
 func TestOneToolsAgentPathDoesNotReachTheNextTool(t *testing.T) {
 	orig := startToolAgentPath
 	startToolAgentPath = func(env Env, tool Tool) (string, error) {

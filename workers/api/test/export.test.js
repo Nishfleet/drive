@@ -1,6 +1,3 @@
-// GET /v1/export: the signed-in account's own data, never another
-// account's. Read-only; no secret is returned.
-
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";

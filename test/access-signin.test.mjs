@@ -1,10 +1,3 @@
-// "Continue as <email>" on the live test address (drive#342): a verified
-// Cloudflare Access JWT signs a person in, and nothing else does.
-//
-// The JWTs here are real RS256 tokens signed with a key made for the test, and
-// the team's certs endpoint is answered by a stubbed fetch, so the verify path
-// is the one the Worker runs (jose's remote key set), not a seam.
-
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";

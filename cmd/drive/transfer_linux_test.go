@@ -11,14 +11,6 @@ import (
 	"testing"
 )
 
-// TestStandinDiskFull is drive issue #107 bullet 2, Linux-only because it
-// fills a tmpfs mounted on the VFS cache directory (the cache disk). rclone's
-// own VFS cache returns ENOSPC to the save; `drive status` prints the
-// disk-cache-full words from core/messages.js. Nothing already saved is
-// truncated, and a save works again once the filler is removed.
-//
-// The tmpfs needs a user+mount namespace (`unshare -Urm`); without it this
-// skips rather than filling the host disk.
 func TestStandinDiskFull(t *testing.T) {
 	env := newTransferEnv(t)
 	cacheParent := filepath.Join(env.home, ".cache", "drive")

@@ -1,18 +1,3 @@
-// The first-run page's renderer (drive issue #70). The copy and the arithmetic
-// come from core/status.js and core/messages.js — the same source the CLI, the
-// api Worker and the tests read — so this page holds no second copy of a
-// sentence, a window or a label for anything to drift from.
-//
-// Two halves, in this order. The top half is pure: module data in, the exact
-// strings the page shows out, with no DOM anywhere, so `node --test` can
-// import it directly and assert the words without a bundler or a DOM shim.
-// The bottom half wires those strings to the page: it builds the markup the
-// shell leaves empty and drives the poll. A `<script type="module">` is
-// deferred, so the wiring runs after the shell's markup exists.
-//
-// Every word that reaches the page comes from the module through a builder
-// above, and lands with textContent — nothing from a module is ever
-// interpolated into innerHTML.
 import {
   CONNECTED_WINDOW_MS,
   CONNECTION_COPY,
@@ -27,10 +12,6 @@ import {
   UPLOAD_LABEL,
   uploadProgress,
 } from "../core/status.js";
-// The pending-close banner is one shared file. The other signed-in pages load
-// it with <script type="module" src="/close-banner.js">. This page already
-// loads one module, and lighthouserc.json allows only one script resource, so
-// the banner ships inside this bundle instead of as a second request.
 import "../public/close-banner.js";
 
 /**
@@ -113,9 +94,6 @@ export function connectionLine(state) {
  * @returns {Array<"waiting"|"connected"|"unreachable">}
  */
 export function connectionStates() {
-  // The keys are the module's own three states; the annotation is the union
-  // the rest of the page switches on, which the page and this list must agree
-  // on or a rendered line would have no arm to show.
   return /** @type {Array<"waiting"|"connected"|"unreachable">} */ (Object.keys(CONNECTION_COPY));
 }
 
@@ -225,11 +203,6 @@ export function stateCellText(status) {
   return `${cell.label} — ${cell.detail}`;
 }
 
-// The module's words for a device that has never synced, resolved once, so the
-// Last-sync column and the State column cannot say two different things.
-// Exported because the two columns are written in two different halves of this
-// file — one where `document` exists and one where it does not — so nothing
-// that runs in node can compare them. This export is what lets the test do it.
 export const NO_SYNC_LABEL = syncStatus({}, 0).label;
 
 /**
@@ -245,8 +218,6 @@ export function ageMs(value, now = Date.now()) {
   if (typeof now !== "number" || !Number.isFinite(now)) {
     throw new TypeError(`ageMs needs now as a number, got ${String(now)}`);
   }
-  // A Date's own epoch value; Date.parse takes the string form, and an absent
-  // value is as unreadable as a broken one: both report the row as unreadable.
   const time =
     typeof value === "number"
       ? value
@@ -305,9 +276,6 @@ export function lastSyncText(device) {
  * @returns {string}
  */
 export function syncInstantText(instant, options = {}) {
-  // A string, and only a string: `new Date` also takes a Date and a number,
-  // and accepting them here would leave the guard and the words describing
-  // two different doors.
   if (typeof instant !== "string") {
     throw new TypeError(`syncInstantText needs an ISO-8601 instant, got ${String(instant)}`);
   }
@@ -367,11 +335,6 @@ export function isConnected(payload, now = Date.now()) {
   );
 }
 
-// ---- The bottom half: the page wiring the builders above. ----
-
-// Every element the wiring touches, named once. A missing element is a real
-// error: `required()` throws rather than letting the page half-render, because
-// a blank section is the drift this change exists to remove.
 /**
  * @param {string} id
  * @returns {HTMLElement}
@@ -401,10 +364,6 @@ function element(tag, className, text) {
   return el;
 }
 
-// The shell ships the three steps' list empty and the two empty states and the
-// live line with no text: the words arrive from the module here, so the HTML
-// carries structure and core/status.js carries copy and there is no third copy
-// to keep in step with either.
 function renderSteps() {
   const list = required("steps");
   const items = stepLines().map((step) => {
@@ -430,9 +389,6 @@ function renderCommand() {
   required("install-command").textContent = installCommand();
 }
 
-// One row per system, each a system name and the single line to paste for it.
-// textContent throughout, like every other builder here: nothing from the
-// module is ever interpolated into innerHTML.
 function renderInstallLines() {
   const rows = installLines().map((row) => {
     const li = document.createElement("li");
@@ -443,9 +399,6 @@ function renderInstallLines() {
   required("install-lines").replaceChildren(...rows);
 }
 
-// The live line: all three arms are rendered up front, so a `say()` is a
-// switch between text that is already on the page, never a lookup that can
-// come back empty and leave a blank line.
 function renderConnection() {
   const host = required("connection");
   const lines = connectionStates().map((state) => {
@@ -472,8 +425,6 @@ function showConnection(state) {
   }
   host.dataset.state = state;
   for (const line of host.children) {
-    // `hidden` on the other two, never display:none by hand: [hidden] is what
-    // a reader agent and the UA stylesheet already honour.
     line.toggleAttribute("hidden", line !== current);
   }
 }
@@ -490,9 +441,6 @@ function showConnection(state) {
  */
 export function deviceRow(device) {
   const sync = deviceSyncState(device);
-  // The instant, written in this browser's zone. A device that has never
-  // synced takes NO_SYNC_LABEL — the module's own words, resolved once above,
-  // so this column and the state column cannot say two different things.
   const instant = lastSyncText(device);
   const tr = document.createElement("tr");
   const cells = [
@@ -507,8 +455,6 @@ export function deviceRow(device) {
   return tr;
 }
 
-// One desktop notification per sync error, not one per poll. The error is
-// already on the page; the notification is for the tab you are not looking at.
 const notified = new Set();
 
 /**
@@ -528,10 +474,6 @@ function notifySyncError(device) {
   new Notification(title, { body });
 }
 
-// Ask for desktop notifications the first time an error appears on the page,
-// never before: the permission prompt is not the first thing a new person
-// meets. Declined or dismissed is not a failure — the error already shows on
-// the page, so there is nothing to retry.
 /**
  * @param {DeviceRow[]} devices
  * @returns {void}
@@ -546,7 +488,6 @@ function maybeAskToNotify(devices) {
   }
   Notification.requestPermission().then((permission) => {
     if (permission !== "granted") {
-      // The error already shows on the page; nothing to retry.
       return;
     }
   });
@@ -583,7 +524,6 @@ function render(payload) {
 
   if (isConnected(payload)) {
     showConnection("connected");
-    // Nothing left to watch: the page is done and stops asking.
     if (timer !== null) {
       window.clearInterval(timer);
       timer = null;
@@ -607,10 +547,6 @@ async function poll() {
     return;
   }
   if (!response.ok) {
-    // A 401 is the waiting state, not an unreachable service: the account
-    // gate answered, so the service is up. connectionStateForStatus owns the
-    // mapping and both arms are states this page renders. A 401 is also the
-    // signed-out menu: this browser has no account, so Sign in stays.
     showConnection(connectionStateForStatus(response.status));
     if (response.status === 401) {
       showSessionNav(false);
@@ -632,17 +568,10 @@ async function poll() {
     render(payload);
     showSessionNav(true);
   } catch {
-    // Every fetch and every body read above is guarded, and so is the render:
-    // this poll runs on a timer and on every tab that comes back, so a payload
-    // this page cannot draw has one home, and it is the unreachable state the
-    // user already knows. A rejection out of here would be an unhandled one.
     showConnection("unreachable");
   }
 }
 
-// Copy has to work on a plain http page too, where the async clipboard API is
-// not there, so the textarea path is the one that always works. Either way the
-// note says what happened, so a failed copy is never silent.
 function wireCopyButton() {
   const button = required("copy-command");
   const note = required("copy-note");
@@ -677,9 +606,6 @@ function wireCopyButton() {
   });
 }
 
-// The signed-in menu (drive#423). Sign in is the default so a browser with
-// no script still has a way in. A 200 from the status poll flips it to Sign
-// out and Sign out everywhere; a 401 flips it back.
 const SIGNIN_ENDPOINT = "/api/signin";
 
 /**
@@ -742,24 +668,15 @@ function start() {
   wireCopyButton();
   wireSessionNav();
 
-  // poll() owns its own failures: every fetch and every body read is guarded
-  // and renders the unreachable state, so it cannot reject. The `void` says
-  // that out loud for the linter (drive issue #92) and keeps it true.
   void poll();
   timer = window.setInterval(() => void poll(), pollIntervalMs());
   document.addEventListener("visibilitychange", () => {
-    // A tab in the background has the browser's own cadence; check the moment
-    // it comes back so the line is never stale on return.
     if (document.visibilityState === "visible" && timer !== null) {
       void poll();
     }
   });
 }
 
-// The shell loads this file with `<script type="module">`, which runs after
-// the document is parsed, so the wiring starts here and the page needs no
-// load event of its own. `node --test` imports this same file for its pure
-// builders and has no document, so the wiring runs only where the DOM is.
 if (typeof document !== "undefined") {
   start();
 }

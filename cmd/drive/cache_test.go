@@ -8,13 +8,6 @@ import (
 	"testing"
 )
 
-// `drive cache` (issue #112): one test per thing the issue says the command
-// must do, each driving the real code rather than a copy of it. The mount-side
-// proofs (a real mount, the storage stand-in, a file read past the cap) live in
-// e2e_test.go beside the other stand-in proofs; this file is the command.
-
-// writeCacheMax writes the limit the way `drive cache --max` writes it, so a
-// test of the mount and a test of the command share one file shape.
 func writeCacheMax(t *testing.T, home, size string) {
 	t.Helper()
 	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
@@ -25,9 +18,6 @@ func writeCacheMax(t *testing.T, home, size string) {
 	}
 }
 
-// writeCached writes one cached file under the cache dir the way rclone writes
-// it: bytes under vfs/<remote>/<path>, metadata under vfsMeta/<remote>/<path>.
-// The remote part is the mount's own, so a test does not decide the layout.
 func writeCached(t *testing.T, home, relative string, size int, dirty bool) {
 	t.Helper()
 	cache := DefaultCacheDir(home)
@@ -56,9 +46,6 @@ func writeCached(t *testing.T, home, relative string, size int, dirty bool) {
 	}
 }
 
-// The limit is a setting, not a constant the mount remembers: the value
-// `drive cache --max` wrote is the value the mount runs with, and a machine
-// that never chose one gets the shipped default.
 func TestResolveCacheMaxReadsWhatThePersonSet(t *testing.T) {
 	home := t.TempDir()
 	got, err := ResolveCacheMax(home)
@@ -78,10 +65,6 @@ func TestResolveCacheMaxReadsWhatThePersonSet(t *testing.T) {
 	}
 }
 
-// A limit rclone would refuse is a named error, and the mount is never started
-// with a limit nobody could state. The default is not silently substituted:
-// after `drive cache --max 5G`, a mount that ran with 20G would put the bytes
-// somewhere the command's own number says they cannot be.
 func TestResolveCacheMaxRefusesWhatRcloneWould(t *testing.T) {
 	home := t.TempDir()
 	writeCacheMax(t, home, "20Z")
@@ -92,16 +75,12 @@ func TestResolveCacheMaxRefusesWhatRcloneWould(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "20Z") {
 		t.Errorf("the error names the value it was given: %v", err)
 	}
-	// A mount against that home refuses to start, so the limit on the mount
-	// is always the limit the person typed.
 	if err := BuildMountPlan("linux", home, "/usr/bin/rclone", testStorage()).err; err == nil {
 		t.Error("a mount plan built on an impossible cache limit must carry the failure")
 	}
 }
 
-// `drive cache --max` validates the size and writes it, and refuses a limit of
-// nothing: rclone reads `--vfs-cache-max-size 0` as no cache at all, which
-// would take the cache away from someone who typed a digit by mistake.
+// rclone reads --vfs-cache-max-size 0 as no cache at all.
 func TestSaveCacheMaxValidates(t *testing.T) {
 	home := t.TempDir()
 	for _, bad := range []string{"five", "5Z", "0", "-1G"} {
@@ -124,9 +103,6 @@ func TestSaveCacheMaxValidates(t *testing.T) {
 	}
 }
 
-// The mount carries the person's limit and the free-space floor, and the
-// login item runs the product so the same pair is applied at login: the
-// limit a person typed is the one rclone enforces, on whichever platform.
 func TestMountCarriesTheCacheCap(t *testing.T) {
 	home := t.TempDir()
 	writeCacheMax(t, home, "5G")
@@ -154,9 +130,6 @@ func TestMountCarriesTheCacheCap(t *testing.T) {
 					tc.goos, pair.flag, pair.value, p.Args())
 			}
 		}
-		// The login item runs the product, which reads the same cache-max
-		// file this plan used, so the cap cannot drift between a foreground
-		// mount and the mount at login (drive#515).
 		item := LoginItem(tc.goos, withProductBin(p))
 		if !strings.Contains(item, "mount") || !strings.Contains(item, "--foreground") {
 			t.Errorf("%s: the login item does not run the product:\n%s", tc.goos, item)
@@ -164,10 +137,6 @@ func TestMountCarriesTheCacheCap(t *testing.T) {
 	}
 }
 
-// The default is unchanged: a machine that never touched `drive cache --max`
-// still mounts with the number main always shipped. The hill-climb guardrails
-// (#224) still pin the four safety values, so a cache change cannot trade one
-// away.
 func TestCacheDefaultIsTheShippedCap(t *testing.T) {
 	p := BuildMountPlan("linux", t.TempDir(), "/usr/bin/rclone", testStorage())
 	if p.CacheMax != vfsCacheMaxValue {
@@ -184,8 +153,6 @@ func TestCacheDefaultIsTheShippedCap(t *testing.T) {
 	}
 }
 
-// `drive cache` answers the question with the two numbers, measured where
-// rclone keeps the bytes rather than counted by a second index.
 func TestPrintCacheReportsDiskUseAndLimit(t *testing.T) {
 	home := t.TempDir()
 	writeCacheMax(t, home, "5G")
@@ -202,8 +169,6 @@ func TestPrintCacheReportsDiskUseAndLimit(t *testing.T) {
 	if files != 2 {
 		t.Errorf("files = %d, want 2", files)
 	}
-	// The mount's live limit is the same number the command prints, and it is
-	// the one rclone enforces.
 	maxSize, err := ResolveCacheMax(home)
 	if err != nil {
 		t.Fatal(err)
@@ -211,8 +176,6 @@ func TestPrintCacheReportsDiskUseAndLimit(t *testing.T) {
 	if maxSize != "5G" {
 		t.Errorf("limit = %q, want 5G", maxSize)
 	}
-	// A cache that was never used is an answer, not an error: 0 bytes in 0
-	// files is what an empty cache is.
 	used, files, err = CacheUse(DefaultCacheDir(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
@@ -222,9 +185,6 @@ func TestPrintCacheReportsDiskUseAndLimit(t *testing.T) {
 	}
 }
 
-// `drive cache --clear` empties the cache and leaves the files that are still
-// waiting to upload, which is the finish line's second half. The queue is read
-// from rclone's own metadata, so this is the same rule the mount holds to.
 func TestClearCacheKeepsTheUploadsWaiting(t *testing.T) {
 	home := t.TempDir()
 	writeCached(t, home, "bucket/u/me/done.bin", 2<<20, false)
@@ -254,36 +214,23 @@ func TestClearCacheKeepsTheUploadsWaiting(t *testing.T) {
 	if files != 1 {
 		t.Errorf("cache after clear holds %d files, want only the one still waiting", files)
 	}
-	// The queued file's own bytes are still there: it is the person's work,
-	// and `--clear` exists to give disk back, not to take it away. And
-	// the metadata that says it is queued is what rclone reads on the
-	// next mount, so it stays too.
 	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "vfsMeta", "drive", "bucket", "u", "me", "queued.bin")); err != nil {
 		t.Errorf("the metadata for the file waiting to upload was deleted: %v", err)
 	}
-	// The metadata for the cleared file is gone as well as its bytes:
-	// a record that points at bytes that are not there is a read that
-	// errors instead of fetching again, and an emptied cache means the
-	// next open is a cold read.
 	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "vfsMeta", "drive", "bucket", "u", "me", "done.bin")); !os.IsNotExist(err) {
 		t.Errorf("the metadata for a cleared file should be gone, stat err = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "vfs", "drive", "bucket", "u", "me", "queued.bin")); err != nil {
 		t.Errorf("the file waiting to upload was deleted: %v", err)
 	}
-	// And the cached file that is uploaded is gone.
 	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "vfs", "drive", "bucket", "u", "me", "done.bin")); !os.IsNotExist(err) {
 		t.Errorf("a cached file that is uploaded should be gone, stat err = %v", err)
 	}
-	// Clearing an already-empty cache is not an error: it is what an empty
-	// cache is.
 	if err := ClearCache(DefaultCacheDir(t.TempDir()), nil); err != nil {
 		t.Fatalf("clear on an unused cache: %v", err)
 	}
 }
 
-// `drive cache --clear` must not drop a file `drive offline` promised to keep
-// (issue #115). The uploads waiting still survive the same walk.
 func TestClearCacheKeepsOfflineFiles(t *testing.T) {
 	home := t.TempDir()
 	writeCached(t, home, "bucket/u/me/done.bin", 2<<20, false)
@@ -313,7 +260,6 @@ func TestClearCacheKeepsOfflineFiles(t *testing.T) {
 	}
 }
 
-// The three commands the issue names, each through the real entry point.
 func TestDriveCacheCommands(t *testing.T) {
 	home := t.TempDir()
 	writeCached(t, home, "bucket/u/me/keep.bin", 2<<20, false)
@@ -370,8 +316,6 @@ func TestDriveCacheCommands(t *testing.T) {
 	}
 }
 
-// The command's own guard: `drive cache --max 5G --clear` is refused rather
-// than half-run, so a person cannot end up not knowing which of the two ran.
 func TestCacheRefusesTwoOperationsAtOnce(t *testing.T) {
 	err := runCache([]string{"--max", "5G", "--clear", "--home", t.TempDir()})
 	if err == nil {
@@ -382,9 +326,6 @@ func TestCacheRefusesTwoOperationsAtOnce(t *testing.T) {
 	}
 }
 
-// `drive status` carries the cache line, so a person who already has the drive
-// open does not need a second command to see what it uses. It is the same
-// numbers `drive cache` prints.
 func TestStatusCarriesTheCacheLine(t *testing.T) {
 	home := t.TempDir()
 	writeCacheMax(t, home, "5G")

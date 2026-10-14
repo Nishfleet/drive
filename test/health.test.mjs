@@ -1,21 +1,3 @@
-// Tests for the health endpoint the outside monitor polls (drive issue #96,
-// north star "Reliable": we hear about an outage before customers do).
-//
-// The three cases the issue names are the three that decide whether the
-// endpoint is honest, and each is a test below: a healthy Worker answers 200
-// with {"ok":true}, a database that cannot answer answers 503 naming that
-// binding, and no body carries a secret or an internal. The rest pin the
-// properties that make the answer trustworthy rather than merely green —
-// that it is public (no account, no session, no cookie needed), that it is
-// never cached (a cached 200 through an outage is a false all-clear), that it
-// is bounded so a hung dependency cannot hang the probe, and that it answers
-// through the Worker's own router rather than only when the module is imported
-// by hand.
-//
-// Fakes stand in for the runtime: a D1 database whose read resolves, one
-// whose read rejects, and one whose read never settles (the hang case). No
-// network, no Worker runtime, matching the rest of the suite.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

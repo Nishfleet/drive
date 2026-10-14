@@ -1,17 +1,4 @@
-// The S3 listing parser both Workers share (drive issue #504). Until now the
-// site Worker (src/files.js) and the api Worker (workers/api/src/s3.js) each
-// carried their own copy of the scan, and neither decoded it fully: a key
-// written as `a&b.txt` is answered inside `<Key>` as `a&amp;b.txt` (S3 escapes
-// the XML characters `& < > " '` in every text element), so the file listed
-// under a name that did not exist and the next read or delete asked for bytes
-// no server has. The scan lives here once, decodes every listing element it
-// hands back, and computes a version list's stops (hiddenAt) over the whole
-// listing rather than one page.
-//
-// Why one decoder instead of asking each server for `encoding-type=url`:
-// the providers behind this project (rclone serve s3, MinIO, iDrive e2, B2)
-// honour that parameter unevenly, and a decoder is one code path either way —
-// the request stays as it was and every answer reads the same.
+// S3 escapes the XML characters `& < > " '` in every listing text element, and providers honour `encoding-type=url` unevenly.
 
 /**
  * One version a provider's listing reports, in the shape the meter's
@@ -145,8 +132,6 @@ export function parseListVersions(xml) {
     const b2FileId = decodedTag(block, "VersionId");
     const createdAt = Date.parse(tagValue(block, "LastModified"));
     if (path === "" || b2FileId === "" || !Number.isFinite(createdAt)) {
-      // A version with no key, no id or no time cannot be compared with a row
-      // and cannot be billed; naming it is better than a silent drop.
       throw new Error("S3 listed a version without a key, a version id or a time");
     }
     versions.push({
@@ -203,8 +188,6 @@ export function computeHiddenAt(versions, markers) {
   if (!Array.isArray(versions)) {
     throw new TypeError("computeHiddenAt needs the listing's version rows");
   }
-  // The earliest marker per key: a second delete of the same key is a newer
-  // fact, not an earlier one.
   const earliest = new Map();
   for (const marker of markers) {
     const at = earliest.get(marker.path);
@@ -212,9 +195,6 @@ export function computeHiddenAt(versions, markers) {
       earliest.set(marker.path, marker.at);
     }
   }
-  // Per key, the rows by time, newest first: the rows before a row in that
-  // order are the ones written at or after it, and the ones strictly after it
-  // are the candidates that hide it. The smallest of them is the stop.
   const stops = new Map();
   /** @type {Map<string, S3VersionRow[]>} */
   const byKey = new Map();

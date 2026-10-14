@@ -1,7 +1,3 @@
-// The "bill stays at its peak" chart on the home page (high-end gap 12): its
-// dollar figures are the ones the bill produces, and its days follow the
-// 30-day rule, so the picture cannot say what the money code does not.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

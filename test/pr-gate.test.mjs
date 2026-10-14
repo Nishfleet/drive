@@ -1,16 +1,3 @@
-// The gates behind AGENTS.md's "Before you open a PR" list (drive issue #95).
-//
-// The 3pm review found pages shipped with no login, and review after merge is
-// too late; the list is the builder's own check. That only works if a line is
-// checkable, so every line names a gate and this file proves each one against
-// the same modules the Worker runs. The first test pins the list's own shape:
-// nine checkable lines, under fifteen, every pointer a file that exists — so
-// a line cannot drift into prose or name a test that is no longer there.
-//
-// The one line a program cannot judge is the last one, what the PR body claims
-// was proven on real records. Its pointer is the spec's rule for it
-// (docs/build-spec.md), and the builder answers it in the PR.
-
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

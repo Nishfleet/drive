@@ -1,5 +1,3 @@
-// Split out of core/files-s3.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-
 import {
   accountFirstChargedAt,
   PRE_CHARGE_STORAGE_LIMIT_BYTES,
@@ -73,29 +71,11 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   }
   const url = new URL(request.url);
   const route = url.pathname.replace(/\/$/, "");
-  // Only the three routes that change the drive carry the cap's read-only
-  // rule. The decision is by route, not by method, so a mislabelled method on
-  // a listing still cannot smuggle a write through. The cross-site rule is the
-  // app-wide CSRF middleware's (src/index.js).
   const stateChanging =
     route === `${FILES_ENDPOINT}/upload` ||
     route === `${FILES_ENDPOINT}/delete` ||
     route === `${FILES_ENDPOINT}/restore` ||
     route === `${FILES_ENDPOINT}/restore-version`;
-  // The cap makes the whole web write lane read-only (drive#496). The account
-  // row's own `state`, saved by the hourly walk (src/cap.js), is the rule: at
-  // the cap it is `read_only` and a signed-in person cannot write through the
-  // page either. Reads are untouched — a read-only drive is readable by
-  // definition, and the cap deletes nothing.
-  //
-  // The CSRF middleware runs first, so a cross-site POST to a read-only drive
-  // still gets the cross-site answer and not a message about a cap the
-  // stranger has no business knowing. A closed account is refused the same
-  // way: it is not writable either, and its files are on their way out.
-  //
-  // No resolver means no cap state to read (a deployment with no DRIVE_DB, or
-  // a unit test driving the handler directly), so the lane is writable and the
-  // account gate above is what holds it.
   if (stateChanging && typeof options.accountState === "function") {
     const state = await options.accountState(account.id);
     if (state === "read_only" || state === "closed") {
@@ -163,15 +143,11 @@ function meterReads(store, accountId, recordDownload) {
  * @param {string} name
  * @returns {string}
  */
-// Exported for src/share.js, for the same one-place reason: an upload request
-// writes into one folder the way the Files page does, not a second way.
 export function joinPath(folder, name) {
   const base = folder === "/" ? "" : folder;
   return `${base}/${safeFileName(name)}`;
 }
 
-// Rows the Files page asks for in one load (drive#570). 200 rows render in
-// one paint; a folder ten times that size used to cost a full recursive LIST.
 const FILE_PAGE_SIZE = 200;
 
 /**
@@ -188,9 +164,6 @@ async function listRequest(request, url, store, now, days) {
   }
   try {
     if (url.searchParams.get("view") === "deleted") {
-      // The recursive listing, because a parked file nests under
-      // `.trash/<path>/<ts>` (drive#570): `list`'s one-folder-deep answer
-      // would show the folders and none of the files in them.
       const entries = await store.listAll(TRASH_PATH);
       return json({
         view: "deleted",
@@ -204,9 +177,6 @@ async function listRequest(request, url, store, now, days) {
     if (checked.error) {
       return json({ error: checked.error }, 400);
     }
-    // One storage call per page: `cursor` is the token the last answer handed
-    // out, passed through opaque, and `nextCursor` is the next one or null
-    // when the folder is exhausted (drive#570).
     const cursor = url.searchParams.get("cursor");
     const page = await store.listPage(checked.path, { limit: FILE_PAGE_SIZE, cursor });
     const entries = page.entries;
@@ -218,9 +188,6 @@ async function listRequest(request, url, store, now, days) {
       rows: fileRows(entries),
       folders: folders.length,
       files: files.length,
-      // The page's More control. `cursor` on the way in, `nextCursor` on the
-      // way out, both opaque: the page holds no offset arithmetic and the
-      // store's token shape is its own business.
       nextCursor: page.nextCursor,
       empty: checked.path === "/" ? EMPTY_STATES.root : EMPTY_STATES.folder,
       line: PAGE_LINE,
@@ -253,15 +220,8 @@ async function readRequest(request, url, store, download, embed = false) {
   if (checked.error) {
     return json({ error: checked.error }, 400);
   }
-  // Bound once, right after the check: the narrowed path is the only thing
-  // below reads, and a union property is not narrowed across an await.
   const drivePath = checked.path;
   const name = drivePath.split("/").pop() || "";
-  // The embed URL is for the page's own <img>, <video> and <audio> only. A
-  // navigation to it — a top-level open, or an <iframe> — falls back to the
-  // direct-open preview's disposition, so the embed URL is never a way around
-  // the download an SVG leaves with (drive#657). Sec-Fetch-Dest is the
-  // browser's own statement of what asked for the bytes.
   const destination = String(request.headers.get("sec-fetch-dest") || "")
     .trim()
     .toLowerCase();
@@ -277,15 +237,6 @@ async function readRequest(request, url, store, download, embed = false) {
   const baseHeaders = (contentType) => {
     /** @type {Record<string, string>} */
     const headers = {
-      // The bytes leave as a file: an attachment to download, and an inline
-      // preview the page renders in a media element. The embed URL is inline
-      // for a media element only; the direct-open preview URL, and a
-      // navigation to the embed URL, send the one document-capable type (an
-      // SVG) as an attachment instead, so a top-level open downloads it.
-      // Neither is a document on our origin, and the two headers below keep it
-      // that way when the preview URL is opened directly: nosniff honors the
-      // type above, and the sandbox policy gives a document an opaque origin
-      // with no script of its own.
       "content-type": download
         ? contentType || "application/octet-stream"
         : previewContentType(name || "", contentType),
@@ -296,23 +247,14 @@ async function readRequest(request, url, store, download, embed = false) {
           : previewDisposition(name || "", contentType),
       "x-content-type-options": "nosniff",
       "cache-control": "private, no-store",
-      // What a player or a resuming downloader may ask for next: one slice.
       "accept-ranges": "bytes",
     };
     if (!download) {
-      // The sandbox only belongs on the preview branch. An attachment is not a
-      // document and gets no sandbox header rather than an empty policy, which
-      // no browser reads as "no sandbox". The map is a Record so the preview
-      // branch can add the one header the download branch does not send.
       headers["content-security-policy"] = "sandbox";
     }
     return headers;
   };
 
-  // A HEAD answer needs the object's headers and none of its bytes, so
-  // storage is asked with a HEAD (drive#570). The bytes are never fetched,
-  // the length is the answer, and the etag rides along so a browser that
-  // checks before it plays can keep its validator.
   if (request.method === "HEAD") {
     try {
       const stat = await store.stat(drivePath);
@@ -342,16 +284,12 @@ async function readRequest(request, url, store, download, embed = false) {
     return plain(failureMessage("file-not-found"), 404);
   }
   const status = object.status ?? 200;
-  // The conditional storage answered, passed through unchanged: the client
-  // keeps its etag and its cached copy, and no byte moves.
   if (status === 304) {
     return new Response(null, {
       status: 304,
       headers: object.etag ? { etag: object.etag, "cache-control": "private, no-store" } : {},
     });
   }
-  // A range no byte of the object answers. The bytes are not read, and the
-  // one line names the size a client can pick a range inside.
   if (status === 416) {
     return new Response(null, {
       status: 416,
@@ -498,9 +436,6 @@ async function uploadRequest(request, url, store, account, options = {}) {
   let incomingLength = null;
   if (declared !== null) {
     const length = Number(declared);
-    // A whole, safe byte count: "1000.5" and a value past the safe integer
-    // range are not a legal Content-Length, and forwarding one would turn the
-    // write into a 500 instead of a clean 413 (drive#539).
     if (!Number.isSafeInteger(length) || length < 0 || length > UPLOAD_FILE_MAX_BYTES) {
       return json({ error: failureMessage("body-too-large") }, 413);
     }
@@ -509,9 +444,6 @@ async function uploadRequest(request, url, store, account, options = {}) {
   /** @type {number|null} bytes this upload may still add before the first charge */
   let allowance = null;
   if (options.db && options.prepaidPause && (await balanceCents(options.db, account.id)) <= 0) {
-    // The prepaid balance is empty (drive#586): the upload pauses, and only
-    // the upload. Listing, downloads, deletes and restores never come here.
-    // 402, so a client can tell "add money" from every other refusal.
     return json({ error: failureMessage("balance-empty"), top_up: TOP_UP_PAGE }, 402);
   }
   const paused = await fairUseRefuseResponse(
@@ -534,9 +466,6 @@ async function uploadRequest(request, url, store, account, options = {}) {
   if (options.db) {
     const firstChargedAt = await accountFirstChargedAt(options.db, account.id);
     const stored = await preChargeStoredBytes(options.db, store, account.id, firstChargedAt);
-    // A missing length is 0 while under the limit. At or past 1 TB it is 1
-    // byte so an upload with no length cannot sneak past the exact-limit
-    // edge (stored + 0 is not greater than the limit).
     const incomingBytes =
       incomingLength !== null && incomingLength > 0
         ? incomingLength
@@ -552,20 +481,11 @@ async function uploadRequest(request, url, store, account, options = {}) {
     }
   }
   const path = joinPath(checked.path, name);
-  // The key this file will live at is measured before a byte is read, because
-  // a key past the store's cap is answered 400 KeyTooLong mid-write: the file
-  // would land nowhere, the page would show a storage error, and the delete
-  // that followed it tried to park the file under a key that cannot exist
-  // (drive issue #567).
   const keyed = accountStorageKey(account, path);
   if (keyed.error) {
     return json({ error: keyed.error }, 400);
   }
   const contentType = request.headers.get("content-type") || "application/octet-stream";
-  // A Worker request's body is a ReadableStream; a request with no body is
-  // an upload that never carried one, refused above. Before the first charge
-  // the bytes are counted as they pass, because the length header is the
-  // client's claim: a missing or short one cannot carry the drive past 1 TB.
   const body = /** @type {ReadableStream} */ (request.body);
   const counted = allowance === null ? body : body.pipeThrough(preChargeLimitStream(allowance));
   try {
@@ -573,10 +493,6 @@ async function uploadRequest(request, url, store, account, options = {}) {
     let payload = counted;
     let contentLength = incomingLength;
     if (contentLength === null) {
-      // The client declared no length, so there is no header to cap and no
-      // size for the signed PUT. The body is read once here, under the same
-      // ceiling, and the store is handed the size it needs; a browser upload
-      // always declares its length and streams untouched (drive#539).
       const read = await readWithin(counted, UPLOAD_FILE_MAX_BYTES);
       if (read === null) {
         return json({ error: failureMessage("body-too-large") }, 413);
@@ -611,11 +527,6 @@ async function deleteRequest(request, store, account, now) {
   }
   const read = await readJsonObject(request);
   if ("error" in read) {
-    // The `if` is the narrowing: the error arm is the only one with a
-    // sentence. The reader (drive#618) writes the api's own words, so the
-    // account routes say the same thing in the table's words instead, and a
-    // form, an array, a bare value and a mangled body all read the same on
-    // every account route (drive#158).
     return json({ error: failureMessage("json-object-needed") }, 400);
   }
   const { body } = read;
@@ -623,36 +534,17 @@ async function deleteRequest(request, store, account, now) {
   if (checked.error) {
     return json({ error: checked.error }, 400);
   }
-  // The key the file is parked under is measured before anything moves, because
-  // that key is the longest one the drive builds: the trash name
-  // percent-encodes the path, so a long path that is not ASCII becomes a key
-  // the store refuses, and a delete that cannot park its file is a delete that
-  // fails (drive issue #567).
   const parkedAt = trashStorePath(trashName(checked.path, now));
   const parked = accountStorageKey(account, parkedAt);
   if (parked.error) {
     return json({ error: parked.error }, 400);
   }
   try {
-    // The parent folder is listed, not the file read: the row carries the size
-    // the copy needs and the ETag the conditional remove is held to, and a read
-    // would pull every byte of the file through the Worker to get two facts a
-    // listing already has. A Worker has 128 MB of memory, so a delete that
-    // read its file and re-uploaded it was a download plus an upload of the
-    // whole object, and anything past about 100 MB failed it.
     const entry = await listingEntry(store, checked.path);
     if (!entry) {
       return json({ error: failureMessage("file-not-found") }, 404);
     }
-    // A move the storage makes itself, in two steps: the copy parks the file
-    // under `.trash`, and only then is the original removed. A file over the
-    // single-copy ceiling is a multipart copy, the same one `drive branch`
-    // makes, so a 5 GB file is parked without 5 GB through the Worker.
     await store.copy(checked.path, parkedAt, entry.size);
-    // Conditional on the ETag the listing carried: a save that landed while the
-    // copy ran changed the bytes, and removing them would lose the save. The
-    // trash holds the copy the storage made, and the live key is the one that
-    // is left alone when the bytes are no longer the ones the delete listed.
     const etag = typeof entry.etag === "string" ? entry.etag : null;
     await store.remove(checked.path, { ifMatch: etag });
   } catch (cause) {
@@ -678,8 +570,6 @@ async function restoreRequest(request, store, account, now, days) {
   }
   const read = await readJsonObject(request);
   if ("error" in read) {
-    // The same narrowing as the delete path above, and the same words: the
-    // restore route reads a body exactly as the delete route does.
     return json({ error: failureMessage("json-object-needed") }, 400);
   }
   const { body } = read;
@@ -687,25 +577,12 @@ async function restoreRequest(request, store, account, now, days) {
   if (checked.error) {
     return json({ error: checked.error }, 400);
   }
-  // The key the file goes back to is measured first, for the reason the delete
-  // measures the key it parks under: a file whose own key is past the store's
-  // cap cannot be put back, and the person is told that in words they can act
-  // on rather than shown a storage error (drive issue #567).
   const back = accountStorageKey(account, checked.path);
   if (back.error) {
     return json({ error: back.error }, 400);
   }
   try {
-    // One narrow LIST: the parked versions of this one path all share the
-    // prefix `.trash/<path>/` (drive#570), so the restore asks for exactly
-    // that folder instead of listing the whole trash and filtering. Each row
-    // there is one version, and the name IS the deleted-at time; a row that
-    // is not a bare number is a deeper path's own parked version (a folder
-    // created later over the old file's name), not this file's.
     const parked = await store.list(`${TRASH_PATH}/${checked.path.slice(1)}`);
-    // The row's size and ETag ride along: the move back is a storage copy that
-    // needs the size, and the remove after it is conditional on the ETag
-    // (drive issue #567).
     /** @type {{name: string, deletedAt: number, size?: number, etag?: string|null}|null} */
     let found = parked
       .map((entry) => ({
@@ -717,12 +594,6 @@ async function restoreRequest(request, store, account, now, days) {
       .filter((version) => Number.isFinite(version.deletedAt) && version.deletedAt > 0)
       .sort((a, b) => b.deletedAt - a.deletedAt)[0];
     if (!found) {
-      // A file parked before drive#570's nested layout sits directly under
-      // `.trash` as `<ts>__<encoded path>`, so the narrow prefix above cannot
-      // see it. One deep LIST, and only when the cheap one came back empty,
-      // finds it by the same parse the Recently deleted view uses. Nothing
-      // writes that layout now, so this only runs for a file deleted before
-      // the upgrade, and the 3-day window bounds how long any of them live.
       found = findTrashName(await store.listAll(TRASH_PATH), checked.path);
     }
     if (!found) {
@@ -734,26 +605,13 @@ async function restoreRequest(request, store, account, now, days) {
         410,
       );
     }
-    // A nested key is `.trash/<path>/<ts>` and its own name is the bare
-    // timestamp the narrow LIST returned; a flat one is already its whole
-    // name under `.trash`, and rebuilding a prefix from it would look for a
-    // key that never existed.
     const parkedAt = trashStorePath(
       found.name.includes("__") ? found.name : `${checked.path.slice(1)}/${found.name}`,
     );
-    // A file at the live path is a save that landed after the delete. Stop and
-    // leave both copies where they are (drive issue #605).
     if (await listingEntry(store, checked.path)) {
       return json({ error: failureMessage("restore-file-changed") }, 409);
     }
-    // The store re-reads the destination just before it writes and refuses if a
-    // save created the path meanwhile.
     const copiedEtag = await store.copy(parkedAt, checked.path, found.size, { ifAbsent: true });
-    // Re-list: a save that lands after the copy wins the live path, and the
-    // parked copy stays in Recently deleted. The listing is compared with the
-    // ETag the copy made, not the parked one, because a copy of a multipart
-    // upload gets a new ETag. With no ETag on either side it cannot be compared
-    // and does not count as a change.
     const after = await listingEntry(store, checked.path);
     const parkedEtag = typeof found.etag === "string" ? found.etag : "";
     const changed =
@@ -766,10 +624,6 @@ async function restoreRequest(request, store, account, now, days) {
     if (changed) {
       return json({ error: failureMessage("restore-file-changed") }, 409);
     }
-    // A copy that lands while this one runs changes the parked key, and the
-    // remove of it is refused: the file is back, the parked copy that changed is
-    // still parked, and the person is asked to try the restore again, which
-    // brings back the newer parked copy.
     await store.remove(parkedAt, { ifMatch: parkedEtag || null });
     return json({ ok: true, path: checked.path });
   } catch (cause) {

@@ -1,7 +1,3 @@
-// The public incident history (public/incidents.json, read by the status
-// page): hand-written after an incident, so its shape is pinned here and a
-// typo cannot blank the page.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

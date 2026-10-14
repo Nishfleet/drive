@@ -1,32 +1,3 @@
-// The legal and trust pages (drive#523, drive#584): terms, privacy, refunds,
-// acceptable use, support, accessibility and status. They are hand-written
-// static pages in public/, like every other page on the site, and this file is
-// the one list of them, so the footer links, the sitemap, src/seo.js and
-// test/legal.test.mjs cannot disagree about which pages exist or where they
-// live.
-//
-// The page prose is the drive#882 drafts, quoted from the issue. Two facts
-// stay marked placeholders, each in exactly one page: the payee's legal name
-// and the postal contact address.
-//
-//     <mark class="to-fill" data-placeholder="<id>">[To fill: ...]</mark>
-//
-// The refund rule and the VAT line used to be placeholders too. They are
-// filled from the drive#882 body (MEMBER): leave placeholders only for
-// LEGAL_NAME and ADDRESS; unused balance is refundable within 14 days of a
-// top-up, then non-refundable but never expiring; prices exclude VAT where
-// it applies, shown at checkout by the payment provider. The same defaults
-// were first published on drive#523
-// (https://github.com/Nishfleet/drive/issues/523#issuecomment-6086208024).
-// Both sit on the refunds page as real words. The support mailbox is on each
-// of the four pages the drafts put an address on, and on the support page
-// those pages send a reader to. Every other page links to the page that
-// holds a remaining placeholder (the support page for the postal address).
-// The support mailbox is SUPPORT_EMAIL below, typed once here. The support
-// page and the share landing page's report mail import it. security.txt is a
-// static file and cannot import, so test/legal.test.mjs pins that its Contact:
-// line is the same spelling.
-
 /**
  * One legal page: the clean URL a reader and a crawler use, and the public/
  * file the asset layer serves it from.
@@ -40,22 +11,14 @@ export const LEGAL_PAGES = Object.freeze([
   Object.freeze({ path: "/refunds", file: "refunds.html", label: "Refunds" }),
   Object.freeze({ path: "/acceptable-use", file: "acceptable-use.html", label: "Acceptable use" }),
   Object.freeze({ path: "/support", file: "support.html", label: "Support" }),
-  // drive#584: the two trust pages the launch checklist names that no other
-  // issue carries. Both are indexable and linked from every footer.
   Object.freeze({ path: "/accessibility", file: "accessibility.html", label: "Accessibility" }),
   Object.freeze({ path: "/status", file: "status.html", label: "Status" }),
 ]);
 
-/** Where a person reaches a human, and where abuse reports go. */
 export const SUPPORT_PATH = "/support";
 
-/** Where a share link is reported (the report section on the acceptable-use page). */
 export const REPORT_PATH = "/acceptable-use#report";
 
-// drive#523 part 2 (drive#883): the one support mailbox, Nish's decision — a
-// mailbox on the brand's own domain. Typed once here, so no page grows a
-// second spelling and no worker invents an address.
-/** The one support mailbox a person can write to. */
 export const SUPPORT_EMAIL = "support@storagebun.com";
 
 /**
@@ -77,5 +40,4 @@ export const LEGAL_PLACEHOLDERS = Object.freeze([
   }),
 ]);
 
-/** The marker every unfilled fact carries in the page source. */
 export const PLACEHOLDER_MARK = /<mark class="to-fill" data-placeholder="([a-z-]+)">/g;

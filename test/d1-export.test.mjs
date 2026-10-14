@@ -1,11 +1,3 @@
-// The weekly D1 backup keeps a dump of both databases off Cloudflare
-// (drive#520). Time Travel covers 30 days and the deploy's restore-point
-// bookmark only exists when a migration runs, so the weekly artifact is the
-// copy that survives a wrong restore or a deleted database. This file pins
-// the workflow text that makes that guarantee, the same way
-// test/ci-deploy-gate.test.mjs pins the deploy: an edit that drops the
-// schedule, widens the secrets, or ships an unpinned download fails here.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

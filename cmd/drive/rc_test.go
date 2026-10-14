@@ -135,12 +135,6 @@ func TestResolveMountRCAddrDoesNotFallBackTo5572(t *testing.T) {
 	}
 }
 
-// vfs/refresh takes one folder per key: dir, dir2, dir3, ... rclone documents
-// this ("Any parameter key starting with dir will refresh that directory",
-// vfs/rc.go), so a kept-offline folder nested in another folder is one request,
-// not a second rc call. This runs the real rcClient.call through the rclone
-// shim and reads the form the shim forwarded, so the keys are checked on the
-// wire rather than in a fake (issue #541).
 func TestRefreshDirsAsksForEveryFolderInOneRequest(t *testing.T) {
 	var mu sync.Mutex
 	var sent map[string]string
@@ -172,10 +166,6 @@ func TestRefreshDirsAsksForEveryFolderInOneRequest(t *testing.T) {
 	}
 }
 
-// The second folder's failure must reach the caller: vfs/refresh runs the
-// folder it can and reports the one it cannot, and a swallowed error would
-// leave a kept-offline folder reading a listing older than it thinks
-// (issue #541).
 func TestRefreshDirsSurfacesTheSecondFoldersFailure(t *testing.T) {
 	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"result":{"photos":"OK","photos/2026":"connection refused"}}`))

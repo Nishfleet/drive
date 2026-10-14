@@ -10,9 +10,6 @@ import (
 	"testing"
 )
 
-// fakeAccess is a stand-in for an address behind Cloudflare Access: without
-// the right cf-access-token it answers Access's sign-in redirect, with it the
-// real answer. It also records each body it was sent.
 func fakeAccess(t *testing.T, token string) (*httptest.Server, *[]string) {
 	t.Helper()
 	var bodies []string
@@ -31,8 +28,6 @@ func fakeAccess(t *testing.T, token string) (*httptest.Server, *[]string) {
 	return server, &bodies
 }
 
-// fakeCloudflared answers `access token` with the token once `access login`
-// has run (or at once when signedIn is true) and counts both.
 type fakeCloudflared struct {
 	token    string
 	signedIn bool
@@ -84,7 +79,6 @@ func TestAccessRedirectGetsATokenFromCloudflaredAndRetries(t *testing.T) {
 		t.Fatalf("the retry did not resend the body: %q", *bodies)
 	}
 
-	// The token is cached: the next call sends it at once, with no cloudflared.
 	before := fake.tokens.Load()
 	if err := client.Post("/v1/device/code", map[string]string{"name": "mac"}, &out); err != nil {
 		t.Fatalf("second post: %v", err)
@@ -165,7 +159,6 @@ func TestNoAccessRedirectNeverRunsCloudflared(t *testing.T) {
 	if err := client.Post("/v1/device/code", map[string]string{}, nil); err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	// An ordinary redirect is followed as before, not taken for Access.
 	resp, err := (&http.Client{Transport: transport}).Get(server.URL + "/elsewhere")
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -233,7 +226,7 @@ func TestAccessTokenIsNeverSentToARedirectsOtherOrigin(t *testing.T) {
 	fake := &fakeCloudflared{token: "app.token", signedIn: true}
 	fake.install(transport)
 	client := &http.Client{Transport: transport}
-	for range 2 { // the second call uses the cached token from the start
+	for range 2 {
 		resp, err := client.Get(app.URL + "/start")
 		if err != nil {
 			t.Fatalf("get: %v", err)

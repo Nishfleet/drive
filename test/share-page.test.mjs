@@ -1,15 +1,3 @@
-// The share landing page (drive#883, drive#523 part 2). A browser that opens
-// /s/<token> gets our own HTML page — the one place a stranger lands on this
-// site that is not a file — and the page carries the report-this-link mail to
-// the support mailbox. The bytes are not gone: the embed and open flags and
-// every non-document client still get exactly what the direct link served
-// before, through the same handleShareFileRequest as always. This file runs
-// the landing and the byte paths against the real in-memory FileStore, the
-// real D1 LinkStore and the real app, the way test/share.test.mjs does.
-//
-// One rule above all: nothing that works today changes. Every test below
-// pairs a landing answer with the byte answer the same request used to get.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FILES_ENDPOINT } from "../core/files.js";
@@ -127,6 +115,10 @@ test("a browser visit sees the landing page, and the report mail names the link 
     "the report mail names the clean share link",
   );
   assert.match(html, /Report this link/);
+  assert.match(
+    html,
+    /Stored on Storagebun\. Pay 2 cents per GB from your balance\. Never more than \$15 per TB\./,
+  );
   // The page names the file and previews a text file by link, not by contents.
   assert.ok(html.includes("notes.txt"));
   assert.match(html, /Open the text file/);

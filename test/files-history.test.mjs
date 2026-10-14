@@ -1,7 +1,3 @@
-// Overwrite undo (delight item 1, slice 1): save over a file, list the earlier
-// copy, put it back, and see the old bytes return. The stand-in store keeps the
-// bytes of each version the way the bucket's versioning does.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { handleFilesRequest } from "../core/files-handlers.js";

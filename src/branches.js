@@ -4,7 +4,6 @@ import { MAX_OPEN_BRANCHES } from "../core/messages.js";
 export { MAX_OPEN_BRANCHES };
 
 /** @typedef {import("../core/files.js").FileStore} FileStore */
-/** One file at branch time: what `fingerprint` records and a diff compares. */
 /** @typedef {{size: number, etag: string|null, modified: number|null}} Fingerprint */
 /** One row of the `branches` table as this module uses it. The snapshot is
  * resolved by `readSnapshot` from the KV namespace the row's pointer names;
@@ -19,19 +18,13 @@ export { MAX_OPEN_BRANCHES };
  *   changed: number, sourceChanged: number, reservedBytes: number}} Branch
  */
 
-/** How many files one job batch copies or deletes, so one invocation stays
- * well under the paid-plan subrequest ceiling of 10,000 (drive#563). 80 copies
- * plus a listing or two and a progress write is under 100 subrequests. */
+// Workers allow 10,000 subrequests per invocation on the paid plan (https://developers.cloudflare.com/workers/platform/limits/).
 export const BRANCH_JOB_BATCH_FILES = 80;
 
-// Remaining branch size cap once jobs run in batches (drive#563).
 export const BRANCH_FILE_LIMIT = 100_000;
 
-/** Keys per DeleteObjects call, the provider's own ceiling (core/files.js
- * removeBatch, drive#565). */
 export const BRANCH_DELETE_BATCH = 1000;
 
-/** States that occupy the one-active-name unique index (migration 0030). */
 export const BRANCH_ACTIVE_STATES = Object.freeze([
   "open",
   "creating",
@@ -121,7 +114,6 @@ export function approvePlanKey(key) {
   return `${key}/approve-plan`;
 }
 
-/** The plan's three list names, in the order the approve applies them. */
 export const PLAN_LIST_NAMES = /** @type {const} */ (["added", "changed", "removed"]);
 
 /** @typedef {{added: string[], changed: string[], removed: string[]}} PlanLists */
@@ -180,24 +172,10 @@ export function frozenSnapshotKey(key) {
   return `${key}/frozen`;
 }
 
-// KV value cap is 25 MiB; split a snapshot an order of magnitude under it (drive#564).
 const KV_SNAPSHOT_CHUNK_BYTES = 20 * 1024 * 1024;
 
-/**
- * The marker inside a chunked snapshot's manifest. A value at the snapshot
- * key without it is a plain whole-JSON snapshot written by an earlier
- * version of the store, and the reader serves it unchanged - a deployment
- * that ships the chunker keeps reading every snapshot written before it.
- */
 const CHUNKED_MANIFEST_FORMAT = "drive-branch-snapshot-chunked-1";
 
-/**
- * How long an orphaned part set gets to linger before the next write to its
- * key sweeps it (drive issue #564, in-run review). The lease has to sit far
- * above any real put - a snapshot lands in two awaited writes at the default
- * chunk size - while staying short enough that a crashed write's parts do
- * not outlive it by long.
- */
 const DEFAULT_ORPHAN_LEASE_MS = 10 * 60 * 1000;
 
 /**
@@ -332,8 +310,6 @@ function snapshotPartStore(namespace) {
      */
     async putPart(key, index, json) {
       await namespace.put(valuePartKey(key, index), json);
-      // The count rides the leaf itself, so a sweep that no longer has the row's
-      // cursor can still name every part this build wrote (drive#842).
       await namespace.put(key, JSON.stringify({ parts: index + 1 }));
       return encoder.encode(json).length;
     },
@@ -440,13 +416,6 @@ export function createKvSnapshotStore(kv, options = {}) {
   }
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  // Every part set is claimed by a token no other write can hold: the write's
-  // start clock plus a random suffix. Workers KV has no atomic
-  // read-modify-write, so a generation derived from what the manifest read
-  // back is shared by two writes that read the same manifest - their parts
-  // would collide on one key and one writer's cleanup could delete the
-  // other's parts mid-commit. An unshared write token makes the collision
-  // impossible rather than unlikely (drive issue #564, in-run review).
   const claimToken = () =>
     `${now().toString(36)}.${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
   /**
@@ -487,12 +456,6 @@ export function createKvSnapshotStore(kv, options = {}) {
   const store = {
     /** @param {string} key @param {string} json */
     async put(key, json) {
-      // The split is over UTF-8 bytes, not code units: the cap KV applies is
-      // a byte cap, and JSON paths can hold characters that take three or
-      // four bytes. Each slice is cut between the UTF-8 sequences (the scan
-      // back never crosses a continuation byte), so decode gives back a
-      // valid string that re-encodes to exactly the bytes it came from, and
-      // joining the parts joins the bytes.
       const bytes = encoder.encode(json);
       const previous = await kv.get(key);
       /** @type {string|null} the write token the manifest we read names, if any */
@@ -514,24 +477,12 @@ export function createKvSnapshotStore(kv, options = {}) {
             Number.isSafeInteger(Number(manifest.parts)) &&
             Number(manifest.parts) >= 0;
           if (shaped) {
-            // A generation number from a manifest written before the
-            // write-token change becomes its string: `.p0.3` was and stays
-            // `.p0.3`, so the parts it names are the parts it names.
             previousToken = String(manifest.gen);
             previousParts = Number(manifest.parts);
           }
-        } catch {
-          // A value that does not parse is not a manifest; it carries no
-          // parts of ours to clean up, and the manifest write below replaces
-          // it.
-        }
+        } catch {}
       }
       await sweepOrphanedParts(key, previousToken);
-      // This write's own token: a fresh string no other write can hold, so
-      // its parts cannot land on another write's parts however the two
-      // interleaves - two writes that read the same manifest both saw the
-      // same `previousToken`, and only a number derived from it would have
-      // sent them to the same part keys.
       const token = claimToken();
       /**
        * @param {number} index
@@ -542,9 +493,6 @@ export function createKvSnapshotStore(kv, options = {}) {
       while (offset < bytes.length) {
         let scan = offset + chunkBytes;
         if (scan < bytes.length) {
-          // The scan back never crosses a continuation byte, so the slice
-          // that decode gets is a whole number of UTF-8 sequences and
-          // re-encodes to exactly the bytes it came from.
           while (scan > offset && (bytes[scan] & 0xc0) === 0x80) {
             scan -= 1;
           }
@@ -554,10 +502,6 @@ export function createKvSnapshotStore(kv, options = {}) {
         parts += 1;
         offset = end;
       }
-      // The commit: one atomic write, naming this write's own parts. A
-      // reader that sees it can read exactly the parts that were all in
-      // before it landed - and any other write's parts, on their own tokens,
-      // are invisible to it.
       await kv.put(
         key,
         JSON.stringify({
@@ -567,18 +511,11 @@ export function createKvSnapshotStore(kv, options = {}) {
           bytes: bytes.length,
         }),
       );
-      // Only now that the manifest no longer names the previous token's
-      // parts, delete them: a reader on the old manifest kept a complete
-      // snapshot until the commit, and one after it reads this write's
-      // parts. A reader is never left holding a manifest whose parts are
-      // gone.
       if (previousToken !== null) {
         for (let index = 0; index < previousParts; index += 1) {
           await kv.delete(`${key}.p${previousToken}.${index}`);
         }
       }
-      // The byte length is what the row records so a caller can see a branch's
-      // snapshot size without reading the value back.
       return bytes.length;
     },
     /** @param {string} key */
@@ -591,9 +528,6 @@ export function createKvSnapshotStore(kv, options = {}) {
       try {
         manifest = JSON.parse(raw);
       } catch {
-        // Not a manifest, therefore a plain snapshot as an earlier version
-        // wrote it (or a value a caller should see as the caller always
-        // did); the reader above this store parses it where it always did.
         return raw;
       }
       if (
@@ -603,10 +537,6 @@ export function createKvSnapshotStore(kv, options = {}) {
       ) {
         return raw;
       }
-      // The manifest's token names the keys this snapshot's parts live on.
-      // It comes from our own manifest, not from the request, so the
-      // interpolation below cannot reach another key's parts - and a string
-      // that is not a write token fails the check rather than guessing.
       const token = manifest.gen;
       if (typeof token !== "string" || token.length === 0 || token.length > 128) {
         throw new Error(`the snapshot manifest at ${key} names write token ${String(token)}`);
@@ -619,9 +549,6 @@ export function createKvSnapshotStore(kv, options = {}) {
       for (let index = 0; index < parts; index += 1) {
         const part = await kv.get(`${key}.p${token}.${index}`);
         if (part === null) {
-          // A manifest that names a part the namespace does not have is
-          // corruption the caller must see: returning null would read as "no
-          // snapshot" and a diff would quietly rebuild from nothing.
           throw new Error(
             `the snapshot manifest at ${key} names part ${index}, and the namespace does not have it`,
           );
@@ -649,9 +576,7 @@ export function createKvSnapshotStore(kv, options = {}) {
             await kv.delete(`${key}.p${String(manifest.gen)}.${index}`);
           }
         }
-      } catch {
-        // A plain value has no parts to delete.
-      }
+      } catch {}
     },
     ...snapshotPartStore(kv),
   };
@@ -700,11 +625,7 @@ export function errorText(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The route family the CLI and the Branches screen read. */
 export const BRANCHES_ENDPOINT = "/api/branches";
-/** The drive path branches live under — taken from files.js so there is one
- * definition of where branches live (the `.branches` folder), not two.
- */
 export const BRANCHES_ROOT = BRANCHES_PATH;
 
 /**
@@ -724,7 +645,4 @@ export function plain(message, status, headers = {}) {
   });
 }
 
-// A failure that names a file can name up to this many; the rest are counted
-// behind an "and N more", so the message cannot balloon for a 10,000-file
-// branch.
 export const NAMED_FILES_LIMIT = 20;
