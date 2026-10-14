@@ -1,15 +1,4 @@
-// The billing portal (drive#575): the card-update path the payment-failed copy
-// points at. This route opens a Dodo customer-portal session for the signed-in
-// account and 302-redirects to it. An account with no saved customer has no
-// Dodo customer yet, so the portal has nothing to open: the route answers a
-// plain message instead of a redirect. The same words are carried in the
-// payment-failed email via absoluteUrl(PORTAL_ENDPOINT) (core/seo.js), so the
-// link in the mail is the one this route serves.
-//
-// Dodo's customer-portal session endpoint is documented at
-// https://docs.dodopayments.com/api-reference/customers/create-customer-portal-session:
-// POST /customers/{customer_id}/customer-portal/session, bearer auth, optional
-// `return_url` query parameter, and a 200 body of { "link": string }.
+// Dodo's customer-portal session endpoint: https://docs.dodopayments.com/api-reference/customers/create-customer-portal-session
 
 import { isDodoUrl, resolveDodoUrl } from "../core/dodo.js";
 import { failureMessage } from "../core/messages.js";
@@ -17,9 +6,6 @@ import { unauthorizedResponse } from "../core/status.js";
 
 export const PORTAL_ENDPOINT = "/api/billing/portal";
 
-// How long the provider has to answer the customer-portal session request
-// before the route gives the failure words. Long enough for a slow checkout
-// API, short enough that a hung call does not ride out the platform deadline.
 const DODO_PORTAL_TIMEOUT_MS = 10_000;
 
 /**
@@ -81,9 +67,6 @@ export async function handlePortalRequest(request, account, deps) {
     return plain(failureMessage("portal-no-card"), 409);
   }
   const fetchImpl = deps.fetch ?? globalThis.fetch;
-  // `return_url` is Dodo's own optional query parameter: it is the portal's
-  // "Return to Storagebun" button, and it points at this deployment's usage page
-  // rather than a hard-coded origin, so a preview deploy returns to itself.
   const returnUrl = `${new URL(request.url).origin}/usage`;
   const sessionUrl = `${resolveDodoUrl(deps.baseUrl, customerPortalPath(savedCustomer))}?return_url=${encodeURIComponent(returnUrl)}`;
   let response;
@@ -91,16 +74,9 @@ export async function handlePortalRequest(request, account, deps) {
     response = await fetchImpl(sessionUrl, {
       method: "POST",
       headers: { authorization: `Bearer ${apiKey}` },
-      // The platform's own request deadline is the backstop, but a provider
-      // that hangs would hold this Worker until then; a hung session opens no
-      // portal and can only be answered with the failure words, so the call
-      // is given a deadline of its own (the same reason src/health.js bounds a
-      // slow D1 query with AbortSignal.timeout()).
       signal: AbortSignal.timeout(DODO_PORTAL_TIMEOUT_MS),
     });
   } catch (error) {
-    // Named, never swallowed: the operator reads this line to learn why the
-    // portal did not open, and a person gets the provider-failed words.
     console.error("billing-portal: the session request failed", String(error));
     return plain(failureMessage("portal-failed"), 502);
   }
@@ -113,8 +89,6 @@ export async function handlePortalRequest(request, account, deps) {
   );
   const link = session?.link;
   if (typeof link !== "string" || !isDodoUrl(link)) {
-    // Only a Dodo page is handed to the customer: a malformed or tampered
-    // answer must never become a redirect to somewhere else.
     return plain(failureMessage("portal-failed"), 502);
   }
   return new Response(null, {

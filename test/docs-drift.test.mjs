@@ -1,7 +1,3 @@
-// Drift gates for drive#525: every api Worker route is named in docs/api.md,
-// CLI user-facing text cannot name a web page that does not exist, and the
-// spec's current price/plan/provider/platform lines follow core/pricing.js.
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";

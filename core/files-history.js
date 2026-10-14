@@ -1,14 +1,3 @@
-// Overwrite undo (delight item 1): the earlier copies of one file, and the
-// call that puts one back. The bucket is versioned, so a save over a file
-// hides the old bytes instead of destroying them (core/s3.js
-// HIDDEN_VERSION_DAYS keeps them for that long). These two handlers read that
-// history through the store's own version listing and copy a chosen version
-// back over the live file. Putting one back is itself a save, so the copy it
-// replaced becomes a hidden version in turn: an undo can be undone.
-//
-//   GET  /api/files/versions?path=/a.txt   -> { versions: [...] } newest first
-//   POST /api/files/restore-version        { path, versionId }
-
 import { json, readJsonObject } from "./http.js";
 import { failureMessage } from "./messages.js";
 import { HIDDEN_VERSION_DAYS } from "./s3.js";

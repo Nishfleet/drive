@@ -1,25 +1,3 @@
-// The api Worker's deploy config (drive issue #168).
-//
-// The api Worker reads two edge-limit bindings the device flow fails closed
-// without (workers/api/src/device-routes.js: DEVICE_RATE_LIMITER and
-// DEVICE_GLOBAL_RATE_LIMITER), and those names can only be declared in a
-// config. This repo's deploy config for it is workers/api/cloudflare.config.ts,
-// registered as an auxiliary Worker in vite.config.ts, which is the only way
-// `cf build` writes the Worker into the Build Output at all — cf's autoconfig
-// resolves its CONFIG_FILENAME against the Vite root, and the root's file is
-// the site Worker's, so a second config file the build does not load is dead
-// text.
-//
-// The checks below read the two configs the way the deploy does — the api one
-// as the parsed object (Node strips the types, so this is the file cf reads,
-// not a description of it) and the site one as text, because the root
-// cloudflare.config.ts anchors its entrypoint through the `with { type:
-// "cf-worker" }` attribute that only cf's own loader handles, so importing it
-// here fails with ERR_IMPORT_ATTRIBUTE_UNSUPPORTED. The last two tests dispatch
-// the api Worker's real router with an env built from the bindings the config
-// declares, so a renamed binding in either file fails here rather than at a
-// deploy.
-
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";

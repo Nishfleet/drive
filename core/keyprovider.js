@@ -1,6 +1,3 @@
-// Storage access goes through a KeyProvider so the stand-in and the real
-// iDrive e2 / Backblaze B2 implementations are interchangeable.
-
 /**
  * What a key may do. `delete` is the only difference between a person's device
  * key and every agent-facing key (docs/build-spec.md, "Keys and safety").
@@ -61,14 +58,6 @@
 /** @type {ReadonlyArray<KeyKind>} */
 export const KEY_KINDS = ["device", "agent", "s3", "branch"];
 
-/**
- * The bucket name prefix every customer's own bucket carries, and the one a
- * team's carries (drive#371). One bucket per account, one per team: the vendor
- * allows unlimited buckets (measured 2026-10-03, drive#173), and a key limited
- * to a bucket is a key the storage server refuses outside that bucket — which
- * is the guarantee the old `u/<id>/` prefix could not give on iDrive e2, the
- * one vendor measured that cannot scope a key to a folder.
- */
 export const ACCOUNT_BUCKET_PREFIX = "drv-";
 export const TEAM_BUCKET_PREFIX = "drv-t-";
 
@@ -92,18 +81,6 @@ export const CAPABILITIES_BY_KIND = Object.freeze({
   branch: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"])),
 });
 
-/**
- * The hour. Every machine credential — an agent tool's key, a raw s3 key, a
- * key a sandbox holds — lives this long and is renewed only while what holds
- * it is still allowed (drive issue #106).
- *
- * The competitor hands out a one-hour scoped credential and swaps it as the agent
- * works; ours lived until the person revoked it, so a leaked agent key was a
- * key that worked forever. The api Worker keeps only a hash, so a leaked
- * *secret* is not what this bounds: what it bounds is the credential itself,
- * which is what a sandbox environment, a shared terminal or a copied MCP
- * entry hands over.
- */
 export const AGENT_KEY_TTL_SECONDS = 3600;
 
 /**
@@ -125,19 +102,6 @@ export const KEY_TTL_SECONDS = Object.freeze({
   branch: AGENT_KEY_TTL_SECONDS,
 });
 
-/**
- * The most live keys one account may hold (drive issue #552). Each mint is a
- * vendor access key the storage server enforces until something revokes it,
- * so the account count is the bound the vendor itself does not set — its
- * reseller API documents no per-account key limit (checked 2026-10-06,
- * idrive.com/s3-storage-e2/reseller-api) — and a looping script with one
- * device token must not be that mint's only speed bump. Twenty is far above
- * what a person with devices and agents holds (the hourly kinds expire and
- * the sweep removes their vendor keys), and far below anything a vendor would
- * ever have to refuse. The message the account reads names this number, and
- * the pin that keeps the two together is in
- * test/integration/key-count-cap-d1.test.mjs.
- */
 export const KEY_COUNT_CAP = 20;
 
 /**
@@ -195,7 +159,6 @@ export function mintTtlSeconds(kind, providerExpiresIn) {
         `Provider session lifetime must be a positive number or null, got ${JSON.stringify(providerExpiresIn)}.`,
       );
     }
-    // No ceiling of its own: the provider's session is the only lifetime there is.
     if (ceiling === null) {
       return providerExpiresIn;
     }
@@ -250,20 +213,9 @@ export const TEAM_ROLE_CAPABILITIES = Object.freeze({
   read_write: Object.freeze(/** @type {ReadonlyArray<Capability>} */ (["list", "read", "write"])),
 });
 
-// A prefix is the storage safety boundary: whatever lands in it can only ever
-// name paths inside one account's folder. `..` and `/` are what would point a
-// prefix outside it, so neither character set admits them, and the length cap
-// keeps a junk id from becoming a junk key name upstream.
 const ACCOUNT_ID_SAFE = /^[A-Za-z0-9_-]{1,64}$/;
 const BRANCH_NAME_SAFE = /^[A-Za-z0-9_.-]{1,64}$/;
-// A team id is the same shape as an account id (`newId("team")` makes
-// `team_<hex>`), so it is checked with the same rule: it goes into the shared
-// prefix, and a `/` or `..` in it would point that prefix at another drive.
 const TEAM_ID_SAFE = /^[A-Za-z0-9_-]{1,64}$/;
-// The one team prefix shape, read back out of a key row's prefix. It is the
-// same shape `teamPrefix` writes (the same character class as TEAM_ID_SAFE,
-// between `t/` and the trailing slash), so the segment a match captures is an
-// id `checkedTeamId` already accepted when the prefix was built.
 const TEAM_PREFIX_PATTERN = /^t\/([A-Za-z0-9_-]{1,64})\/$/;
 
 /**
@@ -434,8 +386,6 @@ export function scopeFor(kind, accountId, options = {}) {
     throw new Error(`Unknown key kind: ${kind}. Known kinds: ${KEY_KINDS.join(", ")}.`);
   }
   const home = `u/${checkedAccountId(accountId)}/`;
-  // A branch is a folder inside the account's own bucket, so its key is
-  // limited to the account's bucket like every other kind's (drive#371).
   const bucket = bucketForAccount(accountId);
   const capabilities = CAPABILITIES_BY_KIND[kind];
   if (kind === "branch") {

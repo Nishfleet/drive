@@ -1,9 +1,3 @@
-// The docs site (drive issue #98): every page reachable, every number the
-// invoice's own, and the agent-facing index complete. The docs are a generated
-// section of the site, so the gate is the same one the shipped pricing page
-// uses: the tests build their expectations from core/billing.js and fail CI
-// when a page drifts from it.
-
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";

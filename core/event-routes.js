@@ -1,26 +1,3 @@
-// The storage event intake (build step 1, drive#2): the endpoint the bucket's
-// own notifications are pointed at, and the first place a saved file becomes
-// something the drive knows about.
-//
-// The bucket sends an S3 event notification — the same shape from MinIO's
-// webhook, iDrive e2's notification rule or B2's event rule — so this route
-// reads the one JSON envelope every provider pads `Records` in. The meter
-// (build step 5, drive#6) is what turns these into GB-minutes; this route
-// exists so step 1 can prove that a saved file reaches the Worker at all, and
-// it logs the line the proof quotes.
-//
-// The endpoint is public in the registry because the caller is the storage
-// server, which holds no device token — but it is not open: it requires the
-// shared token the bucket was configured with (a Worker secret), and refuses
-// to run at all when that token is missing rather than accepting anything.
-//
-// The failure words here are machine-facing, not the person's: the only caller
-// is the storage server, and these strings are the api Worker's own error
-// shape (the same inline sentences index.js uses for 404/405/400), so they are
-// deliberately NOT the one user-facing table in core/messages.js. The one gate
-// that table drives, test/messages.test.mjs, covers the table and the shipped
-// page; a bucket reading an XML/`{"error"}` body is not a person.
-
 import { errorResponse, json, tokensMatch } from "./http.js";
 
 /**
@@ -47,9 +24,6 @@ export function decodeNotificationKey(rawKey) {
   try {
     return decodeURIComponent(rawKey.replace(/\+/g, " "));
   } catch {
-    // A key that is not a valid escape is kept exactly as it arrived: the
-    // bucket sent bytes this cannot read, and inventing a key is worse than a
-    // raw one.
     return rawKey;
   }
 }
@@ -111,8 +85,6 @@ export async function storageEventsRoute(request, ctx) {
   }
   const token = ctx.env.STORAGE_EVENT_TOKEN;
   if (typeof token !== "string" || token.length === 0) {
-    // Without the secret the endpoint cannot tell the storage server from
-    // anyone else on the internet, so it does not answer at all.
     return errorResponse(503, "Storage events are not configured on this deployment.");
   }
   const [scheme, presented] = (request.headers.get("authorization") ?? "").split(" ");
@@ -121,8 +93,6 @@ export async function storageEventsRoute(request, ctx) {
       "www-authenticate": 'Bearer realm="drive"',
     });
   }
-  // The one compare in http.js. Both sides are the raw strings this route has:
-  // the bucket's configured token and the bearer token presented with it.
   if (!(await tokensMatch(presented, token))) {
     return errorResponse(401, "Storage events need the bucket's token.", {
       "www-authenticate": 'Bearer realm="drive"',
@@ -140,7 +110,6 @@ export async function storageEventsRoute(request, ctx) {
     return errorResponse(400, parsed.error);
   }
   for (const event of parsed.events) {
-    // Event name, version and time only. The object key is a customer path.
     console.log(
       `[api] storage event ${event.eventName} version=${event.versionId || "-"} at=${event.eventTime || "-"}`,
     );

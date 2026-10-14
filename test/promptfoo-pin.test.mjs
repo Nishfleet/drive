@@ -1,10 +1,3 @@
-// promptfoo lives in its own npm project, `evals/agents/` (drive issue #257).
-// Two cold `npm exec promptfoo@0.123.1 --version` runs filled a runner's 3 GiB
-// MemoryHigh. Putting promptfoo in the root package.json is no fix: its tree is
-// about 3.6 GB on disk (45 optional provider SDKs) and a warm `npm ci` of it
-// peaked at 4.0 GB, so every worker's setup step would stall instead. The
-// isolated project, its lockfile and its `.npmrc` are the whole guarantee.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

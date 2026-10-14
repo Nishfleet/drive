@@ -1,8 +1,3 @@
-// The one HTTP and request-reading helper module (drive#618). Every api route
-// and every src/ module that answers a JSON body, reads a bearer token, reads a
-// body under a byte limit or compares a secret reads it from here, so a second
-// spelling of any of these cannot end up meaning two different things.
-
 /**
  * JSON response. Never cached: every api body is per-account.
  * @param {unknown} body
@@ -14,8 +9,6 @@ export function json(body, status = 200, headers = {}) {
     status,
     headers: {
       ...headers,
-      // Last, so a caller's extra headers cannot silently switch off no-store
-      // or lie about the body type: every api body is per-account JSON.
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
     },
@@ -64,11 +57,6 @@ export async function readJsonObject(request) {
   try {
     body = await request.json();
   } catch {
-    // A body that is not JSON at all is the same failure as a body that is
-    // JSON but not an object: both are "this request did not carry a JSON
-    // object", and both routes that read a body say it in the table's words, so
-    // a form, an array, a bare value and a mangled body all read the same on
-    // every account route (drive#158).
     return { error: "The request body is not valid JSON." };
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -77,10 +65,6 @@ export async function readJsonObject(request) {
   return { body };
 }
 
-/**
- * A request body over the limit its route set. `readLimitedBody` throws this
- * class, so the route that owns the limit owns the words it answers with.
- */
 export class BodyTooLargeError extends Error {
   constructor() {
     super("body too large");
@@ -167,9 +151,7 @@ export async function tokensMatch(presented, configured) {
     crypto.subtle.digest("SHA-256", encoder.encode(presented)),
     crypto.subtle.digest("SHA-256", encoder.encode(configured)),
   ]);
-  // crypto.subtle.timingSafeEqual is a Workers API, so the generated runtime
-  // types know it and the DOM ones do not; the cast is the platform difference,
-  // and the accumulator below is the answer on a runtime without it.
+  // crypto.subtle.timingSafeEqual is a Workers API that the DOM types lack.
   const subtle =
     /** @type {SubtleCrypto & {timingSafeEqual?: (a: ArrayBuffer, b: ArrayBuffer) => boolean}} */ (
       crypto.subtle

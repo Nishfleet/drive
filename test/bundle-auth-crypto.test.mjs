@@ -1,33 +1,3 @@
-// The dead-auth-crypto shim (drive issue #851).
-//
-// Better Auth registers every route its router knows, even when the
-// deployment's config means a route can never run, and its modules import
-// their crypto statically — so the site Worker parsed jose (~76 KB of JWT
-// code) and @noble/hashes on every request while core/auth.js signs people in
-// with magic links only: database sessions, no password sign-in, no social
-// providers, no verification email. vite.config.ts's deadAuthCryptoShim
-// plugin aliases the dead modules to throwing stubs at build time, and the
-// bundles dropped 104,260 bytes (3,004,752 -> 2,900,492; drive#851).
-//
-// This file is the detector. The shim is an alias at the bundler boundary, so
-// Node tests run the real library code and cannot see it; the shape the
-// Worker actually ships is only visible in the build output. Three things must
-// hold, and each has its own probe:
-//
-//   1. The built bundle carries no jose and no @noble/hashes regions, and
-//      still carries @noble/ciphers — the live crypto (two-factor backup-code
-//      and OTP encryption, and the library's own state machinery) that a
-//      future shim must not also alias away.
-//   2. The config lines that make the replaced modules dead are still in
-//      core/auth.js: the stubs throw if a flow they serve is ever enabled, so
-//      an enabled flow and the shim cannot both pass silently — but the pin
-//      makes the conflict visible at test time, not at a customer's request.
-//
-// Probes:
-//   1. Bundle regions: jose gone, @noble/hashes gone, @noble/ciphers here.
-//   2. The core/auth.js anchors the shim's deadness is argued from.
-//   3. The shim still lists every module it replaces.
-
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";

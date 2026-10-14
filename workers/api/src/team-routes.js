@@ -1,16 +1,3 @@
-// The team routes (drive#20): a team account, members invited by email, and
-// the owner removing a member whose key then stops working.
-//
-// Every route here is an account route (`routes.js`), so the gate resolved the
-// caller from its own bearer token or session cookie before a handler runs. A
-// team is addressed by its own id and every read and write is checked against
-// the membership the store holds: the owner may invite, list and remove, and a
-// member may read and write the team drive only as far as their role allows.
-//
-// The keys themselves are minted through the store's `mintKey` with an
-// explicit scope (keyprovider.js `teamScopeFor`), so a member's key carries
-// the capabilities its role grants and the storage write route refuses the
-// read-only one. Nothing here keeps a second copy of the capability rule.
 import { errorResponse, json, readJsonObject } from "../../../core/http.js";
 import { checkedTeamRole, teamScopeFor } from "../../../core/keyprovider.js";
 import { mailFromEnv, notifySecurityEvent } from "../../../core/security-event.js";
@@ -88,9 +75,6 @@ export async function inviteMemberRoute(request, ctx) {
   if ("error" in member) {
     return errorResponse(404, "No such team on this account.");
   }
-  // Lowering (or otherwise changing) a role has to kill the old key at the
-  // storage provider: a D1-only update leaves the minted credential working
-  // with the previous capabilities (drive#518, same root as #497).
   if (
     previous !== undefined &&
     previous.state === "active" &&
@@ -144,12 +128,6 @@ export async function removeMemberRoute(request, ctx) {
   if ("error" in result) {
     return errorResponse(404, "No such member on this team.");
   }
-  // The removed member's team keys die here, in the same request the owner
-  // removed them: `revokeTeamKeys` writes the revoke to the bound device row
-  // (D1, when the deployment binds one) and marks this isolate's copy, and the
-  // storage write/list routes refuse a revoked key from the next request on —
-  // on any isolate, because the row is what `authenticate` reads for a key
-  // this isolate did not revoke itself (drive#408).
   const revoked = await ctx.store.revokeTeamKeys(result.accountId, ctx.params.teamId);
   return new Response(null, {
     status: 204,
@@ -190,8 +168,6 @@ function publicMember(member, options = {}) {
     invitedAt: member.invitedAt,
     joinedAt: member.joinedAt,
     revokedAt: member.revokedAt,
-    // The prefix and capabilities the role would mint, so the owner can see
-    // what a member's key can do without minting one.
     scope: teamScopeFor(
       /** @type {import("../../../core/keyprovider.js").TeamRole} */ (member.role),
       member.teamId,
@@ -216,18 +192,11 @@ export async function mintTeamKeyRoute(request, ctx) {
   if (request.method !== "POST") {
     return errorResponse(405, "That method is not allowed here.", { allow: "POST" });
   }
-  // Bind a pending invite before the active-membership read: D1's
-  // teamForAccount only sees `active` rows, so an invitee who has not
-  // accepted yet would 404 here and never reach acceptInvite (drive#518).
   const membership = await ctx.store.teams.acceptInvite(ctx.params.teamId, ctx.account.id);
   const team = await ctx.store.teams.teamForAccount(ctx.account, ctx.params.teamId);
   if (team === null) {
     return errorResponse(404, "No such team on this account.");
   }
-  // The owner's own key on the team drive is the owner's device key scoped to
-  // the team prefix, so an owner and a read-write member hold the same kind of
-  // thing; a member's role is what differs, and a member with no stored
-  // membership has no role to mint from.
   const isOwner = team.ownerAccountId === ctx.account.id;
   if (!isOwner && membership === null) {
     return errorResponse(404, "No such team on this account.");

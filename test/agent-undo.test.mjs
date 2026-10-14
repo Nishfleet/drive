@@ -1,27 +1,3 @@
-// Tests for the one-click rewind (drive issue #13, build step 11's undo half).
-//
-// The per-agent spending cap and daily-request cap this file used to cover
-// were deleted by drive #169: they shipped with no caller outside these tests,
-// so no agent key was ever stopped, and there is no live request path that
-// spends money for an agent key to hook a cap into yet (the meter is still an
-// open PR, and the api Worker's storage route is a read-only stand-in). They
-// come back with the meter, on the real path — tracked in drive #171.
-//
-// The rewind's own acceptance, in the order the tests below walk it:
-//
-//   1. "Changed by <agent or person>" and the rewind that reads the same value
-//      (issue #13's third comment): the attribution column on the branch row
-//      is read by both, and there is no second store.
-//   2. The rewind itself: what the agent changed is listed before anything is
-//      touched, one click discards it, the original folder is left exactly as
-//      it was, and a branch past the 30-day window cannot be rewound at all —
-//      enforced on the server, not by hiding a button.
-//
-// The rewind needs a real database: the branches table is exercised against a
-// real SQLite engine via node:sqlite with the shipped migrations applied,
-// which is the same adapter test/branches.test.mjs uses, and storage is the
-// in-memory FileStore whose `copy` stands in for S3's CopyObject.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";

@@ -1,32 +1,3 @@
-// The copy gate (drive issue #774, third acceptance bullet): the build fails
-// if the copy names a command or a page that does not exist.
-//
-// Two facts about this repository make the gate necessary and cheap. First,
-// the copy is where the promises live: the README, the marketing pages, the
-// docs and the agent-facing llms.txt all name commands and link pages, and a
-// renamed subcommand or a deleted page used to leave them pointing at nothing
-// until somebody clicked. Second, the two things a mention can name are each
-// already one file apiece: the command table in cmd/drive/main.go is the one
-// place a subcommand exists (the Go-side gates in command_table_test.go hold
-// the agent notes and `drive --help` to it, and the docs sample gate in
-// docs.test.mjs holds every shell sample to it), and the page a link names is a
-// file in public/ (or, for the docs, docs-site/).
-//
-// So this gate joins those two ends: every backticked `drive <word>` mention on
-// a customer surface is a command main can run, and every internal link is a
-// file that exists. Both directions are deliberate. A mention of a command that
-// was removed fails here; a page that is deleted fails here; and the one
-// deliberate mention of a command the drive does not have — the honest note in
-// docs/limits that `drive restore` is not in the CLI — is named in the
-// allowance below with its reason, so it cannot be broadened into a promise by
-// accident.
-//
-// What this gate does not do: it does not run the pages, and it does not read
-// the rendered docs (the authored Markdown is the source, and a page that was
-// never built is caught by test/docs.test.mjs, which reads the build's own
-// output). It is static, so it runs in the same `node --test` pass as the rest
-// of the suite with no browser and no network.
-
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

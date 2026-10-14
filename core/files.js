@@ -1,6 +1,3 @@
-// The listing parser itself now lives in core/s3-listing.js, which the api
-// Worker reads too (drive issue #504: one parser, decoded, for both Workers).
-// These re-exports keep the names every caller already imports from here.
 export { nextContinuationToken, parseListVersions } from "./s3-listing.js";
 
 import {
@@ -10,66 +7,24 @@ import {
 } from "./abuse-guards.js";
 import { DAY_MS } from "./units.js";
 
-/** The page the api Worker serves; linked from the first-run page. */
 export const FILES_PATH = "/files";
-/**
- * The characters a path may not carry: the ASCII control range and DEL plus a
- * backslash, spelled with String.fromCharCode rather than a `` escape in a
- * literal, because a control range in a regex literal is exactly the thing
- * that is unreadable in review and easy to typo into the wrong range (drive
- * issue #92). The Web Files page cannot import this module and builds the same
- * class from the same call; test/files.test.mjs reads the shipped page and
- * fails when the two drift apart.
- */
 export const CONTROL_OR_BACKSLASH = new RegExp(
   `[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}\\\\]`,
 );
-/** The same control range with a slash in it, for a name the browser hands over. */
 export const CONTROL_OR_SLASH = new RegExp(
   `[/\\\\${String.fromCharCode(0)}-${String.fromCharCode(31)}]`,
   "g",
 );
-/** The listing, download, upload, preview, embed and restore API. */
 export const FILES_ENDPOINT = "/api/files";
-/**
- * Per-file ceiling on an owner upload through `/api/files/upload` (drive#539).
- * 100 MB stays under the isolate's 128 MB, so a declared size that would crash
- * the Worker is refused from Content-Length before the body is read. The public
- * upload-request path caps at 32 MB for the same isolate reason (src/share.js).
- */
 export const UPLOAD_FILE_MAX_BYTES = 100_000_000;
-/**
- * Where the page's media elements read their bytes. It is the preview URL with
- * one difference: a picture is served inline here so the page can draw it, and
- * the direct-open preview URL serves the one type that can act as a document —
- * an .svg — as an attachment instead. See previewDisposition() (drive#657).
- */
 export const FILES_EMBED_ENDPOINT = `${FILES_ENDPOINT}/embed`;
-/** The folder a deleted file is parked in so Recently deleted can put it back. */
 const TRASH_FOLDER = ".trash";
-/** The drive path of that folder. */
 export const TRASH_PATH = `/${TRASH_FOLDER}`;
-/**
- * The folder every branch of this drive is copied into (build step 7,
- * drive#8). It lives here beside the trash folder because this is the one
- * module that knows which folders are the drive's own rather than a person's:
- * both are hidden in the drive root, and deeper in the tree both are an
- * ordinary folder. `BRANCHES_PATH` is the drive path, and src/branches.js copies
- * folders there and walks `.branches` on its own side, so a branch's own copy
- * can never be walked into a copy of itself.
- */
 export const BRANCHES_FOLDER = ".branches";
-/** The drive path branches are copied into. */
 export const BRANCHES_PATH = `/${BRANCHES_FOLDER}`;
 /** How long a deleted file stays restorable (build-spec.md "Old versions"). */
 export const RECENTLY_DELETED_DAYS = 3;
 
-// ---------------------------------------------------------------- file kinds
-
-// The extensions a browser can preview without downloading: images, video,
-// audio and PDF in the browser's own viewer, text as the page renders it. A
-// file whose type is unknown is still downloadable, and the page says so
-// rather than offering a broken preview.
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "bmp", "ico"];
 const VIDEO_EXTENSIONS = ["mp4", "webm", "mov", "m4v", "ogv"];
 const AUDIO_EXTENSIONS = ["mp3", "m4a", "aac", "ogg", "oga", "wav", "flac"];
@@ -158,26 +113,11 @@ export function isPreviewable(kind) {
   return kind !== "file" && kind !== "folder";
 }
 
-// What an inline preview may be served as. A file the customer uploaded is
-// never a page on our origin, so the served type is an allowlist rather than a
-// decision: image/*, video/*, audio/*, application/pdf and text/plain are the
-// only types a preview may open with, and a type is one of those when the
-// file's kind says so, not when the upload claimed it. Every other type — the
-// XML family an XHTML, XSLT, RDF, MathML or multipart/related upload carries,
-// and every "file" kind that would otherwise pass its claimed type through —
-// is served as `application/octet-stream`, previewContentType()'s one value
-// that is not an inline type, which previewDisposition() turns into a
-// download (issue #548). The header pair in readRequest() (nosniff, and a
-// sandboxed preview) covers the rest, and previewDisposition() also takes the
-// one allowlisted type that can still act as a document — an .svg, whose
-// links navigate — out of the direct-open preview and a share link, while the
-// page's <img> reads it inline from the embed URL (drive#657).
 const PREVIEW_CONTENT_TYPES = Object.freeze({
   text: "text/plain; charset=utf-8",
   pdf: "application/pdf",
 });
 
-/** The one served type that is not an inline type, so it never opens in a tab. */
 const PREVIEW_OCTET_STREAM = "application/octet-stream";
 
 /**
@@ -193,18 +133,9 @@ const PREVIEW_OCTET_STREAM = "application/octet-stream";
  * @returns {string}
  */
 export function attachmentDisposition(name) {
-  // An empty (or all-control-character) name still needs a legal disposition,
-  // and both halves must share it or a browser that reads `filename*` shows an
-  // empty name (drive#539).
   const cleaned = safeFileName(String(name || "")) || "download";
-  // toWellFormed() repairs a lone surrogate before encodeURIComponent() sees
-  // it: half a surrogate pair would otherwise throw URIError and turn a
-  // download into a 500 (drive#539).
   const wellFormed = cleaned.toWellFormed();
-  // A header value is a ByteString: a name outside ASCII is not a legal
-  // `filename=` value and Node's Response throws on it, so the fallback maps
-  // such a character to `_` and the real name rides on `filename*`, which
-  // browsers read.
+  // A header value is a ByteString: Node's Response throws on a non-ASCII `filename=` value.
   const ascii = wellFormed.replace(/["\\]/g, "").replace(/[^\u0020-\u007E]/g, "_") || "download";
   const encoded = encodeURIComponent(wellFormed).replace(
     /[!'()*]/g,
@@ -222,9 +153,6 @@ export function attachmentDisposition(name) {
 export function previewContentType(name, storedContentType = "") {
   const kind = fileKind(name, storedContentType);
   const stored = String(storedContentType).split(";")[0].trim().toLowerCase();
-  // Only text and pdf are pinned here; the media kinds have no entry and fall
-  // through to the kind-matched check below, so the lookup is asked only for
-  // the two kinds that are in it.
   const pinned = kind === "text" || kind === "pdf" ? PREVIEW_CONTENT_TYPES[kind] : undefined;
   if (pinned) {
     return pinned;
@@ -238,11 +166,6 @@ export function previewContentType(name, storedContentType = "") {
   if (kind === "audio" && stored.startsWith("audio/")) {
     return stored;
   }
-  // An allowlist, not a pass-through: a type the file's kind did not claim as
-  // media, a PDF or text is octet-stream, and the disposition below makes it
-  // a download. This is what an XHTML, XSLT, RDF, MathML or multipart/related
-  // upload hits, because the kind is "file" and its claimed type is not in the
-  // allowlist (issue #548).
   return PREVIEW_OCTET_STREAM;
 }
 
@@ -269,10 +192,6 @@ export function previewDisposition(name, storedContentType = "") {
   return attachmentDisposition(name);
 }
 
-// ---------------------------------------------------------------- the words
-
-// The page's copy for a preview. `fallback` is the one thing to do when the
-// kind cannot be previewed, so a file with no viewer still has a next step.
 export const PREVIEW_COPY = Object.freeze({
   image: Object.freeze({ open: "Opens the picture in the page.", fallback: "" }),
   video: Object.freeze({ open: "Plays the video in the page.", fallback: "" }),
@@ -291,11 +210,6 @@ export const PREVIEW_COPY = Object.freeze({
  * @returns {{open: string, fallback: string}}
  */
 export function previewCopy(kind) {
-  // The table is a lookup by a runtime string (a name's kind, which can be any
-  // kind this module does not know yet), and an unknown kind must reach the
-  // throw below rather than be a type error at the call site: the page asks
-  // for copy by kind, so the check is what keeps a new kind from shipping
-  // silent. The fallback is the shape of a miss, never a return.
   const entry = /** @type {Record<string, {open: string, fallback: string}>} */ (PREVIEW_COPY)[
     kind
   ];
@@ -305,8 +219,6 @@ export function previewCopy(kind) {
   return entry;
 }
 
-// Every empty screen says what to do first (build-spec.md "Nothing missing"):
-// a fresh drive and an empty Recently deleted are both complete states.
 export const EMPTY_STATES = Object.freeze({
   folder: Object.freeze({
     what: "This folder is empty.",
@@ -322,7 +234,6 @@ export const EMPTY_STATES = Object.freeze({
   }),
 });
 
-/** One line under the file list, so the one-tap promise is visible. */
 export const PAGE_LINE =
   "Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.";
 
@@ -342,8 +253,6 @@ export const RESTORE_COPY = Object.freeze({
   button: "Restore",
   done: "Put back.",
 });
-
-// ---------------------------------------------------------------- pure logic
 
 /**
  * A drive path is absolute, uses "/" between segments, and never climbs out of
@@ -415,9 +324,6 @@ export function splitEntries(entries) {
   return { folders: sortEntries(folders), files: sortEntries(files) };
 }
 
-/** The folders the drive keeps for itself: hidden in the drive root, and
- * skipped by every walk that builds a copy of a person's files
- * (src/branches.js) or an index of them (src/search.js). */
 const SYSTEM_FOLDERS = Object.freeze([TRASH_FOLDER, BRANCHES_FOLDER]);
 
 /**
@@ -590,10 +496,6 @@ export function findTrashName(entries, path) {
   for (const entry of entries) {
     const parsed = parseTrashName(entry.name);
     if (parsed && parsed.path === path && (!found || parsed.deletedAt > found.deletedAt)) {
-      // The row's own size and ETag travel with the name. The move back a
-      // restore makes is a copy the storage does for itself, and it needs the
-      // size to pick the copy; the remove after it is conditional, and it needs
-      // the fingerprint the trash listing carried (drive issue #567).
       found = { name: entry.name, size: entry.size, etag: entry.etag, ...parsed };
     }
   }
@@ -627,8 +529,6 @@ export function isoStamp(at, what) {
   }
   return new Date(at).toISOString();
 }
-
-// ------------------------------------------------------- the daily purge
 
 /**
  * The cron string the nightly trash purge runs on. The trigger that fires it
@@ -675,8 +575,6 @@ export function accountPrefix(account) {
     );
   }
   if (account.id.length === 0 || account.id.includes("/")) {
-    // A prefix cut mid-segment would put one account's root inside another's
-    // folder, so the id is checked rather than escaped.
     throw new TypeError(`an account id is one path segment, got "${account.id}"`);
   }
   return `u/${account.id}`;
@@ -686,11 +584,6 @@ export function accountPrefix(account) {
  * @param {string} name
  * @returns {string} the name as a single safe path segment
  */
-// Exported for the parity gate in test/files.test.mjs, which runs the Web
-// Files page's own copy of CONTROL_OR_SLASH beside this one and fails when the
-// two would store a name differently (drive#92). Also for src/share.js: an
-// upload request takes a dropped file's name exactly the way the Files page
-// does, so there is one name cleaner rather than two that can drift.
 export function safeFileName(name) {
   const cleaned = String(name || "")
     .trim()

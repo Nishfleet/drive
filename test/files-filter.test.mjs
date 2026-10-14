@@ -1,7 +1,3 @@
-// The folder filter (high-end gaps item 5): typing hides rows whose name does
-// not contain the text, with a sentence when none match. It is client-side, so
-// the page script runs here against a small stub list.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

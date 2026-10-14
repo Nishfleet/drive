@@ -1,57 +1,9 @@
-// The live upload-queue report store (drive issue #318): the row a device
-// writes when it reports its rclone queue, and the read the first-run and
-// usage endpoints answer from.
-//
-// A device's rclone VFS upload queue lives on the Mac, inside the mount
-// process, so the Worker cannot see it. The CLI reads the queue where
-// `drive pause` and `drive status` already read it (cmd/drive/rc.go) and
-// POSTs the numbers to the api Worker over the device token it already
-// holds. They land here, keyed by account and device (drive issue #516), so
-// a second device on the same account does not 429 the first.
-//
-// Two windows, one number each, so a mount's report cadence and the read's
-// staleness are stated once:
-//
-//   - QUEUE_REPORT_INTERVAL_SECONDS is the mount's own report interval and
-//     the minimum spacing between two accepted reports from the same device.
-//   - QUEUE_FRESHNESS_SECONDS is how old a report may be and still read as
-//     live. A device that has not reported for a while reads as no queue to
-//     report -- the same honest null #308 answers today -- rather than as a
-//     stale one.
-//
-// The write is conditional in SQL, not read-then-write in JavaScript: the
-// upsert only fires when the row's own `reported_at` is far enough in the
-// past, so two reports racing on two Worker instances cannot both land and
-// the interval holds across isolates.
-//
-// This module is imported by the api Worker's route and by the site Worker's
-// status and usage routes (the same D1 binding, `workers/api/src/index.js`
-// storeFor), so a queue written on one is read on the other.
-
 import { all, first, nowSeconds, run } from "./db.js";
 
-/**
- * How often a mount reports, and the minimum spacing between two accepted
- * reports (seconds). The CLI's reporter loop (cmd/drive/report.go) ticks at
- * this interval, and a report that lands inside it is refused with 429 and a
- * `retry-after`, so the write rate a device can spend has one bound. Ten
- * seconds is far above the queue's own change rate and far below a keyboard's.
- */
 export const QUEUE_REPORT_INTERVAL_SECONDS = 10;
 
-/**
- * How long a mount may stay silent when the queue has not changed (seconds).
- * The CLI posts on change plus this heartbeat (cmd/drive/report.go).
- */
 const QUEUE_REPORT_HEARTBEAT_SECONDS = 5 * 60;
 
-/**
- * How old a report may be and still read as live (seconds). Three missed
- * heartbeats, so a mount whose loop stalled for a moment does not blink to
- * "no queue" while a mount that is gone reads as no queue rather than a
- * stale one. The window has to outlast the heartbeat: a 10-second tick that
- * only POSTs on change would otherwise look stale after 30 seconds of idle.
- */
 export const QUEUE_FRESHNESS_SECONDS = 3 * QUEUE_REPORT_HEARTBEAT_SECONDS;
 
 /**
@@ -101,8 +53,6 @@ export function uploadQueueFromRow(row, at) {
     totalBytes < 0 ||
     files < 0
   ) {
-    // A row that cannot be a queue is refused rather than rendered: the same
-    // rule `uploadProgress()` holds a live payload to.
     throw new TypeError(
       `device_queue_reports row ${r.account_id} is not a queue: ${JSON.stringify(row)}`,
     );
@@ -157,10 +107,6 @@ function sumLiveQueues(live) {
       moving.totalBytes += queue.totalBytes ?? 0;
     }
   }
-  // Nothing is leaving: the queue is what it is holding. `paused` is the
-  // reports' own flag only here, and it stays false for an empty, unpaused
-  // account, so an account whose devices report nothing left to move reads as
-  // up to date rather than paused.
   if (moving.totalBytes === 0 && moving.files === 0) {
     return {
       files: held.files,
@@ -175,8 +121,6 @@ function sumLiveQueues(live) {
     totalBytes: moving.totalBytes,
     paused: false,
   };
-  // Bytes are leaving and files are held: both halves stay on the queue, and
-  // `uploadProgress()` names them in that order.
   if (held.files > 0 || held.totalBytes > 0) {
     return {
       ...queue,

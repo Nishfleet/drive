@@ -1,7 +1,3 @@
-// The shared page shell (src/render-shell.js, shell/): every page that carries
-// a shell pair matches its partial, and the pages that must share a header or
-// footer do carry one.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

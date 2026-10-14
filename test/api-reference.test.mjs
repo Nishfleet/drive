@@ -1,7 +1,3 @@
-// The API reference (docs-site/api.md) names every route the api Worker
-// registers, so a new route cannot ship without a line on the page. The few
-// routes the page lists under "Not documented yet" are named here on purpose.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

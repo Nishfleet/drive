@@ -13,11 +13,6 @@ import (
 	"time"
 )
 
-// TestStandinMountProofKillNineRecoversQueuedSave is #542's kill-9 proof:
-// rclone is SIGKILL'd while a save is still in the VFS cache, the FUSE entry
-// stays, and `drive mount` clears it, comes back, and uploads the queued file.
-// The stand-in mount-proof CI job runs -run TestStandinMountProof, which
-// matches this name (drive#744).
 func TestStandinMountProofKillNineRecoversQueuedSave(t *testing.T) {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		t.Skip("rclone is not installed")
@@ -90,8 +85,6 @@ func TestStandinMountProofKillNineRecoversQueuedSave(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Write-back is 5s; this wait is only so rclone flushes the VFS cache
-	// file to disk before SIGKILL, not so the object uploads.
 	time.Sleep(500 * time.Millisecond)
 
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
@@ -119,9 +112,6 @@ func TestStandinMountProofKillNineRecoversQueuedSave(t *testing.T) {
 		uploaded, err, through, dirTree(t, DefaultCacheDir(home)), dirTree(t, filepath.Join(root, "data")))
 }
 
-// waitForAnsweringMount waits until findmnt lists the dir AND Lstat does not
-// return ENOTCONN. waitForMount treats a stale FUSE entry as live, so a
-// remount after kill -9 would return before rclone is back.
 func waitForAnsweringMount(t testing.TB, cmd *exec.Cmd, dir string) bool {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)

@@ -10,17 +10,8 @@ import (
 	"testing"
 )
 
-// Tests for `drive share` and `drive request` (drive issue #19). Every test
-// runs against a real httptest server that answers the api Worker's own
-// endpoints (src/share.js handleShareRequest, handleRequestRequest), so the
-// request the CLI sends and the row it prints are checked against the route's
-// real contract rather than a hand-written fixture that can drift from it.
-
 const shareToken = "AAAAAAAAAAAAAAAAAAAAAA"
 
-// linkServer is a stand-in for the api Worker's two link endpoints. It records
-// what was sent so a test can assert the method, the path and the body, and
-// answers with the rows src/share.js returns.
 type linkServer struct {
 	calls     []linkCall
 	shares    []ShareLink
@@ -196,8 +187,6 @@ func TestListReadsBothKinds(t *testing.T) {
 	}
 }
 
-// A failed call carries the api Worker's own words, because that is the
-// sentence a person needs ("That file is not here."), not a generic failure.
 func TestAFailedCallCarriesTheWorkersMessage(t *testing.T) {
 	server := testLinkServer()
 	server.mintErr = http.StatusNotFound
@@ -229,10 +218,6 @@ func TestAFailureWithNoReadableBodyIsStillNamed(t *testing.T) {
 	}
 }
 
-// A person holds a full link, not a token: the argument is reduced to the
-// token the endpoint takes, for both link shapes, with a trailing slash or a
-// query string after it. Anything that does not reduce to the Worker's token
-// shape is refused here, not sent to the api.
 func TestTokenFromArgAcceptsALinkOrAToken(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{shareToken, shareToken},
@@ -242,7 +227,6 @@ func TestTokenFromArgAcceptsALinkOrAToken(t *testing.T) {
 		{"https://drive.test/s/" + shareToken + "/?x=1", shareToken},
 		{"https://drive.test/upload.html?k=" + shareToken, shareToken},
 		{"https://drive.test/upload.html?k=" + shareToken + "&utm_source=mail", shareToken},
-		// A URL fragment is not part of the token either.
 		{"https://drive.test/s/" + shareToken + "#top", shareToken},
 		{"https://drive.test/upload.html?k=" + shareToken + "#frag", shareToken},
 	} {
@@ -261,11 +245,8 @@ func TestTokenFromArgRefusesAnythingNotTokenShaped(t *testing.T) {
 	for _, in := range []string{
 		"",
 		"k=short",
-		// The #205 example: the old extraction kept "/?x=1" as if it were
-		// part of the token, and this paste reached RevokeShare/RevokeRequest.
 		"https://drive.test/s/AAAAA/?x=1",
 		"https://drive.test/s/AAAA/?x=1",
-		// A "k=" inside a path segment is not the query parameter.
 		"https://drive.test/disk=" + shareToken,
 		"https://drive.test/k=evil",
 		"../etc/passwd",
@@ -276,16 +257,12 @@ func TestTokenFromArgRefusesAnythingNotTokenShaped(t *testing.T) {
 			t.Errorf("tokenFromArg(%q) = %q, want an error", in, got)
 			continue
 		}
-		// The refusal names the shape a person must paste, not a bare
-		// "invalid".
 		if !strings.Contains(err.Error(), "22") {
 			t.Errorf("tokenFromArg(%q) error %q does not name the token shape", in, err)
 		}
 	}
 }
 
-// What a person types is a path inside the drive, with or without the mount
-// dir in front; the endpoint always gets a slash-rooted drive path.
 func TestDrivePathArgDropsTheMountDirAndKeepsASlashPath(t *testing.T) {
 	home := t.TempDir()
 	mountDir := DefaultMountDir(home)
@@ -316,8 +293,6 @@ func TestDrivePathArgRefusesAPathThatLeavesTheDrive(t *testing.T) {
 	}
 }
 
-// The command is asked for one job at a time, and asks for a name it can act
-// on: no silent guess between mint, list and revoke.
 func TestShareRefusesTwoJobsAndAMissingName(t *testing.T) {
 	if err := runShare([]string{"--api", "https://drive.test", "--list", "--revoke", shareToken}); err == nil {
 		t.Error("--list with --revoke was accepted")
@@ -360,8 +335,6 @@ func TestShareReadsApiBaseDriveLoginSaved(t *testing.T) {
 	}
 }
 
-// The whole `drive share` path, run as the command itself: the argument is
-// translated, the endpoint is called and the link reaches stdout.
 func TestRunSharePrintsTheLink(t *testing.T) {
 	server := testLinkServer()
 	srv := server.start(t)
@@ -431,8 +404,6 @@ func TestRunShareRevokePrintsTheRevokedState(t *testing.T) {
 	}
 }
 
-// The links routes sit behind the account gate, which takes the device token
-// as a Bearer: a mint, list or revoke that sends none is always a 401.
 func TestLinkCallsSendTheDeviceToken(t *testing.T) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

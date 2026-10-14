@@ -66,8 +66,6 @@ func TestLoginWritesStorageSettingsFromDeviceFlow(t *testing.T) {
 	if creds.Endpoint == "" || creds.Bucket == "" || creds.Prefix == "" {
 		t.Fatalf("credentials missing storage location: %+v", creds)
 	}
-	// drive#517: the mint's download URL is saved, so the mount reads through
-	// the dl Worker instead of straight from storage.
 	if !strings.HasPrefix(creds.DownloadURL, "https://dl.example.test/k/grant_") {
 		t.Fatalf("credentials download URL = %q, want the mint's", creds.DownloadURL)
 	}
@@ -183,9 +181,6 @@ func TestInitUsesTheAPIBaseDriveLoginSaved(t *testing.T) {
 	}
 }
 
-// The one site address (drive#527). The CLI embeds cmd/drive/site.json, and
-// core/seo.js imports the same file, so this test reads that file rather than
-// searching a source file for a literal that no longer lives there.
 func TestDefaultAPIBaseMatchesTheShippedSite(t *testing.T) {
 	src, err := os.ReadFile("site.json")
 	if err != nil {
@@ -218,8 +213,6 @@ func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
 	if first.KeyID == "" {
 		t.Fatal("the first login wrote no key id")
 	}
-	// The real Worker issues a new device token per login; the stand-in
-	// issues one, so the first login's file is given its own.
 	const oldToken = "dtok_from_the_first_login"
 	first.DeviceToken = oldToken
 	if err := SaveCredentials(home, first); err != nil {
@@ -243,10 +236,6 @@ func TestLoginRevokesThePreviousDeviceKey(t *testing.T) {
 	}
 }
 
-// TestLoginStoresADeviceKeyWithAnHourOnIt is drive#749 on top of drive#544.
-// The api records a provider's own session on the key's row, so a device mint
-// can answer with an hour on it. The renew loop rewrites rclone.conf before
-// that session ends, so login stores the expiry instead of refusing the key.
 func TestLoginStoresADeviceKeyWithAnHourOnIt(t *testing.T) {
 	api := newFakeAPI()
 	mintedAt := time.Now().Add(time.Hour).Unix()
@@ -285,14 +274,7 @@ func TestLoginStoresADeviceKeyWithAnHourOnIt(t *testing.T) {
 	}
 }
 
-// The device-name flag (drive issue #561): `drive login
-// --device studio` names this device at sign-in, both on the
-// approval page (the device-code request) and on the device
-// key, so the account and the drive agree on what the machine
-// is called.
 func TestEnvDeviceNameReadsDriveDevice(t *testing.T) {
-	// DRIVE_DEVICE (the mount's own setting) wins, and sign-in answers
-	// to the same name the mount carries.
 	t.Setenv(deviceEnvName, "studio")
 	if got := envDeviceName(t.TempDir()); got != "studio" {
 		t.Fatalf("envDeviceName(t.TempDir()) = %q, want the DRIVE_DEVICE value", got)
@@ -324,9 +306,6 @@ func TestLoginDeviceFlagNamesTheDeviceAtSignIn(t *testing.T) {
 	}
 }
 
-// `drive login --device studio` is remembered in the credentials file, so a
-// later re-sign-in or `drive agents` answers to "studio" and does not
-// register a second device under the hostname.
 func TestLoginDevicePersistsToLaterSignIns(t *testing.T) {
 	api := newFakeAPI()
 	server := httptest.NewServer(api)
@@ -344,8 +323,6 @@ func TestLoginDevicePersistsToLaterSignIns(t *testing.T) {
 	if got := envDeviceName(home); got != "studio" {
 		t.Fatalf("envDeviceName after login --device studio = %q, want studio", got)
 	}
-	// A later login without the flag keeps the chosen name at sign-in
-	// and on the minted key, not only in the credentials file.
 	if err := Login(home, server.URL, "", io.Discard); err != nil {
 		t.Fatal(err)
 	}
@@ -358,15 +335,12 @@ func TestLoginDevicePersistsToLaterSignIns(t *testing.T) {
 	if len(api.mintedNames) != 2 || api.mintedNames[1] != "studio" {
 		t.Fatalf("flagless login minted %v, want [studio, studio]", api.mintedNames)
 	}
-	// DRIVE_DEVICE still wins.
 	t.Setenv(deviceEnvName, "laptop")
 	if got := envDeviceName(home); got != "laptop" {
 		t.Fatalf("envDeviceName with DRIVE_DEVICE = %q, want laptop", got)
 	}
 }
 
-// DRIVE_DEVICE is the same name the mount carries, so a login with no
-// --device still registers that name instead of the hostname.
 func TestLoginHonorsDriveDeviceWithoutFlag(t *testing.T) {
 	api := newFakeAPI()
 	server := httptest.NewServer(api)
