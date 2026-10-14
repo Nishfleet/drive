@@ -127,7 +127,10 @@ test("a browser visit sees the landing page, and the report mail names the link 
     "the report mail names the clean share link",
   );
   assert.match(html, /Report this link/);
-  assert.match(html, /Stored on Storagebun\. Pay 2 cents per GB from your balance\./);
+  assert.match(
+    html,
+    /Stored on Storagebun\. Pay 2 cents per GB from your balance\. Never more than \$15 per TB\./,
+  );
   // The page names the file and previews a text file by link, not by contents.
   assert.ok(html.includes("notes.txt"));
   assert.match(html, /Open the text file/);

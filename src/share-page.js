@@ -204,7 +204,7 @@ footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #ddd5c5; d
 ${middle}
 ${expiry}
 <p><a href="${reportHref}" rel="nofollow">Report this link</a> to support, or read the <a href="${REPORT_PATH}">report policy</a>.</p>
-<p class="made">Stored on Storagebun. ${escapeHtml(PRICE.rateLine)} <a href="/">See how it works</a></p>
+<p class="made">Stored on Storagebun. ${escapeHtml(`${PRICE.rateLine} ${PRICE.maxLine}`)} <a href="/">See how it works</a></p>
 <footer><nav aria-label="Footer">
       ${footerLinks}
 </nav></footer>
