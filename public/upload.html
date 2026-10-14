@@ -9,18 +9,9 @@
   <link rel="manifest" href="/site.webmanifest">
   <meta name="description" content="Drop files into a shared folder. The owner sees them on their drive.">
   <meta name="robots" content="noindex">
-  <!-- The palette, the reset and the page chrome are in the shared site
-       stylesheet (public/site.css, drive #71); what is left in this page's
-       style block is its own components only, and it loads after the shared
-       file so an override still works (test/site-styles.test.mjs). -->
   <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
-/* Upload request page (drive issue #19). Shared base from /site.css; what is
-   here is this page's own rules. Mobile first: the drop zone is the whole
-   screen and the button is a 44px tap target. class="drive" on <html> aliases
-   those tokens onto the home-page look (drive#458). */
-
 body {
   min-height: 100dvh;
 }
@@ -108,9 +99,6 @@ h1 {
   background: var(--accent-soft, #e6ecf3);
 }
 
-/* Until the link answers, the box keeps its space but is not painted, so the
-   status line under it does not jump when it appears (Lighthouse CLS gate).
-   A closed link takes the space back. */
 .drop[hidden] {
   visibility: hidden;
 }
@@ -203,9 +191,6 @@ button:focus-visible {
     <p class="status" id="status" role="status" aria-live="polite"></p>
   </main>
 
-  <!-- drive#883: the shared footer, so the page a stranger arrives on carries
-       the legal links like every other page (test/legal.test.mjs counts the
-       footers; this file was the one public page without one). -->
   <!-- shell:footer -->
   <footer class="footer">
     <nav class="legal-links" aria-label="Legal">
@@ -223,15 +208,6 @@ button:focus-visible {
   <!-- /shell:footer -->
 
   <script>
-// Upload request page (drive issue #19). The words live in src/share.js; this
-// page is a static asset and cannot import that module, so test/share.test.mjs
-// reads this file and fails CI when a sentence or an endpoint drifts from it
-// (the same gate test/files.test.mjs runs for public/files.html).
-// The closed page's sentence: the message table's link-not-found pair, what
-// then next — the same string the route's 404 answers with (src/messages.js
-// through src/share.js). One string, split into the heading and the line
-// under it when the copy object below is built; test/share.test.mjs pins the
-// exact words against the module.
 const CLOSED_COPY =
   "That link does not open anything. Ask the person who sent it for a new one.";
 const CLOSED_CUT = CLOSED_COPY.indexOf(". ") + 1;
@@ -244,13 +220,6 @@ const UPLOAD_PAGE_COPY = {
   hint: "or drop them anywhere on this page",
   uploading: "Uploading…",
   done: "Uploaded. Drop another whenever you like.",
-  // The closed page's own two lines, from CLOSED_COPY below — the message
-  // table's link-not-found pair, carried as the one string the route's 404
-  // answers with (src/messages.js through src/share.js) and split here into
-  // the heading and the line under it. They are not the open page's title: a
-  // closed link that says "Drop files here" tells a stranger to do something
-  // that cannot work. The no-token case is its own line because the link was
-  // never one.
   closedTitle: CLOSED_COPY.slice(0, CLOSED_CUT),
   closedBody: CLOSED_COPY.slice(CLOSED_CUT + 1),
   noToken: "This page needs the link it was sent with. Open the link again to drop files.",
@@ -270,8 +239,6 @@ const fileInput = document.getElementById("file-input");
 const choose = document.getElementById("choose");
 const status = document.getElementById("status");
 
-// The page's copy is set from the table above rather than typed into the
-// markup, so a change in src/share.js is the only edit this file needs.
 document.getElementById("page-title").textContent = UPLOAD_PAGE_COPY.title;
 document.getElementById("lede").textContent = UPLOAD_PAGE_COPY.lede;
 document.getElementById("page-line").textContent = UPLOAD_PAGE_LINE;
@@ -281,10 +248,6 @@ document.getElementById("closed-body").textContent = UPLOAD_PAGE_COPY.closedBody
 choose.textContent = UPLOAD_PAGE_COPY.choose;
 document.getElementById("hint").textContent = UPLOAD_PAGE_COPY.hint;
 
-// The day a link stops working, in the zone of the browser showing it
-// (drive#559). The api Worker sends the instant and never words for it, because
-// a date rendered on a server in the UTC zone reads the wrong day at both ends
-// of a month.
 function untilLabel(iso) {
   if (!iso) return "";
   const at = new Date(iso);
@@ -298,9 +261,6 @@ function say(message, kind) {
 }
 
 function closePage(reason) {
-  // One shape for every closed state: the link is unknown, revoked, expired,
-  // or the owner's drive is read-only at its cap. The endpoint sends its own
-  // sentence, so the page never invents a second reason.
   drop.classList.add("gone");
   drop.hidden = true;
   closed.hidden = false;
@@ -334,11 +294,6 @@ async function open() {
     return;
   }
   folderEl.textContent = info.folder;
-  // Who the drive belongs to (drive issue #684). The info route sends the
-  // owner's display name; a deployment that cannot read it sends an empty
-  // string, and the line stays hidden rather than showing a blank label.
-  // An address in the name column is not a display name either, so the page
-  // drops it the same way instead of publishing it to a stranger.
   if (info.owner && !info.owner.includes("@")) {
     ownerEl.textContent = info.owner;
     ownerLine.hidden = false;
@@ -366,12 +321,6 @@ async function uploadFiles(files) {
       uploaded += 1;
     }
   } catch (error) {
-    // What is named is what happened, so the count is the files that did not
-    // arrive: the loop stops at the first failure, so everything after it is
-    // unattempted, and those are the files the line must be talking about.
-    // Counting the successes here (which is what this used to do) told a
-    // stranger one file had failed when one had landed, and invited them to
-    // upload it again.
     const missing = files.length - uploaded;
     say(
       uploaded === 0

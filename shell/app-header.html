@@ -1,5 +1,6 @@
 <header class="masthead">
   <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
+  <a href="/home">Home</a>
   <a href="/files">Your files</a>
   <a href="/">Pricing</a>
   <a href="/get-started">Get started</a>
@@ -7,8 +8,6 @@
   <a href="/devices">Devices</a>
   <a href="/signin" id="nav-signin">Sign in</a>
     <noscript>
-      <!-- Not Django: POST /api/signin refuses a cross-site post
-           (isSameOriginRequest). A token in the markup would protect nothing. -->
       <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
       <form method="POST" action="/api/signin">
         <input type="hidden" name="step" value="signout">
