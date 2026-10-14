@@ -1,16 +1,3 @@
-// The legal and trust pages (drive#523, drive#882): terms, privacy, refunds,
-// acceptable use and support. This file pins what the issue's finish line
-// asks for: the pages ship and are in the sitemap, every footer and the
-// sign-in page link them, the two remaining owner facts (payee name, postal
-// address) stay marked placeholders in one place each, the refund rule and
-// the VAT line are the owner's published defaults, the pages state the real
-// price and the real storage provider, and security.txt points at the
-// support page.
-//
-// drive#584 adds the accessibility and status pages to the same list, plus the
-// three operator runbooks, the site's own 5xx page, and the sub-processor list
-// on the security page. Those are pinned at the end of this file.
-
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";

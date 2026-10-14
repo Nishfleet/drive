@@ -1,22 +1,3 @@
-// Tests for the sign-in screen and its two endpoints (drive issue #10, build
-// step 9's sign-up half, now on Better Auth over D1: #181; the pricing half is
-// public/index.html and test/pricing-copy.test.mjs). Four halves:
-//
-// 1. The route's contract, through the Worker's own dispatch: only POST is
-//    served, a request that does not come from the site is refused, the three
-//    methods the spec's screen names are the three it accepts, and the closed
-//    door answers 503 with the message table's words rather than reporting a
-//    link it could not send.
-// 2. The verify link: a good token signs a person in, a used or made-up one
-//    sends them back to the screen, and the sign-out step revokes.
-// 3. The shipped page: public/signin.html is a static asset and cannot import
-//    src/signin.js, so this reads the file and fails CI when its copy, its
-//    endpoints, its method list or its button vocabulary drift from the
-//    module — the same gate test/usage.test.mjs runs for the usage page.
-// 4. The spec's words: the screen the build spec's "Screens" table describes,
-//    named here so a page that drops one of the three methods fails here with
-//    the line the spec carries, and nothing that only a parser would accept.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

@@ -1,21 +1,3 @@
-// The Cloudflare Web Analytics beacon (drive issue #246).
-//
-// Nish's decision on 2026-10-03 was to ship the page half switched off: render
-// the beacon only when a beacon-token setting is present, render nothing when it
-// is absent, and cover both cases here. So this file tests the two branches as
-// the site's own pages, not as a snippet: every case walks the six pages
-// drive#246 names, in the form they ship from.
-//
-// It also pins the four things that would make the beacon quietly wrong. The
-// page list, so a page that moves or is added cannot lose its beacon without
-// this failing. The Lighthouse third-party budget, which the beacon is the
-// reason for (lighthouserc.json has no comment syntax, so the reason is
-// recorded here and in src/analytics.js and asserted below). The wiring in
-// vite.config.ts, so a build that stopped calling withBeacon() fails here
-// rather than shipping six pages with no measurement while the dashboard reads
-// as configured. And the count of beacon tags, from the same reader the build's
-// own self-check uses, so the two agree on what a beacon is.
-
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";

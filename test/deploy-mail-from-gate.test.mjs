@@ -1,15 +1,3 @@
-// The deploy is loud when the Worker has no MAIL_FROM (drive#522).
-//
-// Production sent no customer email at all (close receipts, reminders, the
-// welcome) because MAIL_FROM was never set as a secret, and every deploy
-// stayed green and silent: nothing showed until a customer's close answered
-// 500. Until launch a missing sender is a ::warning:: on the deploy run, not
-// a block, because drive is pre-launch and a block would stop every deploy
-// until drive#667 sets the sender. drive#752 turns it back into a block
-// before the first paying customer. This file pins the workflow text, so an
-// edit that drops the check, moves it after the ship, quietens it, or widens
-// it to read a secret value fails here rather than shipping.
-
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";

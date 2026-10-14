@@ -1,9 +1,3 @@
-// The billing portal (drive#575): the card-update path the payment-failed copy
-// points at. This file proves, against the real handler and a recorder fetch,
-// that a signed-in account with a saved customer is redirected to the provider
-// URL, and that an account without one gets a plain message and no redirect.
-// Dodo is a recorder here, so no session is ever created and no card is touched.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DODO_TEST_BASE_URL, isDodoUrl } from "../core/dodo.js";

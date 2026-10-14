@@ -1,7 +1,3 @@
-// The top-up checkout (drive#586): the request the Worker sends to Dodo, the
-// closed door while the keys are unset, and the refusals. Dodo is a recorder
-// fetch here, so nothing is charged.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DODO_TEST_BASE_URL } from "../core/dodo.js";

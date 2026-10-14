@@ -1,22 +1,3 @@
-// The speed-numbers gate (drive issue #99).
-//
-// docs/benchmarks.md is the published table, and cmd/drive/bench_test.go is
-// the suite that produces every Linux figure. This file fails on the four
-// ways that table can lie:
-//
-//   1. A Go report() with no published Linux row, or a Linux row with no
-//      report() — the issue's "a scenario it names and no benchmark measures,
-//      or a benchmark that no published row names".
-//   2. A published Us cell that came from the loopback stand-in. Stand-in
-//      numbers on the same machine are not publishable.
-//   3. A Mac row that is anything but "not yet measured". Those two figures
-//      are spec step 2 and must not be estimated.
-//   4. The public Benchmarks page missing from the docs list, so the table
-//      would have no customer-facing home.
-//
-// The numbers themselves stay empty until a run against real storage
-// (issue #173). This file only guards the shape.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

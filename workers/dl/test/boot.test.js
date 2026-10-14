@@ -1,12 +1,3 @@
-// The dl Worker as it would deploy (drive#517 finish line 3). Two proofs:
-//
-//   - the entry bundles with the same bundler the Worker build uses, so an
-//     import the Workers runtime cannot resolve fails here, not at deploy;
-//   - the DEFAULT export, given nothing but the bindings a deployment carries
-//     and the runtime's execution context, serves a ranged read from a real
-//     HTTP storage endpoint, signs the call, and bills the slice. The old
-//     export passed the raw env as its context and answered 404 to all of it.
-
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";

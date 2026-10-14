@@ -1,6 +1,3 @@
-// Receipts for top-ups (polish gap 13): one printable page per payment, only
-// for the signed-in account's own top-ups.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { handleReceiptRequest, receiptNumber, renderReceipt } from "../core/receipts.js";

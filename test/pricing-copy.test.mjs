@@ -1,22 +1,3 @@
-// The pricing copy is a decision, not a suggestion, so it is pinned here: a
-// later run cannot quietly reword the headline, add a per-minute price, bring
-// back a minimum, or reintroduce "unlimited" without failing a test.
-//
-// drive#463 (Nish 2026-10-04): pay only for what you store.
-//
-//     charge = min(2¢ x avg GB, MAX_USD_PER_TB x max(1, avg TB))
-//
-// The numbers and every sentence rendered from them live in core/pricing.js
-// (PRICE), the one price source, and the bill is core/billing.js's
-// monthBillCents(). The expectations here are built from that config and that
-// function, so page copy that drifts from either fails this file. core/seo.js
-// builds the meta tags and the JSON-LD from the same PRICE, so the copy, the
-// tags and llms.txt cannot disagree.
-//
-// MAX_USD_PER_TB is the one value Nish may move. The test "the copy and the
-// bill both follow the maximum at 8, 10 and 12" proves every sentence and the
-// bill move with it.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -298,7 +279,7 @@ test("every saving a public sentence states is one the bill and the usual plan p
   assert.ok(savingSentences.length > 0, "the pages must carry at least one saving sentence");
   for (const [file, sentence] of savingSentences) {
     const amount = sentence.match(/save[d]?[^$]*\$(\d+(?:\.\d+)?)/i);
-    if (!amount) continue; // "we compare against a usual plan elsewhere": no number
+    if (!amount) continue;
     const tb = sizeTb(sentence);
     if (tb === null) {
       // The receipt's own line names no size: its saving must be one the

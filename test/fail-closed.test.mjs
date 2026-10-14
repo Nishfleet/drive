@@ -1,8 +1,3 @@
-// Production Workers refuse an in-memory files store (drive#505). The
-// handler-level 503 is pinned in test/files.test.mjs; these tests drive the
-// Worker the platform drives, so a missing storage endpoint is a 503 on the
-// request path and a skipped nightly trigger, not a quiet empty Map.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FILES_ENDPOINT, TRASH_PURGE_SCHEDULE } from "../core/files.js";

@@ -1,26 +1,3 @@
-// Cap key store over the real D1 schema (drive issue #64).
-//
-// The unit proof (test/cap.test.mjs) runs enforceCap against an injected
-// provider, which cannot make two claims the real store has to make:
-//
-//   1. `accounts.cap_cents` and `devices` (`b2_key_id`, `capabilities`) are
-//      ROWS, not a per-isolate Map. A swap through one store instance is
-//      visible through a second, freshly built store over the same database.
-//   2. Both the new READ and the new WRITE land on the real migrations
-//      (`migrations/drive/0010_accounts_devices.sql`), applied with every
-//      other drive table, so a statement this store adds without a column
-//      fails here rather than in production.
-//
-// Every assertion about storage reads the row back with plain node:sqlite
-// statements, off the same engine, so a store that answered from a Map would
-// leave these tables empty and fail here.
-//
-// drive#661 adds the reason marker, and this file is where its two claims are
-// proven on the real migrations: the round-trip of `capped_reason` through
-// put()/deviceFromRow() with a null surviving as null (so a give-back pass
-// reads drive#656's decision, not a memory of it), and the freeze writing the
-// word while the raise clears it, on the rows `enforceCap` actually leaves.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { minutesInMonth } from "../../core/billing.js";

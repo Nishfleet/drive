@@ -1,28 +1,3 @@
-// The scoreboard's gate (drive issue #114).
-//
-// docs/scoreboard.md is one head-to-head table against the competitor, and a table can
-// lie four ways. This file fails on each:
-//
-//   1. It can lose a row. EVERY_ROWS is the closed set of rows the table
-//      ships, so deleting one, or adding one that nobody owns, fails.
-//   2. It can drift from the code. The five price rows are computed, not typed:
-//      each us cell is parsed for its single customer-price figure and compared
-//      with monthBillCents() in core/billing.js, so a stale or contradictory
-//      number fails rather than passing on a substring match.
-//   3. It can leave a losing or unmeasured row unowned. Every losing or
-//      unmeasured row must name #NN, or be listed under "Rows with no issue yet".
-//   4. It can quote the competitor wrongly. Every competitor cell must cite
-//      the competitor's site, docs or changelog (by that label, never a link:
-//      the repo is public) and the date it was checked, so a figure cannot sit there
-//      with no source, and the price rows must show the basis they are worked
-//      out from.
-//
-// The money the price rows are compared against is the month's bill for that
-// size held all month, as monthBillCents() works it out: what the customer
-// actually pays. The issue named core/pricing.js; that
-// module still holds the superseded per-TB caps and is issue #23's to fix, so
-// the scoreboard reads the one billing function AGENTS.md's money gate names.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

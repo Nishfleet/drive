@@ -1,6 +1,3 @@
-// Outbound webhooks (drive#901): endpoints, signed deliveries, the log, and
-// the one event the billing webhook emits.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { handleWebhookRequest } from "../core/webhook-routes.js";

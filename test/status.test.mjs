@@ -1,19 +1,3 @@
-// Tests for first-run and sync status (drive issue #32). Two halves:
-//
-// 1. The logic in core/status.js: the one install command, the connection
-//    state a device is in, its sync state, upload progress, and the words the
-//    page says for each. Every branch, including the "waiting for you" and
-//    "unreachable" ones the page must not confuse.
-// 2. The first-run page's renderer, src/get-started.js: the page now renders
-//    from these modules through it (issue #70), so the copy the page shows is
-//    read by calling the builders rather than by grepping a shipped HTML file
-//    for a sentence. The old drift tests are gone with the second copy of the
-//    words they policed.
-//
-// The usage page's upload-progress line (drive issue #308) is pinned in
-// test/usage.test.mjs, beside the rest of that page: GET /api/usage answers
-// with the line the same word table assembles.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

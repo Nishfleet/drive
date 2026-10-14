@@ -1,19 +1,3 @@
-// Integration test for drive#549's per-link caps: the real migration files
-// under migrations/drive/, applied to a real SQLite database with the whole
-// schema (test/harness.mjs DRIVE_SCHEMA_MIGRATIONS). A mocked binding cannot
-// see the schema, so this file proves both directions through the store the
-// routes use:
-//
-//   WRITE — a share minted with a download cap and an upload request minted
-//   with a file cap land on the real columns a plain SELECT can find.
-//   READ  — a second store over the same database sees them, `addUpload`
-//   refuses the file past the cap, `addDownload` refuses the byte past the
-//   cap, and `purgeStaleLinks` deletes only the rows that ended long ago.
-//
-// The columns are additive (expand only): `max_files` has a DEFAULT so an
-// INSERT from the previous code keeps working, and `max_download_bytes` stays
-// nullable so a link minted before the cap keeps serving.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
