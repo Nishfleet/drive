@@ -1,13 +1,3 @@
-// Declared Worker secrets cannot drift off the AGENTS.md list (drive issue #215).
-//
-// cloudflare.config.ts `bindings.secret()` is required at deploy: a name
-// added there and not set on drive-pricing fails every production ship, which
-// is what happened when METER_EVENT_TOKEN landed with no secret behind it.
-// The list in AGENTS.md is the human check; this file is the gate so the list
-// cannot fall behind the config. Undeclared secrets (EMAIL_SEND_TOKEN,
-// MAIL_FROM) stay out of both — they are a closed door, not a deploy
-// requirement (drive#189).
-
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";

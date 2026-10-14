@@ -1,9 +1,3 @@
-// The meter at scale (drive#519): a correction that touches one account
-// re-rolls that account and never the global mark, one bad row is logged and
-// skipped, the draw catches up from its own mark however long it was down,
-// the hourly statements plan through indexes, and the crons fan out one
-// message per account when the queue is bound.
-
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";

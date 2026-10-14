@@ -1,21 +1,3 @@
-// The storage-server key provider (build step 1, drive#2): what it asks the
-// endpoint for, and the one bucket it asks for.
-//
-// drive#462 was found here. The provider resolved its bucket from a
-// deployment-wide `STORAGE_BUCKET`, so every key it minted was scoped to that
-// one shared bucket — two accounts' files sat in the same bucket with the
-// prefix as the only thing between them, and a key that could name one
-// account's prefix could ask the endpoint about the other account's bytes
-// with the same policy. drive#371 had already moved the boundary to the bucket
-// (one bucket per account, one per team), so this file now takes the bucket
-// from the scope the caller built and refuses a scope that names none.
-//
-// The proofs below are the table: every key provider path (device, agent, an
-// s3 integration, a branch key and a team key), what policy the endpoint gets
-// for it, and that no path's answer can name another account's bucket. The
-// S3 calls the mint makes are the real signed stock shape
-// (`s3.js` `createS3Client`, STS `AssumeRole`); only the server is a stand-in.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createIdriveKeyProvider } from "../../../core/idrive-keys.js";

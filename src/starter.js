@@ -1,61 +1,14 @@
-// The optional notes starter (drive issue #15): a ready-made Obsidian-shaped
-// vault a person can choose to create in their own drive, and the one endpoint
-// that creates it.
-//
-// Two rules shape every line here, and both come from the issue itself:
-//
-//   - Optional, and off by default. Nothing calls `createStarter`. The only
-//     caller is POST /api/starter, which is behind the same account gate as
-//     every other route that names files (src/index.js `accountGate`), so the
-//     starter exists only after a signed-in person asks for it. The test that
-//     walks the module's callers fails if that ever stops being true.
-//   - It never requires anything. Every file is written into a folder of the
-//     caller's own making, and re-running it only fills in what is missing, so
-//     a person who already has a `Notes` folder is never overwritten.
-//
-// The template's words live here, not in the page. public/starter.html is a
-// static asset that cannot import this module, so test/starter.test.mjs reads
-// the shipped page and fails CI when its copy, its endpoint or its file list
-// drift from here — the same gate test/signin.test.mjs runs for src/signin.js
-// and test/usage.test.mjs for src/usage.js.
-//
-// No price is written down here. The one line the page shows about cost comes
-// from core/pricing.js (PRICE), the single price source, so a re-priced product
-// moves this page and the pricing page together.
-
 import { validatePath } from "../core/files.js";
 import { json } from "../core/http.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
 
-// The page itself is public/starter.html, served by the asset layer's HTML
-// handling (/starter serves /starter.html, the same way /get-started serves
-// get-started.html), so this module exports no page path — the test that
-// reads the shipped page (test/starter.test.mjs) is what pins the page's own
-// links, not a constant the module could drift from.
-
-/** The one endpoint the page posts to. */
 export const STARTER_ENDPOINT = "/api/starter";
 
-/** The folder the starter writes into. A person who already has one keeps it. */
 export const STARTER_FOLDER = "/Notes";
 
-/**
- * The one action the endpoint accepts. A GET is the describe, not the create:
- * reading the starter must never be able to write it, so "create" is the only
- * word in a body that changes the drive.
- */
 export const STARTER_ACTION = "create";
 
-/**
- * The files a fresh starter writes, in the order it writes them. Every path is
- * inside STARTER_FOLDER, and `starterFiles` re-checks that on every call, so a
- * later edit that moves one out of the folder fails the module's own test
- * rather than scattering files across a drive.
- *
- * Each is small and plain: one folder, four Markdown files, no binary assets,
- * so the starter costs a person nothing to store and nothing to delete.
- */
 export const STARTER_FILE_LIST = Object.freeze([
   Object.freeze({
     path: `${STARTER_FOLDER}/README.md`,
@@ -127,15 +80,8 @@ export function starterFiles() {
   return STARTER_FILE_LIST;
 }
 
-/**
- * What the page shows and what the endpoint answers. The `what`/`next` pairs
- * are the shape every other surface in this repo uses for a state (build-spec.md
- * "Nothing missing"): what happened, then the one thing to do next.
- */
 export const STARTER_COPY = Object.freeze({
   title: "Notes starter",
-  // The issue's own constraint, in the customer's words, on the page itself:
-  // optional and off by default, never required.
   lede: "Optional. Off by default, and never required.",
   ledeNext: "Create it only if you want it. Your drive is the same either way.",
   intro:
@@ -143,12 +89,10 @@ export const STARTER_COPY = Object.freeze({
   noCard: PRICE.needCard,
   button: "Create the notes starter",
   working: "Creating…",
-  // What a create answers, in the same `what`/`next` shape.
   created: Object.freeze({
     what: "Your notes starter is in the drive.",
     next: "Open your drive folder and point your notes app at the Notes folder.",
   }),
-  // A second create, which only fills in what is missing and leaves the rest.
   refilled: Object.freeze({
     what: "Your notes starter is already here.",
     next: "The missing files were added; the ones you have are untouched.",
@@ -157,24 +101,14 @@ export const STARTER_COPY = Object.freeze({
     what: "Nothing was missing, so nothing changed.",
     next: "The starter is already in your drive.",
   }),
-  // A store failure, and nothing else, is what the failed pair is for. The
-  // `next` is the table's own retry advice read from the entry, not from the
-  // joined sentence: a wording change in core/messages.js can then never turn
-  // the next step into half a sentence.
   failed: Object.freeze({
     what: "The starter could not be written.",
     next: FAILURE_MESSAGES.unexpected.next,
   }),
-  // A GET's describe failed. It is not the failed pair: nothing was being
-  // written, so the words do not say a write failed. starterFiles()
-  // re-validates every path on every call, so this is the one way the describe
-  // can fail, and it is a template the deployment must not serve.
   describeFailed: Object.freeze({
     what: "The starter's own files could not be read.",
     next: FAILURE_MESSAGES.unexpected.next,
   }),
-  // The list the page shows before the button, one line per file, so a person
-  // can see what they are agreeing to.
   filesHeading: "What it writes",
   filesNext: "Four files, all inside one Notes folder. Delete any you do not want.",
 });
@@ -230,12 +164,6 @@ export async function createStarter(store) {
       kept.push(file.path);
       continue;
     }
-    // The Blob is the body, not a stream of it. Every template file is a few
-    // hundred bytes that are already in memory, and handing the store the
-    // Blob lets it send a content-length; a ReadableStream has none, and S3
-    // answers a PUT without one with 411 Length Required. Proven against
-    // `rclone serve s3` on 2026-10-03 by test/starter.test.mjs, which reads
-    // the four files back off the real disk.
     await store.write(file.path, new Blob([file.body]), file.contentType);
     created.push(file.path);
   }
@@ -291,9 +219,6 @@ function describeFailed(cause) {
  * @returns {Promise<Response>}
  */
 export async function handleStarterRequest(request, store, account) {
-  // The gate normally answers this before the handler is reached. The check is
-  // here as well so the handler is safe when it is called directly, exactly as
-  // every other handler in this repo does it.
   if (!account) {
     return json({ error: failureMessage("unauthorized") }, 401);
   }
@@ -302,11 +227,6 @@ export async function handleStarterRequest(request, store, account) {
   }
 
   if (request.method === "GET") {
-    // Describe only. The starter is off by default, so reading what it would
-    // write must not write it. The describe is inside its own try because
-    // starterFiles() re-validates every path on every call, and a path that
-    // ever failed that check must answer the failure words rather than throw
-    // out of the handler.
     let files;
     try {
       files = starterFiles().map((file) => file.path);
@@ -341,11 +261,6 @@ export async function handleStarterRequest(request, store, account) {
   try {
     result = await createStarter(store);
   } catch (cause) {
-    // A store failure is not a success and is not half reported: the route
-    // answers the failure words, logs the cause for the operator, and puts
-    // nothing of the cause in the reply. A retry self-heals what was written,
-    // because every file already on the drive is found by the read check and
-    // kept.
     return failed(cause);
   }
 

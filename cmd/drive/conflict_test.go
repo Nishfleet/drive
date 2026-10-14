@@ -14,16 +14,6 @@ import (
 	"time"
 )
 
-// The conflict rule (drive issue #30). Each test drives the real code
-// rather than a copy of it:
-//
-//   - the naming (ConflictName) is what the issue's finish line names
-//     literally, so it is tested on the shapes a real drive holds;
-//   - the decision (conflictGuard.pass) is tested against a counted
-//     stand-in backend, including the case that must write nothing;
-//   - the two-mount behaviour on real storage is TestTwoDevicesKeepBothSaves
-//     in conflict_e2e_test.go.
-
 func TestConflictNamePutsTheDeviceBeforeTheExtension(t *testing.T) {
 	for _, tc := range []struct {
 		path   string
@@ -33,11 +23,8 @@ func TestConflictNamePutsTheDeviceBeforeTheExtension(t *testing.T) {
 		{"report.txt", "mac", "report (conflict, mac).txt"},
 		{"notes", "studio-1", "notes (conflict, studio-1)"},
 		{"photos/img.JPEG", "Mac", "photos/img (conflict, Mac).JPEG"},
-		// Only the last extension is the format: a tar.gz keeps both.
 		{"archive.tar.gz", "mac", "archive.tar (conflict, mac).gz"},
-		// A dotfile is a whole name, not a format called ".env".
 		{".env", "mac", ".env (conflict, mac)"},
-		// Empty extension markers go away.
 		{"trailing.", "mac", "trailing. (conflict, mac)"},
 	} {
 		if got := ConflictName(tc.path, tc.device); got != tc.want {
@@ -51,8 +38,6 @@ func TestConflictNameKeepsTheFolder(t *testing.T) {
 	if got != "a/b/c/report (conflict, mac).txt" {
 		t.Fatalf("ConflictName moved the folder: %q", got)
 	}
-	// The marker and the device must never be able to introduce a folder of
-	// their own: a device name is sanitized to filename characters.
 	if strings.Contains(SanitizeDevice("a/b"), "/") {
 		t.Fatal("SanitizeDevice left a path separator in a device name")
 	}
@@ -74,8 +59,6 @@ func TestSanitizeDevice(t *testing.T) {
 			t.Errorf("SanitizeDevice(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
-	// The cap: a device name that is too long is a name, not a filename
-	// error at the mount's first conflict.
 	if got := SanitizeDevice(strings.Repeat("a", 500)); len(got) > maxDeviceNameLen {
 		t.Errorf("SanitizeDevice kept %d characters", len(got))
 	}
@@ -109,43 +92,23 @@ func TestConflictDeviceFromName(t *testing.T) {
 	}
 }
 
-// fakeConflictBackend is a counted stand-in for the mount's remote control:
-// the queue, the objects and the copies are plain maps, so a test says exactly
-// which state each pass sees. The counters are how a test proves which remote
-// calls a pass made: a path that never existed must cost no hashsum, and a
-// folder's listing must be asked for once, not once per save in it.
 type fakeConflictBackend struct {
-	pending    []queueEntry      // what vfs/queue reports
-	objects    map[string]string // remote path -> md5
-	copied     []string          // the remote paths written as conflict copies
-	listCalls  int               // parentContents calls
-	hashCalls  int               // remoteHash calls
-	pollCounts map[string]int    // remoteHash calls per path
-	refreshed  int
-	failWith   error
-	// clobber makes one copy land at a name that holds another mount's
-	// save, which is the race two mounts answering to the same device
-	// name can produce: both find the name free in the same instant.
-	clobber bool
-	// clobbered is set once the one clobber has happened, so a retry
-	// under the next number carries this device's own bytes.
-	clobbered bool
-	// alwaysClobber clobbers every name, which is the case where the
-	// guard must give up rather than claim another writer's save.
+	pending       []queueEntry
+	objects       map[string]string
+	copied        []string
+	listCalls     int
+	hashCalls     int
+	pollCounts    map[string]int
+	refreshed     int
+	failWith      error
+	clobber       bool
+	clobbered     bool
 	alwaysClobber bool
 	hashErr       map[string]error
 	listErr       error
-	// versions is the size and mtime operations/stat reports per object.
-	versions map[string]objectVersion
-	// down is what reachable() answers with: a non-nil value stands for
-	// the object store not answering, so the pass must leave the
-	// directory cache (24h) alone (issue #541).
-	down error
-	// refreshErr is only the vfs/refresh error, which is the probe's
-	// blind window: the store answered reachable and the refresh then
-	// failed, so the pass must name that failure instead of leaving the
-	// copy in a listing nobody can see (issue #541).
-	refreshErr error
+	versions      map[string]objectVersion
+	down          error
+	refreshErr    error
 }
 
 type objectVersion struct {
@@ -173,8 +136,6 @@ func (f *fakeConflictBackend) remoteVersion(_ context.Context, name string) (int
 	return v.size, v.modTime, true, nil
 }
 
-// landAs records the object at name as the version of the local file p,
-// which is what rclone's upload of this device's save leaves in storage.
 func (f *fakeConflictBackend) landAs(t *testing.T, name, etag, p string) {
 	t.Helper()
 	info, err := os.Stat(p)
@@ -209,8 +170,6 @@ func (f *fakeConflictBackend) remoteHash(_ context.Context, name string) (string
 	return f.objects[name], nil
 }
 
-// parentContents derives one folder's listing from the objects map, the
-// way a real listing reflects the objects in storage.
 func (f *fakeConflictBackend) parentContents(_ context.Context, dir string) (map[string]bool, error) {
 	if f.failWith != nil {
 		return nil, f.failWith
@@ -228,10 +187,6 @@ func (f *fakeConflictBackend) parentContents(_ context.Context, dir string) (map
 	return present, nil
 }
 
-// copyLocalToRemote models rclone's operations/copyfile: the object that
-// lands at dstRemote is the md5 of the real file the guard read, because
-// the source is this device's own mount and the file is real bytes on
-// disk. clobber is how another mount's save at the same name is modelled.
 func (f *fakeConflictBackend) copyLocalToRemote(_ context.Context, srcRoot, srcRemote, dstRemote string) error {
 	if f.failWith != nil {
 		return f.failWith
@@ -251,8 +206,6 @@ func (f *fakeConflictBackend) copyLocalToRemote(_ context.Context, srcRoot, srcR
 	return nil
 }
 
-// hashFile is the md5 of a real file, so a copy of real bytes carries the
-// hash those bytes have.
 func hashFile(p string) (string, error) {
 	src, err := os.Open(p)
 	if err != nil {
@@ -276,8 +229,6 @@ func (f *fakeConflictBackend) refresh(_ context.Context, _ bool) error {
 
 func (f *fakeConflictBackend) reachable(_ context.Context) error { return f.down }
 
-// guardFor builds a guard over a mount dir with real files under it, so
-// the hashing reads the bytes a mount would serve.
 func guardFor(t *testing.T, device string, files map[string]string) (*conflictGuard, string, *fakeConflictBackend) {
 	t.Helper()
 	root := t.TempDir()
@@ -296,11 +247,8 @@ func guardFor(t *testing.T, device string, files map[string]string) (*conflictGu
 	return g, mountDir, f
 }
 
-// TestConflictGuardKeepsTheLosersVersion is the issue's headline: two devices
-// save the same path in one sync window, and both saves survive.
 func TestConflictGuardKeepsTheLosersVersion(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-is-this-machines-save\n"})
-	// The save is in flight: it is in the queue, nothing has landed.
 	f.pending = []queueEntry{{Name: "report.txt", Size: 22}}
 	res, err := g.pass(context.Background(), f)
 	if err != nil {
@@ -316,8 +264,6 @@ func TestConflictGuardKeepsTheLosersVersion(t *testing.T) {
 		t.Error("claimed a conflict before the save landed", res.Claimed[0].Remote)
 	}
 
-	// The other device's save landed after it: the object's hash is neither
-	// this device's bytes nor the version that preceded the save.
 	f.pending = nil
 	f.objects["report.txt"] = md5Hex("B-is-the-other-machines-save\n")
 	res, err = g.pass(context.Background(), f)
@@ -334,22 +280,14 @@ func TestConflictGuardKeepsTheLosersVersion(t *testing.T) {
 	if f.refreshed == 0 {
 		t.Error("the pass did not refresh the directory cache, so a listing would not see the copy")
 	}
-	// The conflict copy is gone from the watch list once it is written.
 	if len(g.seen) != 0 {
 		t.Errorf("the guard still watches %v", g.seen)
 	}
-	// The path stays recorded on the result, so a log says what happened.
 	if len(res.Claimed) != 1 || res.Claimed[0].Remote != want || res.Claimed[0].LosingPath != "report.txt" {
 		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
 	}
 }
 
-// TestConflictGuardSkipsTheRefreshWhenStorageIsDown proves the #541 rule
-// holds in the second caller too: a claim that landed just before the link
-// dropped must not vfs/refresh against a dead backend, because rclone forces
-// the directory cache (24h here) stale before it re-lists and a kept-offline
-// folder would answer every open with Input/output error. The copy survives;
-// the fill loop refreshes when the link is back.
 func TestConflictGuardSkipsTheRefreshWhenStorageIsDown(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-is-this-machines-save\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 22}}
@@ -375,13 +313,6 @@ func TestConflictGuardSkipsTheRefreshWhenStorageIsDown(t *testing.T) {
 	}
 }
 
-// TestConflictGuardNamesTheRefreshFailureAfterAClaim is the guard's
-// other half of the #541 rule, the one the probe cannot close: the store
-// answers reachable and the refresh then fails, so the pass must name the
-// failure rather than leave the listing stale behind a copy nobody can see.
-// rclone has no stale-on-error (rclone#1963), so the next pass's probe and
-// refresh is the recovery path, which TestConflictGuardSkipsTheRefreshWhen
-// StorageIsDown above and the fill's own mirror prove.
 func TestConflictGuardNamesTheRefreshFailureAfterAClaim(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-is-this-machines-save\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 22}}
@@ -407,11 +338,6 @@ func TestConflictGuardNamesTheRefreshFailureAfterAClaim(t *testing.T) {
 	}
 }
 
-// TestConflictGuardSkipsTheRemoteHashForAPathThatNeverExisted proves the
-// parent listing does the work of the per-path hashsum at first sight: one
-// listing of the folder says which paths ever existed, and a path it leaves
-// out is hashed at the remote never — a drop of new files into one folder
-// costs one listing instead of one hashsum per file.
 func TestConflictGuardSkipsTheRemoteHashForAPathThatNeverExisted(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{
 		"new.txt": "brand new\n",
@@ -422,16 +348,12 @@ func TestConflictGuardSkipsTheRemoteHashForAPathThatNeverExisted(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass: %v", err)
 	}
-	// One listing of the top of the drive answered for both saves, and only
-	// the path it showed to have existed was hashed.
 	if f.listCalls != 1 {
 		t.Errorf("the folder was listed %d times, want once for both saves", f.listCalls)
 	}
 	if f.hashCalls != 1 {
 		t.Errorf("%d remote hashes were read, want 1 (old.txt only): a path that never existed has no hash to read", f.hashCalls)
 	}
-	// The never-existed save is still protected: the baseline is "" and the
-	// decision runs the same way when the other device lands on it.
 	f.pending = nil
 	f.objects["new.txt"] = md5Hex("the other device's save\n")
 	if _, err := g.pass(context.Background(), f); err != nil {
@@ -470,10 +392,6 @@ func TestConflictGuardFallsBackToAHashWhenTheListingFails(t *testing.T) {
 	}
 }
 
-// TestConflictGuardSightsABoundedNumberOfSavesPerPass proves one pass does
-// bounded work: a drop bigger than conflictSightMax is sighted over several
-// passes, and what is still waiting is counted, because that count is what
-// `drive status` reports.
 func TestConflictGuardSightsABoundedNumberOfSavesPerPass(t *testing.T) {
 	root := t.TempDir()
 	mountDir := filepath.Join(root, "Drive")
@@ -516,10 +434,6 @@ func TestConflictGuardSightsABoundedNumberOfSavesPerPass(t *testing.T) {
 	}
 }
 
-// TestConflictGuardPollsABoundedNumberAndResumes proves the landed side of
-// the same bound: a pass decides conflictPollMax paths and the next pass
-// continues down the watch list from there, so no path is polled twice
-// while another has not been polled at all.
 func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 	root := t.TempDir()
 	mountDir := filepath.Join(root, "Drive")
@@ -546,7 +460,6 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 	if len(g.seen) != total {
 		t.Fatalf("only %d of %d saves sighted", len(g.seen), total)
 	}
-	// Every save has landed (its own bytes), so every path is polled.
 	f.pending = nil
 	for i := 0; i < total; i++ {
 		f.objects[fmt.Sprintf("save-%03d.txt", i)] = md5Hex("a save\n")
@@ -557,7 +470,6 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 	if f.hashCalls != conflictPollMax {
 		t.Fatalf("the pass polled %d paths, want the bound %d", f.hashCalls, conflictPollMax)
 	}
-	// The first hundred in first-sight order were polled; the tail was not.
 	for i, name := range g.order {
 		want := 1
 		if i >= conflictPollMax {
@@ -567,18 +479,12 @@ func TestConflictGuardPollsABoundedNumberAndResumes(t *testing.T) {
 			t.Fatalf("save %d was polled %d times after one pass, want %d", i, got, want)
 		}
 	}
-	// The second pass resumes from where the first stopped: the tail gets
-	// its first poll, which a pass that restarted from the top would never
-	// reach while the head hogs the bound.
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("second polling pass: %v", err)
 	}
 	if f.hashCalls != 2*conflictPollMax {
 		t.Fatalf("two passes polled %d paths, want %d", f.hashCalls, 2*conflictPollMax)
 	}
-	// Every path has now been polled, each as often as its window says,
-	// and no path has been polled twice while another waited: the head's
-	// count is ahead of the tail's by exactly the ring step.
 	for i, name := range g.order {
 		save := g.seen[name]
 		if save == nil {
@@ -667,13 +573,6 @@ func TestConflictGuardNamesWhenClaimSourceChanged(t *testing.T) {
 	}
 }
 
-// TestConflictGuardFinishesATenThousandEntryQueueAcrossPasses is the finish
-// line's own case: a drop of 10,000 small files cannot be sighted, decided
-// and drained in one pass, and no pass may error while the guard works
-// through it. The queue is sighted conflictSightMax at a time, a wave of
-// wins runs its window, and the rest ends as named skips once this
-// device's files are gone and the other device's saves have landed — every
-// entry reaches a decision, and the watch list ends empty.
 func TestConflictGuardFinishesATenThousandEntryQueueAcrossPasses(t *testing.T) {
 	const total = 10000
 	root := t.TempDir()
@@ -715,9 +614,6 @@ func TestConflictGuardFinishesATenThousandEntryQueueAcrossPasses(t *testing.T) {
 		t.Errorf("Watched = %d, want %d", first.Watched, total)
 	}
 
-	// A wave of 300 lands as this device's own wins: each needs its
-	// conflictWinPolls polls, a hundred per pass, so the wave takes
-	// wave*conflictWinPolls/conflictPollMax passes.
 	const wave = 300
 	for i := 0; i < wave; i++ {
 		f.objects[name(i)] = md5Hex(body)
@@ -733,10 +629,6 @@ func TestConflictGuardFinishesATenThousandEntryQueueAcrossPasses(t *testing.T) {
 		t.Fatalf("the win wave left %d saves watched, want %d", len(g.seen), total-wave)
 	}
 
-	// The rest: this device's files are gone from the machine and the other
-	// device's saves have landed on every one of them. Nothing can be
-	// written for them, so each is named once and dropped — and no pass
-	// errors, which is the point: the guard keeps up without ever failing.
 	for i := wave; i < total; i++ {
 		if err := os.Remove(filepath.Join(mountDir, filepath.FromSlash(name(i)))); err != nil {
 			t.Fatal(err)
@@ -765,10 +657,6 @@ func TestConflictGuardFinishesATenThousandEntryQueueAcrossPasses(t *testing.T) {
 	t.Logf("%d passes for the whole queue", passes)
 }
 
-// TestConflictGuardWritesNoSecondCopyOfAnySave is the disk half of the same
-// finish line: the guard hashes the bytes where they are and claims them
-// from the mount, so its own footprint beside the mount stays nothing. The
-// budget is the contract; zero is the design.
 func TestConflictGuardWritesNoSecondCopyOfAnySave(t *testing.T) {
 	const conflictGuardSideBudget = 4096
 	const total = 150
@@ -778,7 +666,7 @@ func TestConflictGuardWritesNoSecondCopyOfAnySave(t *testing.T) {
 	if err := os.MkdirAll(drop, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	body := strings.Repeat("a reasonably sized save\n", 170) // ~4 KiB each
+	body := strings.Repeat("a reasonably sized save\n", 170)
 	name := func(i int) string { return fmt.Sprintf("drop/save-%03d.txt", i) }
 	f := newFakeBackend()
 	f.pending = make([]queueEntry, 0, total)
@@ -797,8 +685,6 @@ func TestConflictGuardWritesNoSecondCopyOfAnySave(t *testing.T) {
 	if len(g.seen) != total {
 		t.Fatalf("only %d of %d saves sighted", len(g.seen), total)
 	}
-	// Ten land under the other device's saves (claims); the rest are this
-	// device's own wins.
 	f.pending = nil
 	for i := 0; i < total; i++ {
 		if i < 10 {
@@ -818,8 +704,6 @@ func TestConflictGuardWritesNoSecondCopyOfAnySave(t *testing.T) {
 	if len(f.copied) != 10 {
 		t.Errorf("copied %v, want the ten conflict copies", f.copied)
 	}
-	// The whole footprint the guard left beside the mount: none. Walk the
-	// test's own root and add up everything that is not the mount dir.
 	var side int64
 	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -841,10 +725,6 @@ func TestConflictGuardWritesNoSecondCopyOfAnySave(t *testing.T) {
 	}
 }
 
-// TestConflictGuardNamesASkipOnce proves a save the rule leaves alone is
-// named on the pass that first sees it and not again while it stays in the
-// queue: a skip line every half second for the life of an upload is not a
-// thing a person can read.
 func TestConflictGuardNamesASkipOnce(t *testing.T) {
 	root := t.TempDir()
 	mountDir := filepath.Join(root, "Drive")
@@ -871,8 +751,6 @@ func TestConflictGuardNamesASkipOnce(t *testing.T) {
 	if len(f.copied) != 0 {
 		t.Errorf("wrote %v for a save it had skipped", f.copied)
 	}
-	// The queue has released the path, so the entry goes with it: the map
-	// does not grow on a mount that never stops.
 	f.pending = nil
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass: %v", err)
@@ -882,11 +760,6 @@ func TestConflictGuardNamesASkipOnce(t *testing.T) {
 	}
 }
 
-// TestConflictGuardRetriesANameAnotherMountTook proves the conflict copy is
-// this device's own save, not whoever wrote the name last: two mounts
-// answering to the same device name can look at the same free name in the
-// same instant, so the copy is read back and a name holding another writer's
-// bytes is retried under the next number.
 func TestConflictGuardRetriesANameAnotherMountTook(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "this-machines-save\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
@@ -907,15 +780,11 @@ func TestConflictGuardRetriesANameAnotherMountTook(t *testing.T) {
 	if got := f.objects[want]; got != md5Hex("this-machines-save\n") {
 		t.Errorf("%s holds %q, want this device's own bytes", want, got)
 	}
-	// The name the other mount took is not this device's claim.
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass: %v", err)
 	}
 }
 
-// TestConflictGuardGivesUpWhenEveryNameIsTaken proves a mount that races with
-// every name says so, rather than claiming a second device's save under this
-// device's name.
 func TestConflictGuardGivesUpWhenEveryNameIsTaken(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "this-machines-save\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
@@ -935,8 +804,6 @@ func TestConflictGuardGivesUpWhenEveryNameIsTaken(t *testing.T) {
 	}
 }
 
-// TestConflictGuardLeavesAWinningSaveAlone is the other half of the same
-// rule: this device's save is the one that landed, and nothing is written.
 func TestConflictGuardLeavesAWinningSaveAlone(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "the winning save\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 17}}
@@ -944,7 +811,6 @@ func TestConflictGuardLeavesAWinningSaveAlone(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass with the save queued: %v", err)
 	}
-	// This device's bytes landed, so the plain path is what this device wrote.
 	f.pending = nil
 	f.objects["report.txt"] = md5Hex("the winning save\n")
 	if _, err := g.pass(context.Background(), f); err != nil {
@@ -953,9 +819,6 @@ func TestConflictGuardLeavesAWinningSaveAlone(t *testing.T) {
 	if len(f.copied) != 0 {
 		t.Errorf("wrote %v for a save that won", f.copied)
 	}
-	// The win is not decided on the pass that sees it: the other device's
-	// save can still land on top of it for the rest of the sync window, and
-	// that overwrite is exactly what the guard exists for.
 	if len(g.seen) != 1 {
 		t.Fatalf("the guard watches %v, wants the path held until the win window ends", g.seen)
 	}
@@ -972,14 +835,6 @@ func TestConflictGuardLeavesAWinningSaveAlone(t *testing.T) {
 	}
 }
 
-// TestConflictGuardKeepsASaveThatLandsSecondsLater proves the case a
-// same-instant proof cannot see. A device's own save has already landed, so
-// the plain path holds its bytes, and the other device's save lands on top
-// of it a moment later — the ordinary case when two people save the same
-// file seconds apart inside the mount's five-second write-back window. The
-// guard keeps watching through that window and writes the conflict copy
-// from the bytes its own mount still serves, so the earlier save is not the
-// save that silently disappears.
 func TestConflictGuardKeepsASaveThatLandsSecondsLater(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-this-device-saved-first\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 26}}
@@ -987,13 +842,11 @@ func TestConflictGuardKeepsASaveThatLandsSecondsLater(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass with the save queued: %v", err)
 	}
-	// This device's upload has landed, and it is the plain path now.
 	f.pending = nil
 	f.objects["report.txt"] = md5Hex("A-this-device-saved-first\n")
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass after the save landed: %v", err)
 	}
-	// The other device's save lands on top of it, seconds later.
 	f.objects["report.txt"] = md5Hex("B-the-other-device-saved-second\n")
 	res, err := g.pass(context.Background(), f)
 	if err != nil {
@@ -1014,23 +867,14 @@ func TestConflictGuardKeepsASaveThatLandsSecondsLater(t *testing.T) {
 	}
 }
 
-// TestConflictGuardKeepsASaveWhoseObjectAnotherDevicesFailedUploadRemoved is
-// drive#813. Two devices upload one path at the same instant. The other
-// device's upload fails rclone's size check, rclone removes the object that
-// is there (this device's save) and retries 10s later. This device's guard
-// sees an empty plain path for longer than the claim budget used to be, and
-// the retry that lands on top must still be claimed as a conflict.
 func TestConflictGuardKeepsASaveWhoseObjectAnotherDevicesFailedUploadRemoved(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-this-device-saved\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass with the save queued: %v", err)
 	}
-	// This device's upload landed and the other device removed the object
-	// before the guard read it: the plain path is empty from the first poll.
 	f.pending = nil
 	delete(f.objects, "report.txt")
-	// 15s of empty path: past the old 10s budget, inside the watch window.
 	emptyFor := 15 * time.Second
 	if emptyFor <= 10*time.Second || emptyFor >= conflictWatchWindow {
 		t.Fatalf("the empty phase %v must sit between the old 10s budget and the %v window", emptyFor, conflictWatchWindow)
@@ -1056,11 +900,6 @@ func TestConflictGuardKeepsASaveWhoseObjectAnotherDevicesFailedUploadRemoved(t *
 	}
 }
 
-// TestConflictGuardRehashesTheBytesTheUploadWillCarry proves a device that
-// writes the same path again before its write-back fires protects the newer
-// bytes, not the ones hashed at first sight. The bytes the upload carries
-// are the bytes on the mount when it fires, so a hash of an older write
-// would be the wrong version to keep.
 func TestConflictGuardRehashesTheBytesTheUploadWillCarry(t *testing.T) {
 	root := t.TempDir()
 	mountDir := filepath.Join(root, "Drive")
@@ -1068,9 +907,6 @@ func TestConflictGuardRehashesTheBytesTheUploadWillCarry(t *testing.T) {
 	if err := os.MkdirAll(mountDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// The first write is hashed, then this device writes the path again
-	// with a different size, which is what rclone's VFS reports through
-	// the mount's stat.
 	if err := os.WriteFile(path, []byte("first write\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1083,9 +919,6 @@ func TestConflictGuardRehashesTheBytesTheUploadWillCarry(t *testing.T) {
 	if err := os.WriteFile(path, []byte("second write\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The other device's save lands on top, and the conflict copy is the
-	// bytes this device will actually upload — the re-hash at the decision
-	// is what keeps the newer write.
 	f.pending = nil
 	f.objects["report.txt"] = md5Hex("B-the-other-device-saved-second\n")
 	if _, err := g.pass(context.Background(), f); err != nil {
@@ -1097,8 +930,6 @@ func TestConflictGuardRehashesTheBytesTheUploadWillCarry(t *testing.T) {
 	}
 }
 
-// TestConflictGuardNumbersARepeatedConflict proves a device that loses the
-// same file twice does not overwrite the copy of its first loss.
 func TestConflictGuardNumbersARepeatedConflict(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "second loss\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 12}}
@@ -1106,7 +937,6 @@ func TestConflictGuardNumbersARepeatedConflict(t *testing.T) {
 		t.Fatalf("pass with the save queued: %v", err)
 	}
 	f.pending = nil
-	// The first loss is already kept under the first conflict name.
 	f.objects["report.txt"] = "A-other-devices-save"
 	f.objects["report (conflict, mac).txt"] = "A-the-first-loss"
 	res, err := g.pass(context.Background(), f)
@@ -1117,7 +947,6 @@ func TestConflictGuardNumbersARepeatedConflict(t *testing.T) {
 	if len(f.copied) != 1 || f.copied[0] != want {
 		t.Fatalf("copied %v, want [%s]", f.copied, want)
 	}
-	// The first copy is untouched.
 	if got := f.objects["report (conflict, mac).txt"]; got != "A-the-first-loss" {
 		t.Errorf("the first conflict copy was overwritten: %s", got)
 	}
@@ -1126,8 +955,6 @@ func TestConflictGuardNumbersARepeatedConflict(t *testing.T) {
 	}
 }
 
-// TestConflictGuardKeepsAFolderInTheConflictName proves a save lost inside a
-// folder is kept inside that folder.
 func TestConflictGuardKeepsAFolderInTheConflictName(t *testing.T) {
 	g, _, f := guardFor(t, "studio-1", map[string]string{"photos/img.JPEG": "the losing save"})
 	f.pending = []queueEntry{{Name: "photos/img.JPEG", Size: 15}}
@@ -1145,10 +972,6 @@ func TestConflictGuardKeepsAFolderInTheConflictName(t *testing.T) {
 	}
 }
 
-// TestConflictGuardWaitsForASaveThatHasNotLandedYet proves the rule is not
-// an eager one: the queue has released a path whose object is still the
-// version that preceded the save, and the guard watches it rather than
-// claiming a conflict.
 func TestConflictGuardWaitsForASaveThatHasNotLandedYet(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "this device's save\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
@@ -1156,8 +979,6 @@ func TestConflictGuardWaitsForASaveThatHasNotLandedYet(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass with the save queued: %v", err)
 	}
-	// The upload failed once, so the queue released the path and the object is
-	// still the old one. The save is not lost yet: the queue retries it.
 	f.pending = nil
 	for i := 0; i < conflictClaimPolls-1; i++ {
 		if _, err := g.pass(context.Background(), f); err != nil {
@@ -1167,8 +988,6 @@ func TestConflictGuardWaitsForASaveThatHasNotLandedYet(t *testing.T) {
 			t.Fatalf("pass %d claimed a conflict while the object was unchanged", i)
 		}
 	}
-	// Once the budget is spent, the path is no longer watched; it is not a
-	// conflict and it must not grow the map on a mount that never stops.
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass: %v", err)
 	}
@@ -1180,9 +999,6 @@ func TestConflictGuardWaitsForASaveThatHasNotLandedYet(t *testing.T) {
 	}
 }
 
-// TestConflictGuardComparesALargeFileByFingerprint proves a save over the
-// hash cap is still watched: it is compared by size and mtime rather than
-// skipped, and this device's own landing is not named as a skip.
 func TestConflictGuardComparesALargeFileByFingerprint(t *testing.T) {
 	root := t.TempDir()
 	mountDir := filepath.Join(root, "Drive")
@@ -1253,10 +1069,6 @@ func TestConflictGuardOwnLargeUploadIsNotASkip(t *testing.T) {
 	}
 }
 
-// TestConflictGuardNamesALargeOverwrite proves the late overwrite the
-// fingerprint watch exists for: another device's version of a file too large
-// to hash whole lands, its size and mtime are not this device's, and the
-// guard names it rather than reading it as this device's own upload.
 func TestConflictGuardNamesALargeOverwrite(t *testing.T) {
 	root := t.TempDir()
 	mountDir := filepath.Join(root, "Drive")
@@ -1291,9 +1103,6 @@ func TestConflictGuardNamesALargeOverwrite(t *testing.T) {
 	}
 }
 
-// TestConflictGuardReportsAFailingPass proves a remote-control failure is not
-// swallowed into "no conflict": the mount keeps running and the cause is
-// named.
 func TestConflictGuardReportsAFailingPass(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "a save\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 7}}
@@ -1303,9 +1112,6 @@ func TestConflictGuardReportsAFailingPass(t *testing.T) {
 	if len(g.seen) != 1 {
 		t.Fatalf("the hashed save is not watched: %v", g.seen)
 	}
-	// A failing queue read is an error, and it must not lose the save this
-	// device already hashed: the next good pass still decides it, so a
-	// pass that cannot read its queue cannot silently strand one.
 	f.failWith = errConflictTestQueue
 	if _, err := g.pass(context.Background(), f); err == nil {
 		t.Fatal("a failing pass reported no error")
@@ -1363,10 +1169,6 @@ func TestConflictGuardHoldsAHashErrorOnThatEntryOnly(t *testing.T) {
 	}
 }
 
-// TestConflictGuardDoesNotClaimAnUnreadBaseline proves a save whose baseline
-// hash could not be read at first sight is not claimed as a conflict against
-// the version it was always going to replace, and that the unread baseline is
-// named once the queue has released it.
 func TestConflictGuardDoesNotClaimAnUnreadBaseline(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "my save\n"})
 	f.objects["report.txt"] = md5Hex("the version before the save\n")
@@ -1399,8 +1201,6 @@ func TestConflictGuardDoesNotClaimAnUnreadBaseline(t *testing.T) {
 	}
 }
 
-// TestConflictGuardRereadsTheBaselineWhileQueued proves the baseline is read
-// again on the next pass while the save is still queued.
 func TestConflictGuardRereadsTheBaselineWhileQueued(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "my save\n"})
 	before := md5Hex("the version before the save\n")
@@ -1477,11 +1277,6 @@ func TestConflictGuardNamesALargeFileWhoseVersionCannotBeRead(t *testing.T) {
 	}
 }
 
-// TestConflictGuardNamesASaveItCanNoLongerHash proves that when a save grows
-// past the protection cap before its write-back fires, the guard does not
-// claim bytes it cannot hash whole: a conflict copy of a version nobody
-// uploaded is not the save it exists to keep. The path is dropped from the
-// watch and named, and no conflict name is written for it.
 func TestConflictGuardNamesASaveItCanNoLongerHash(t *testing.T) {
 	root := t.TempDir()
 	mountDir := filepath.Join(root, "Drive")
@@ -1498,9 +1293,6 @@ func TestConflictGuardNamesASaveItCanNoLongerHash(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatalf("pass with the save queued: %v", err)
 	}
-	// This device grows the save past the cap before its write-back fires,
-	// and the other device's save lands on top. This device has nothing it
-	// can hash whole, so it writes no conflict copy and names the loss.
 	if err := os.Truncate(path, conflictProtectMax+1); err != nil {
 		t.Fatal(err)
 	}
@@ -1525,10 +1317,6 @@ func TestConflictGuardNamesASaveItCanNoLongerHash(t *testing.T) {
 	t.Logf("skip: %+v", res.Skipped)
 }
 
-// TestConflictGuardNamesASaveGoneBeforeTheClaim proves the same honesty for
-// a save whose bytes are gone from the machine when the other device's save
-// lands: there is nothing left to write, so the loss is named once instead
-// of being retried every pass forever.
 func TestConflictGuardNamesASaveGoneBeforeTheClaim(t *testing.T) {
 	g, mountDir, f := guardFor(t, "mac", map[string]string{"report.txt": "this device's save\n"})
 	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
@@ -1559,12 +1347,6 @@ type conflictTestError struct{ what string }
 
 func (e *conflictTestError) Error() string { return e.what }
 
-// TestMatchHashSumPicksTheRightEntry proves the hash is taken for the entry
-// named, not the first line of a multi-path reply.
-// TestMatchHashSum proves the hash is taken for the path that was asked
-// for, whether or not that path has spaces in it: a conflict name is
-// "report (conflict, mac).txt", and a reply parsed by words would return
-// the hash of a different file.
 func TestMatchHashSum(t *testing.T) {
 	lines := []string{
 		"aaa  report (conflict, mac).txt",
@@ -1577,7 +1359,6 @@ func TestMatchHashSum(t *testing.T) {
 	if got != "bbb" {
 		t.Errorf("matchHashSum = %q, want bbb", got)
 	}
-	// A name with spaces is matched as a whole name.
 	got, err = matchHashSum(lines, "report (conflict, mac).txt")
 	if err != nil {
 		t.Fatal(err)
@@ -1585,8 +1366,6 @@ func TestMatchHashSum(t *testing.T) {
 	if got != "aaa" {
 		t.Errorf("matchHashSum for the conflict name = %q, want aaa", got)
 	}
-	// The single-entry reply is the base name's own, which is how a backend
-	// that answers with the file it was asked about reads.
 	if got, err := matchHashSum([]string{"ccc  report.txt"}, "report.txt"); err != nil || got != "ccc" {
 		t.Errorf("matchHashSum(single) = (%q, %v), want (ccc, nil)", got, err)
 	}
@@ -1602,9 +1381,6 @@ func TestMatchHashSum(t *testing.T) {
 	}
 }
 
-// TestHashMountFileHashesTheBytesTheMountServes proves the hash and the
-// bytes are the same bytes: the md5 the decision compares is the md5 of
-// what the mount path holds, read where it lies.
 func TestHashMountFileHashesTheBytesTheMountServes(t *testing.T) {
 	g, _, _ := guardFor(t, "mac", map[string]string{
 		"notes.txt":   "hashed bytes\n",
@@ -1692,10 +1468,6 @@ func TestConflictGuardDoesNotFailThePassWhenTheCacheFileIsMissing(t *testing.T) 
 	}
 }
 
-// TestHashMountFileRefusesASaveThatGrewPastTheCap proves a save that grows
-// past the cap while it is hashed is a named skip rather than a hash of
-// truncated bytes: a conflict copy made of those would be a corrupt version
-// of the save it exists to keep.
 func TestHashMountFileRefusesASaveThatGrewPastTheCap(t *testing.T) {
 	root := t.TempDir()
 	mount := filepath.Join(root, "Drive")
@@ -1707,8 +1479,6 @@ func TestHashMountFileRefusesASaveThatGrewPastTheCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A sparse file of cap+1 bytes reads back as cap+1 zero bytes, which
-	// is exactly what a save that grew past the cap is at the hash.
 	if err := out.Truncate(conflictProtectMax + 1); err != nil {
 		t.Fatal(err)
 	}
@@ -1725,10 +1495,6 @@ func TestHashMountFileRefusesASaveThatGrewPastTheCap(t *testing.T) {
 	}
 }
 
-// TestConflictGuardBehindReadsTheStateFile proves the state file is an
-// answer only while it is fresh, and never an error surfaced to a person:
-// a missing, stale, or alien file is "no answer", because the guard's own
-// failures are named on the mount's log.
 func TestConflictGuardBehindReadsTheStateFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "conflict-guard.json")
@@ -1759,10 +1525,6 @@ func TestConflictGuardBehindReadsTheStateFile(t *testing.T) {
 	}
 }
 
-// TestConflictGuardLineNamesTheBacklog proves the status line: a fresh
-// answer bigger than one pass's bound is named with its number, one pass's
-// worth of backlog is not (the next pass clears it), and no answer prints
-// nothing.
 func TestConflictGuardLineNamesTheBacklog(t *testing.T) {
 	home := t.TempDir()
 	now := time.Now()
@@ -1790,10 +1552,6 @@ func TestConflictGuardLineNamesTheBacklog(t *testing.T) {
 	}
 }
 
-// TestRunConflictLoopWritesTheBacklogStateFile proves the loop records its
-// backlog where `drive status` reads it, on the real loop and not a copy:
-// a queue bigger than one pass's bound shows up as the behind count within
-// a pass or two of starting.
 func TestRunConflictLoopWritesTheBacklogStateFile(t *testing.T) {
 	const total = 2*conflictSightMax + 50
 	root := t.TempDir()
@@ -1832,33 +1590,22 @@ func TestRunConflictLoopWritesTheBacklogStateFile(t *testing.T) {
 	}
 }
 
-// md5Hex is the md5 a test expects rclone's operations/hashsum to report.
 func md5Hex(s string) string {
 	f := md5.Sum([]byte(s))
 	return hex.EncodeToString(f[:])
 }
 
-// The stock-hostname fix (drive issue #561): macOS names a new
-// Mac after its model, so two Macs of one model answer to the
-// same "MacBook-Air" and are one device in the account, on the
-// approval page and in conflict copies. A stock name gets a
-// short machine suffix; a name a person chose is left alone.
 func TestStockHostnameGetsASuffix(t *testing.T) {
 	got := stockedHostname("MacBook-Air")
 	if !strings.HasPrefix(got, "MacBook-Air-") || len(got) != len("MacBook-Air-")+4 {
 		t.Fatalf("stocked hostname = %q, want MacBook-Air-<4 characters>", got)
 	}
-	// The suffix is stable for this machine, or it would
-	// rename the device on every run.
 	if again := stockedHostname("MacBook-Air"); again != got {
 		t.Fatalf("the suffix moved between two runs: %q then %q", got, again)
 	}
 }
 
 func TestStockHostnameWithLocalSuffixGetsASuffix(t *testing.T) {
-	// macOS can answer os.Hostname() with the mDNS name
-	// ("MacBook-Air.local"), which must trigger the same suffix as the
-	// bare model name or two such Macs share one device name again.
 	if !isStockHostname("MacBook-Air.local") {
 		t.Fatal("isStockHostname(\"MacBook-Air.local\") = false, want true")
 	}
@@ -1868,8 +1615,6 @@ func TestStockHostnameWithLocalSuffixGetsASuffix(t *testing.T) {
 	}
 }
 
-// macOS hostnames are case-insensitive and mDNS can answer in any case, so
-// "macbook-air" and "MacBook-Air.LOCAL" are the stock name too.
 func TestStockHostnameMatchIgnoresCase(t *testing.T) {
 	for _, host := range []string{"macbook-air", "MACBOOK-PRO-2", "MacBook-Air.LOCAL", "imac.Local"} {
 		if !isStockHostname(host) {
@@ -1886,7 +1631,7 @@ func TestChosenHostnameIsLeftAlone(t *testing.T) {
 	for _, host := range []string{
 		"Nish's MacBook",
 		"studio",
-		"MacBook-Air-2x", // not the number macOS adds: a name a person chose
+		"MacBook-Air-2x",
 		"MacBook-Air-",
 		"MacBookAir",
 	} {
@@ -1900,7 +1645,7 @@ func TestIsStockHostname(t *testing.T) {
 	stock := []string{
 		"MacBook", "MacBook-Air", "MacBook-Pro", "iMac", "Mac-mini",
 		"Mac-Studio", "Mac-Pro",
-		"MacBook-Air-2", "iMac-7", "Mac-mini-10", // macOS's own numbering
+		"MacBook-Air-2", "iMac-7", "Mac-mini-10",
 	}
 	for _, host := range stock {
 		if !isStockHostname(host) {
@@ -1924,8 +1669,6 @@ func TestDeviceNameFlagWinsOverTheHostname(t *testing.T) {
 	if got := deviceName("", "Nish's MacBook"); got != "Nish-s-MacBook" {
 		t.Errorf("deviceName with a chosen hostname = %q, want the sanitized \"Nish-s-MacBook\"", got)
 	}
-	// The sign-in name and the mount's conflict name are one name: the
-	// mount sanitizes through DefaultDeviceName -> SanitizeDevice.
 	if got, want := deviceName("", "Nish's MacBook"), SanitizeDevice(stockedHostname("Nish's MacBook")); got != want {
 		t.Errorf("deviceName = %q, mount conflict name = %q, want one name", got, want)
 	}
@@ -1935,10 +1678,6 @@ func TestDeviceNameFlagWinsOverTheHostname(t *testing.T) {
 }
 
 func TestMachineIDIsPresent(t *testing.T) {
-	// Whatever the OS gave this machine (a platform UUID, a
-	// machine id, a hostname), it must answer with something:
-	// an empty id would make every stock-named Mac share one
-	// suffix, which is the bug the suffix exists to fix.
 	if id := machineID(); strings.TrimSpace(id) == "" {
 		t.Fatal("machineID() = \"\", want this machine's identifier")
 	}

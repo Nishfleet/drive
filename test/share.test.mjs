@@ -1,19 +1,3 @@
-// Tests for share links and upload requests (drive issue #19). Two halves, the
-// same split test/files.test.mjs uses for core/files.js:
-//
-// 1. The logic in src/share.js against a real in-memory FileStore and the
-//    memory LinkStore: tokens, the 7-day window, revocation, the logged-out
-//    share route, and the upload page's routes.
-// 2. The shipped page: public/upload.html is a static asset and cannot import
-//    the module, so this reads it and fails when its words or endpoints drift
-//    from src/share.js.
-//
-// The three "Done when" bullets are their own tests at the bottom, run as the
-// real routes a browser and the CLI's API calls hit:
-//   - a real file opens from a share link with no account and no cookie;
-//   - a revoked link is a 404;
-//   - a file dropped on an upload page is in the folder's listing afterwards.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

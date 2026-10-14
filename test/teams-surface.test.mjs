@@ -1,20 +1,3 @@
-// The teams surface is the API, not a screen (drive issue #775).
-//
-// #20 built the team routes on the api Worker and closed with the API only.
-// The company screens that invite a member, set read-only or read-write, and
-// remove a member are not built, so these three surfaces that talk about a
-// company drive have to say so and have to name the teams API as version 1's
-// only path: the Talk-to-us box on the pricing page, the Business tier row in
-// docs/spec.md, and the Company tier row in docs/build-spec.md.
-//
-// This file pins that, and guards the price those surfaces carry against
-// core/pricing.js (PRICE), so a later run cannot reintroduce #20's retired
-// $15 per TB ceiling or a screen the API does not back. The route test reads
-// the api Worker's own route registry, not just the reference, so "the API is
-// the path" points at routes the Worker registers; the anonymous-401 proof
-// for them already lives beside that Worker, in workers/api/test/teams.test.js,
-// and is not repeated here.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

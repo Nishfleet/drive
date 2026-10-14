@@ -1,34 +1,3 @@
-// The meter's per-account work through Cloudflare Queues (drive#519).
-//
-// The hourly and nightly meter crons used to loop over every account inside
-// one invocation. That stops working as accounts grow: one invocation has a
-// fixed budget of D1 calls and wall time, and one slow account held up all
-// the others. With the queue bound, a cron does only its global step (the
-// one-statement hourly rollup, the nightly prune) and then sends one message
-// per account. Each message is its own consumer invocation with its own
-// budget, a failed one is retried on its own, and one that keeps failing
-// lands in the dead-letter queue for an operator to read, not in a cron that
-// fails every hour.
-//
-// The binding is optional on purpose. A deploy that binds a queue which does
-// not exist fails, and an unattended `cf deploy` does not create one, so the
-// queues are created once, out of band, before the binding is added to
-// cloudflare.config.ts:
-//
-//   cf queues create drive-meter-jobs
-//   cf queues create drive-meter-jobs-dlq
-//
-// and then, in cloudflare.config.ts:
-//
-//   triggers.queue({ name: "drive-meter-jobs", deadLetterQueue: "drive-meter-jobs-dlq",
-//     maxRetries: 5, maxBatchSize: 10 }),
-//   METER_JOBS: bindings.queue({ name: "drive-meter-jobs" }),
-//
-// Until then `meterJobsQueue` answers null and the crons run the same
-// per-account steps in-process, each account's failure kept and raised at
-// the end. Removing the binding switches back to that path; nothing else
-// changes.
-
 import { enforceAccountCap } from "../core/cap.js";
 import { toMillis } from "../core/meter.js";
 import { reconcileAccount } from "../core/meter-reconcile.js";
@@ -36,16 +5,13 @@ import { drawAccountPending, settleBalances } from "../core/prepaid.js";
 import { pauseAccountKeys } from "../core/prepaid-pause.js";
 import { captureError, reportFairUseVendorGap } from "./monitoring.js";
 
-/** The queue both meter crons produce on and this Worker consumes. */
 export const METER_JOBS_QUEUE_NAME = "drive-meter-jobs";
 
-/** The kinds of message the meter sends, one account each. */
 export const METER_JOB_KINDS = Object.freeze({
   hourly: "meter.hourly",
   reconcile: "meter.reconcile",
 });
 
-// Cloudflare's own limit on messages in one sendBatch call.
 const SEND_BATCH_LIMIT = 100;
 
 /**
@@ -177,14 +143,6 @@ export async function runHourlyAccountJob(deps, job) {
       job.accountId,
     );
   }
-  // drive#642 no-bugs bar 5: a day whose meter rows are missing or do not parse
-  // makes NO draw. The draw is the one step here that turns a meter row into
-  // money, so its failure is reported to the monitoring the repo already uses
-  // (src/monitoring.js) instead of being read as a quiet $0 day - a silent
-  // zero and a guessed charge are both failures. The rethrow keeps the queue's
-  // own retry-and-dead-letter path: the next run reads the same rows and
-  // charges the day, and a job that keeps failing lands in
-  // drive-meter-jobs-dlq for an operator rather than charging a guess.
   let drawn;
   try {
     drawn = await drawAccountPending(deps.meterDb, job.accountId, {
@@ -192,15 +150,8 @@ export async function runHourlyAccountJob(deps, job) {
       now: job.at,
     });
   } catch (error) {
-    // The monitoring seam is injectable like the email and the mail-from, so a
-    // test can stand a recorder in place of the stock Sentry call. A report
-    // that throws must not hide the draw failure: the queue retries the draw,
-    // and a silent swap of the error would retry a monitoring outage instead.
     const report = deps.reportError ?? captureError;
     try {
-      // The account id stays on the console line handleMeterJobs already
-      // writes. Sentry's `where` is the job name only, the exception text
-      // drops the id, and retries of the same failure do not POST again.
       if ((job.attempts ?? 1) <= 1) {
         const reported =
           error instanceof Error

@@ -1,16 +1,3 @@
-// `drive doctor` (drive issue #562): the one block to paste into a support
-// message, in the order a person reads it. Four things a support reply cannot
-// work without and a person cannot assemble by hand: which build is running,
-// whether the mount is up, what the mount's own log last said, and whether the
-// account side answers at all.
-//
-// Nothing here is a second way to ask a question something else already
-// answers. The version is versionText(), the same string `drive version`
-// prints. The mount state is Mounted, the same kernel question `drive status`
-// asks. The api answer is the same authenticated read readCostLine makes. The
-// log is read from where the mount already writes it (mount.go's plan) or
-// where journald already keeps it.
-
 package main
 
 import (
@@ -29,28 +16,12 @@ import (
 	"time"
 )
 
-// docsTroubleshootingURL is the self-serve page for a person who has not
-// written in yet, on the same host the CLI's default api base points at, so
-// the link cannot drift from where the docs are published. It is printed at
-// the foot of the block, so the copy a person pastes into a message also
-// carries the page that may answer the question without a reply at all.
 func docsTroubleshootingURL() string { return defaultAPIBase + "/docs/troubleshooting" }
 
-// doctorTimeout bounds the api read. The whole point of the command is a block
-// that comes back, so a Worker that never answers must not turn it into a hung
-// terminal.
 const doctorTimeout = 10 * time.Second
 
-// defaultDoctorLogLines is how many lines of the mount's own log the block
-// carries. Twenty lines is one mount's start-up plus the failure that
-// followed it, which is what a support reply reads first.
 const defaultDoctorLogLines = 20
 
-// runDoctor is `drive doctor`: print the block. It never fails the run for one
-// part of the block it could not read, because a support message with half an
-// answer beats no message: every line that could not be read names the reason
-// on its own line instead, and the exit code stays zero so a person pasting
-// the block into a ticket is not also told the command errored.
 func runDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	common := addCommonFlags(fs)
@@ -78,11 +49,6 @@ func runDoctor(args []string) error {
 	return nil
 }
 
-// printDoctorVersions prints which builds are running: drive's own version
-// (versionText, the string `drive version` prints), the rclone the mount
-// actually runs, and the platform. An rclone that cannot be resolved or
-// cannot answer is named rather than skipped: "rclone: not found" is itself
-// the answer for a mount that never started.
 func printDoctorVersions(w io.Writer, rcloneBin string) {
 	fmt.Fprintf(w, "drive:  %s\n", versionText())
 	rclone := resolvedRclone(rcloneBin)
@@ -94,9 +60,6 @@ func printDoctorVersions(w io.Writer, rcloneBin string) {
 	fmt.Fprintf(w, "os:     %s/%s\n", runtime.GOOS, runtime.GOARCH)
 }
 
-// resolvedRclone is the rclone path the mount would run, or the empty string
-// when there is none. ResolveRclone's own error is reported by the caller, so
-// the path is all this returns.
 func resolvedRclone(rcloneBin string) string {
 	rclone, err := ResolveRclone(rcloneBin)
 	if err != nil {
@@ -105,8 +68,6 @@ func resolvedRclone(rcloneBin string) string {
 	return rclone
 }
 
-// rcloneReason is the line `drive doctor` prints for the rclone version: what
-// was found and why no version came back, in the words the install hint uses.
 func rcloneReason(rclone string, err error) string {
 	if rclone == "" {
 		return "not found; install rclone and run `drive mount` again"
@@ -114,11 +75,6 @@ func rcloneReason(rclone string, err error) string {
 	return fmt.Sprintf("%s does not report a version (%s)", filepath.Base(rclone), firstLine(err.Error()))
 }
 
-// printDoctorMount prints the mount state and where it is, which is the
-// question that answers most support messages. The three branches are
-// renderMountState's (status.go): mounted and answering, mounted but not
-// answering, or not mounted. Each line that names a path names the log beside
-// it, so the next thing to read is on the same line as the finding.
 func printDoctorMount(w io.Writer, goos, home string) {
 	on, err := Mounted(goos, home)
 	if err != nil {
@@ -143,21 +99,12 @@ func printDoctorMount(w io.Writer, goos, home string) {
 	}
 }
 
-// folderAnswers is the same bound `drive status` puts on a folder read: a FUSE
-// mount whose backing store has gone away blocks a ReadDir, so the read is
-// bounded and a timeout counts as "not answering" rather than hanging the
-// command.
+// A FUSE mount whose backing store has gone away blocks a ReadDir.
 func folderAnswers(mountDir string) bool {
 	_, err := countEntries(mountDir, 2*time.Second)
 	return err == nil
 }
 
-// printDoctorLogs prints the mount's own last lines, read from where the mount
-// already puts them: the launchd item on macOS redirects rclone's output to
-// ~/.config/drive/mount.log (mount.go's plan), and on Linux the unit's log is
-// journald's, read with the stock journalctl. A log that cannot be read is a
-// named line, not a blank one: "the log is empty" is itself the answer when a
-// person reports a mount that never started.
 func printDoctorLogs(w io.Writer, goos, home string, lines int) {
 	if lines == 0 {
 		fmt.Fprintln(w, "log:    skipped (--logs 0)")
@@ -170,14 +117,6 @@ func printDoctorLogs(w io.Writer, goos, home string, lines int) {
 	printDoctorLogFile(w, filepath.Join(DefaultConfigDir(home), "mount.log"), lines)
 }
 
-// logSecretPatterns are the shapes of a credential that can reach a log line:
-// a device token (the `dtok_` ids core/device-signin.js issues), an
-// Authorization header or a bearer value, the query values of a presigned
-// storage URL, and the key fields of an S3 credential. They are compiled once
-// at package level, and each keeps its name so only the value is masked and a
-// support reader still sees which field was there. The Authorization rule
-// comes first and takes the rest of the line, because a SigV4 header carries
-// spaces and commas inside one value.
 var logSecretPatterns = []struct {
 	re   *regexp.Regexp
 	with string
@@ -189,10 +128,6 @@ var logSecretPatterns = []struct {
 	{regexp.MustCompile(`(?i)\b(access_key_id|secret_access_key|session_token)(["']?\s*[:=]\s*["']?)[^\s"',&]+`), `${1}${2}<redacted>`},
 }
 
-// scrubLogLine masks every credential shape in one log line with the word
-// config.go and mount.go already use, `<redacted>`. The block doctor prints is
-// made to be pasted into a support message, so a secret in the mount's log
-// must not travel with it. An ordinary line comes back unchanged.
 func scrubLogLine(line string) string {
 	for _, p := range logSecretPatterns {
 		line = p.re.ReplaceAllString(line, p.with)
@@ -200,9 +135,6 @@ func scrubLogLine(line string) string {
 	return line
 }
 
-// printDoctorLogFile prints the tail of a log file this CLI or its login item
-// wrote. Every branch ends with a line, so a missing or empty log reads as an
-// answer.
 func printDoctorLogFile(w io.Writer, path string, lines int) {
 	tail, err := tailFile(path, lines)
 	if err != nil {
@@ -219,13 +151,6 @@ func printDoctorLogFile(w io.Writer, path string, lines int) {
 	}
 }
 
-// printDoctorJournal reads the unit's log from journald, the stock place a
-// systemd user unit's output goes. journalctl missing or unreadable falls back
-// to the mount log the detached mount also writes (mount.go's
-// startLinuxMountDetached), which is the only log a container without a user
-// bus has. journalctl is a literal binary with a fixed flag list, and
-// exec.Command takes an argument vector and runs no shell, so nothing from the
-// command line or from a config file reaches it.
 func printDoctorJournal(w io.Writer, home string, lines int) {
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- literal binary "journalctl" with a fixed flag list; no argument comes from input. exec.Command takes an argument vector, not a shell.
 	out, err := exec.Command("journalctl", "--user", "-u", SystemdUnitName, "-n", fmt.Sprint(lines), "--no-pager", "--output", "short").CombinedOutput()
@@ -240,9 +165,6 @@ func printDoctorJournal(w io.Writer, home string, lines int) {
 	}
 }
 
-// journaldHasNoEntries reports whether journalctl's answer is its own "there
-// is nothing here" banner, which is what a unit that has never logged says.
-// Printing the banner as a log line reads as gibberish, so it is not a line.
 func journaldHasNoEntries(text string) bool {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
@@ -254,14 +176,6 @@ func journaldHasNoEntries(text string) bool {
 	return true
 }
 
-// tailFile reads the last n lines of a text file. A file that cannot be opened
-// is an error the caller names, because an absent log is a real answer to
-// "what did the mount last say" and must never read as an empty one.
-//
-// A count of zero or less returns nothing rather than reaching the ring
-// buffer's modulo, which divides by zero on the first line: the one caller
-// (printDoctorLogs) guards the flag, so this is the second line of that same
-// guard.
 func tailFile(path string, n int) ([]string, error) {
 	if n <= 0 {
 		return nil, nil
@@ -281,8 +195,6 @@ func tailFile(path string, n int) ([]string, error) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		// A ring of the last n lines, so a mount that has been up for weeks
-		// does not put a million-line log into a support message.
 		ring[next] = line
 		next = (next + 1) % n
 		if filled < n {
@@ -295,16 +207,9 @@ func tailFile(path string, n int) ([]string, error) {
 	if filled < n {
 		return ring[:filled], nil
 	}
-	// The oldest line is the one the next write would have overwritten.
 	return append(ring[next:], ring[:next]...), nil
 }
 
-// printDoctorAPI prints whether the account side answers, on the same
-// authenticated read `drive status` makes (readCostLine's endpoint), so the
-// two commands cannot disagree about it. A device that is not signed in gets
-// the reason rather than a timeout, and the address is printed beside the
-// answer because "the api is unreachable" is only actionable together with
-// which address was tried.
 func printDoctorAPI(w io.Writer, home, apiFlag string) {
 	base, err := resolveAPIBase(home, apiFlag)
 	if err != nil {
@@ -320,9 +225,6 @@ func printDoctorAPI(w io.Writer, home, apiFlag string) {
 		fmt.Fprintf(w, "api:    unknown (%s)\n", firstLine(err.Error()))
 		return
 	}
-	// An explicit --api with no stored token would send an empty bearer and
-	// report the Worker's 401 as if the address were the problem. The honest
-	// answer is the same one a bare device gets, with the address beside it.
 	if strings.TrimSpace(creds.DeviceToken) == "" {
 		fmt.Fprintf(w, "api:    not signed in on this device (run `drive login`) (%s)\n", base)
 		return
@@ -334,10 +236,6 @@ func printDoctorAPI(w io.Writer, home, apiFlag string) {
 	fmt.Fprintf(w, "api:    reachable (%s)\n", base)
 }
 
-// doctorAPIReason does the reachability read and returns the reason it failed,
-// or "" when the Worker answered. The endpoint is USAGE_PATH: a device that
-// can read its own usage is signed in, reachable and answered, which is the
-// whole question, so no second endpoint is introduced for it.
 func doctorAPIReason(apiBase, token string) string {
 	base, err := parseAPIBase(apiBase)
 	if err != nil {

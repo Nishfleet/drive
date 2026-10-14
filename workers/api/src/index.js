@@ -21,14 +21,9 @@ import { createD1TeamStore } from "../../../core/teams.js";
 import { routes } from "./routes.js";
 import { cliTooOld } from "./versiongate.js";
 
-// Kept as a named export of this entry: it was one before the provider choice
-// moved to keyprovider-env.js, and an importer of this Worker's entry should
-// keep answering the same way (drive#497).
 export { storageLocationFromEnv };
 
-/** Tests that need the in-memory key store pass it on env; production never does. */
 export const TEST_KEY_STORE = Symbol("drive.testKeyStore");
-/** One missing-config line per isolate env, not per request. */
 const missingApiStoreLogged = new WeakSet();
 
 /**
@@ -191,12 +186,6 @@ export function createApp(table = routes) {
   /** @type {Hono<{Bindings: Ctx, Variables: ApiVariables}>} */
   const app = new Hono({ strict: false });
 
-  // The version gate (drive#560), first so an old CLI is told to update
-  // before it is asked for credentials it can already produce: it reads the
-  // version out of the request's own User-Agent and answers 426 with the
-  // message table's cli-too-old words when the version is below this
-  // deployment's floor. Requests that name no drive version — a health
-  // probe, a browser on a device approval page — pass through untouched.
   app.use("*", async (c, next) => {
     if (cliTooOld(c.req.header("user-agent"), c.env.env)) {
       return errorResponse(426, failureMessage("cli-too-old"), { upgrade: "drive" });
@@ -204,12 +193,6 @@ export function createApp(table = routes) {
     await next();
   });
 
-  // The account is resolved once per request from the request's own
-  // credentials (drive#55, drive#136), never trusted from the context: a CLI
-  // request proves one with its bearer token. That lookup is the cheap one
-  // (one hash and one row) and runs for every request; `ctx.account` is
-  // honoured only where there is no store to resolve one with, which is the
-  // tests' own store-less context.
   app.use("*", async (c, next) => {
     const ctx = c.env;
     const bearer = await accountForRequest(c.req.raw, ctx.store);
@@ -273,13 +256,6 @@ export function createApp(table = routes) {
   for (const [path, pathRoutes] of byPath) {
     const key = methodSetKey(pathRoutes.map((route) => route.method));
     const allAccount = pathRoutes.every((route) => route.auth !== "public");
-    // Only a path that actually serves something to an anonymous caller
-    // contributes. An all-account path is gated as a whole below, so an
-    // anonymous request to it is the gate's own 401 and its methods are never
-    // named — and folding its (empty) public set in here would subtract
-    // exactly those methods from every other path that shares the method set,
-    // so an unrelated public route would lose its Allow header the moment a
-    // new account-only path shares a method with it.
     if (!allAccount) {
       const publics = new Set(
         pathRoutes.filter((route) => route.auth === "public").map((route) => route.method),
@@ -292,8 +268,6 @@ export function createApp(table = routes) {
     }
 
     if (allAccount) {
-      // Every method on this path needs an account, so the whole path is
-      // gated and an anonymous request is 401 without naming the methods.
       app.use(path, gate);
     }
     for (const route of pathRoutes) {
@@ -303,19 +277,11 @@ export function createApp(table = routes) {
       if (route.auth === "public" || allAccount) {
         app.on(route.method, route.path, handler);
       } else {
-        // A public route already answers on this path: gate this account
-        // route on its own method, and leave the public one open.
         app.on(route.method, route.path, gate, handler);
       }
     }
   }
 
-  // 405 from the library. The Allow header names the methods this path
-  // registers, minus Hono's implicit HEAD, which the old dispatcher never
-  // named either, and minus the account-gated methods when the caller has no
-  // account: a 405 must not disclose which gated methods a path keeps, the
-  // shape the old dispatcher's auth-before-method walk gave. A signed-in
-  // caller sees every method the path registers.
   app.use(
     "*",
     methodNotAllowed({
@@ -324,12 +290,7 @@ export function createApp(table = routes) {
         /** @type {import("hono").Context<{Bindings: Ctx, Variables: ApiVariables}>} */ c,
         /** @type {string[]} */ methods,
       ) => {
-        // The registered path, not the concrete one: Hono reports a param
-        // route's 405 with the path the request actually carried
-        // (`/v1/keys/k1`), while the map is keyed by the registry's spelling
-        // (`/v1/keys/:keyId`). A path that matches no registered one is one
-        // Hono did not route at all, which is a 404, so the null case is the
-        // closed default: no method is disclosed.
+        // Hono reports a param route's 405 with the concrete request path, not the registered one.
         const registered = registeredPathFor(byPath, c.req.path);
         const key = registered === null ? null : `${registered} ${methodSetKey(methods)}`;
         const allow = methods.filter(
@@ -347,15 +308,6 @@ export function createApp(table = routes) {
 
   app.notFound(() => errorResponse(404, "Not found."));
 
-  // The real error goes to the Worker's log; the caller gets the fixed
-  // sentence from the one message table (core/messages.js) and can learn
-  // nothing about ours from it. Only the method, the route's own registered
-  // path and the error are logged: the request's path is not, because a
-  // :param can be an account id or a one-time code. `routePath` is empty when
-  // the error is thrown before a route matched (the wildcard account
-  // middleware, a malformed request), and `(unmatched)` says so without
-  // naming any request path. The first argument is a constant string, so a
-  // `%` in the method cannot forge the log either.
   app.onError((error, c) => {
     console.error("[api] request failed:", c.req.method, c.req.routePath || "(unmatched)", error);
     return errorResponse(500, failureMessage("unexpected"));
@@ -401,9 +353,6 @@ export async function dispatch(request, ctx, table = routes) {
   return appFor(table).fetch(request, ctx);
 }
 
-// One key store per Worker isolate, the same choice src/index.js makes for the
-// Web Files bytes: D1 plus the storage provider, built once per isolate so no
-// route changes. A missing production dependency is a 503, not a second store.
 /** @type {ReturnType<typeof createMemoryStore>|undefined} */
 let keyStore;
 /**
@@ -502,8 +451,6 @@ function storeFor(env) {
       signin: createD1DeviceSigninStore(env.DRIVE_DB),
       keyProvider: keyProviderFor(env) ?? undefined,
       storage: storageLocationFromEnv(env),
-      // The dl Worker's download URL, minted beside each account-folder key
-      // when the deployment has a dl host and its grant secret (drive#517).
       download: downloadFromEnv(env),
       teams: createD1TeamStore(env.DRIVE_DB, {
         resolveAccountByEmail: accountByEmail(env.DRIVE_DB),
@@ -511,7 +458,6 @@ function storeFor(env) {
       deviceStore: createD1DeviceStore(env.DRIVE_DB, {
         keyProvider: keyProviderFor(env) ?? undefined,
       }),
-      // The prepaid pause (drive#586), only while PREPAID_PAUSE is "on".
       writesPaused:
         env.DRIVE_DB && prepaidPauseOn(env)
           ? (accountId) => writesPaused(env.DRIVE_DB, accountId)
@@ -552,27 +498,8 @@ export default {
       env,
       db: env.DRIVE_DB,
       store,
-      // The same sign-in gate the site Worker's account routes resolve
-      // (core/auth.js, over the same DRIVE_DB), so one session cookie
-      // is one account in both Workers and the approval page needs no second
-      // session system of its own. No database, secret or address is the closed
-      // door that resolver documents: null, and every account route 401s.
-      //
-      // This one is the two-factor instance, not the plain one: approving a
-      // device for an account that armed the factor verifies a TOTP or a
-      // recovery code through the library's own endpoints (device-routes.js),
-      // and those endpoints only exist on a chain the plugin registered
-      // (drive#848). It is awaited here rather than only on the approval path
-      // because this middleware builds `accounts` once per request; after the
-      // first call that is a module-cache read plus a WeakMap lookup, and the
-      // plugin itself is already loaded into this isolate by any earlier
-      // request, so no request after the first pays for loading it.
       /** @type {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}} | null} */
       accounts: await twoFactorAuthFor(env),
-      // The queue report's row lives on the same database the key store
-      // and the team store live on, so a report written on one instance
-      // is the row the next one reads (drive#318). Without a database
-      // there is no row to write, and the route answers 503.
       queues: createD1QueueStore(env.DRIVE_DB),
       now: Date.now,
     });

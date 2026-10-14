@@ -1,22 +1,3 @@
-// The account gate (drive issue #73, north star: Safe). One gate —
-// signedInAccount() in core/status.js — stands in front of every /api/*
-// route that touches an account, and every read and write is scoped to the
-// signed-in account's own prefix.
-//
-// Four things this file pins, each against real responses rather than by
-// reading the code:
-//   1. Deny by default: a walk of every route src/index.js registers, where
-//      each account route answers 401 to an anonymous request. A new route
-//      added without the gate fails the walk because its path is not one the
-//      test knows.
-//   2. One account's files are invisible to another: account A cannot list,
-//      read, write or delete account B's path, and neither one's Recently
-//      deleted leaks into the other.
-//   3. Downloads and previews can never render script from our own origin:
-//      an uploaded .html and .svg come back as attachments with a safe type
-//      and nosniff.
-//   4. One CSRF middleware refuses a cross-site write on every account POST.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { USAGE_ENDPOINT } from "../core/billing.js";

@@ -1,4 +1,3 @@
-// Split out of core/devices.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
 import { all, first, nowSeconds, run, sha256Hex } from "./db.js";
 import { deviceFromRow, renewDeviceCredentialRow, renewKeyRow } from "./devices-rows.js";
 import { tokensMatch } from "./http.js";
@@ -49,11 +48,6 @@ export function createKeyMethods(ctx) {
        * @returns {Promise<Device|null>}
        */
       async authenticate(accessKeyId, secret) {
-        // A closed account's key is refused here whatever its own row says: the
-        // close revokes every row, but a key the vendor refused to withdraw
-        // keeps its row live for the retry (revokeAccountCredentials), and that
-        // row must not open the api in the meantime. An account with no
-        // `accounts` row has never closed, so the outer join keeps it.
         const row = await first(
           db,
           `SELECT devices.* FROM devices
@@ -66,24 +60,9 @@ export function createKeyMethods(ctx) {
         if (device === null || device.secretHash === "") {
           return null;
         }
-        // The one compare in http.js. A device is stored only as the hash of its
-        // secret, so both sides here are hashes: the stored one, and the hash of
-        // the secret this request presented.
         if (!(await tokensMatch(device.secretHash, await sha256Hex(secret)))) {
           return null;
         }
-        // drive#713: on a provider that names a session (the STS path), a
-        // `device` row with no expiry at all is not a permanent key — it is a
-        // row the pre-#544 code wrote over a session the vendor has since
-        // ended, read as "never expires". The api cannot re-mint for the
-        // caller here (it holds only the secret's hash), and a machine kind's
-        // null is a different claim — "no hour was minted", which renewal
-        // starts — so this is the device kind only. The row is refused with no
-        // write, the same answer a wrong secret or a dead hour gets, and it is
-        // left in the table: `drive login` again is the way forward, and the
-        // minted answer names the session it dies at (drive#544). A provider
-        // that names no session keeps these rows working as the permanent keys
-        // they say they are.
         if (
           providerNamesSessions &&
           device.kind === "device" &&
@@ -98,22 +77,9 @@ export function createKeyMethods(ctx) {
           device.expiresAt !== null &&
           seen >= device.expiresAt
         ) {
-          // Past the hour and nothing renewed it: the credential is dead, so the
-          // row is not touched and no window is restarted.
           return null;
         }
-        // The renewal is written through the case, so a row whose kind never
-        // expires (null) keeps its null rather than being handed one, and the
-        // row keeps the later of the two expiries, so a request that read the
-        // row first and writes second cannot pull the hour back to the value it
-        // read (`renewKeyRow`). The `revoked_at IS NULL` guard repeats the read
-        // above: a row revoked between the two statements is not renewed by
-        // this one.
         await renewKeyRow(db, device, renewed.expiresAt ?? null, seen);
-        // The cap, counted and enforced on the request that proved the key is
-        // still held by something using it. A key the cap has taken is handed
-        // back read-only, so the write route refuses it (canWrite) while the
-        // reads on the same key keep working.
         const capped = await enforceAgentCaps({
           ...device,
           lastSeenAt: seen,
@@ -275,17 +241,7 @@ export function createKeyMethods(ctx) {
           return { error: "revoked" };
         }
         const at = nowSeconds(now());
-        // The device session re-mint (drive#749): a provider that names a
-        // session bounds the credential at the vendor, so a renewal mints a
-        // fresh one inside the row's own scope and swaps the row onto it.
-        // A provider that names no session (the key-pair path) falls through
-        // to the window move below, which is the whole renewal such a row has
-        // ever needed.
         if (device.kind === "device" && providerNamesSessions) {
-          // Cap first: a mint then a capped refusal would swap the row onto a
-          // credential nobody holds. Device rows are never capped today, so
-          // this is the same read the window move makes rather than a second
-          // rule, but the order still has to refuse before it writes.
           const capped = await enforceAgentCaps({ ...device, lastSeenAt: at });
           if (capped.capped) {
             return { error: "capped" };
@@ -297,9 +253,6 @@ export function createKeyMethods(ctx) {
           });
           const ttl = mintTtlSeconds(device.kind, credential.expiresIn);
           const expiresAt = ttl === null ? null : at + ttl;
-          // The row count proves the write landed, so a key revoked between
-          // the read and this write is reported rather than renewed
-          // (`renewDeviceCredentialRow`).
           const changed = await renewDeviceCredentialRow(
             db,
             device.id,
@@ -328,29 +281,16 @@ export function createKeyMethods(ctx) {
         }
         const renewed = renewKeyWindow(device, at);
         const before = device.expiresAt ?? null;
-        // `revoked_at IS NULL` repeats the read above, and the row count is what
-        // proves it landed: a key revoked between the two statements is not
-        // renewed by this one, so the answer says revoked rather than renewed.
-        // The row keeps the later of the two expiries, the same rule
-        // `authenticate` writes, so a slow request cannot pull a restarted hour
-        // back to the value it read before the restart.
         const changed = await renewKeyRow(db, device, renewed.expiresAt ?? null, at);
         if (Number(/** @type {{meta?: {changes?: number}}} */ (changed).meta?.changes ?? 0) === 0) {
           return { error: "revoked" };
         }
-        // The cap is enforced before the answer, on the same rows: a key at its
-        // ceiling is taken read-only here and the renewal is refused rather than
-        // handing a tool another hour of a credential the cap has withdrawn. The
-        // key row itself is not deleted or cancelled, so the person sees the key
-        // they had and `drive init` mints a new one beside it.
         const capped = await enforceAgentCaps({ ...renewed, lastSeenAt: at });
         if (capped.capped) {
           return { error: "capped" };
         }
         return {
           renewed: renewed.expiresAt !== before,
-          // The stamp this call just wrote, not the row as it was read: the
-          // answer a caller shows has to be the answer the store holds.
           device: publicDevice({ ...renewed, lastSeenAt: at }),
         };
       },

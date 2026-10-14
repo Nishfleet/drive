@@ -1,14 +1,3 @@
-// The speed ratchet (drive issue #226).
-//
-// bench/baseline.json is the checked-in ceiling. A stand-in run that is
-// slower than mean+noise fails, and a run that is faster than mean-noise
-// fails until the same PR lowers the row. This file is the verify-job gate:
-// npm test already runs `node --test`, so the detector is in the `verify`
-// job without writing a workflow file (the worker App cannot).
-//
-// The live mount timings live in cmd/drive/ratchet_test.go. The CLI row is
-// timed with hyperfine's JSON export when hyperfine is on PATH.
-
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";

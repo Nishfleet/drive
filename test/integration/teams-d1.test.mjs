@@ -1,27 +1,3 @@
-// Teams over the real D1 schema (drive issue #20).
-//
-// The unit proof (workers/api/test/teams.test.js) runs the same routes over
-// the in-memory stand-in, which cannot make two claims the real store has to
-// make:
-//
-//   1. A team and its members are ROWS, not a per-isolate Map. A team created
-//      through one store instance is visible through a second, freshly built
-//      store over the same database — the stand-in a second Worker isolate is.
-//      The "the owner's removal stops the member's key within a minute" claim
-//      is a claim about the next request, and that request may be a different
-//      instance; a Map cannot pass it by construction.
-//   2. The accounts the invite binds are REAL accounts. This file signs two
-//      people in through Better Auth (test/harness.mjs `signIn`), so the
-//      member's `account_id` is a row in Better Auth's own `user` table, not
-//      an id the test made up. That is the prerequisite the issue's first
-//      bullet needs: an email invite can only bind to a person if there is a
-//      shared account table to bind to.
-//
-// Every assertion about storage reads the row back with plain node:sqlite
-// statements, off the same engine, so a store that answered from a Map would
-// leave these tables empty and fail here (the rule
-// test/integration/share-links-d1.test.mjs follows).
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 

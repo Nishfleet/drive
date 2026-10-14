@@ -1,14 +1,3 @@
-// The send guards the edge bindings cannot be, on their own: the per-address
-// one (drive#550), the account-wide one (drive#878), each statement's
-// behaviour, the ceilings, and the third answer that is not either of them.
-//
-// The integration tests beside this one
-// (test/integration/signin-address-sends-d1.test.mjs,
-// test/integration/signin-account-sends-d1.test.mjs) prove the same
-// decisions against the real migration files on a real SQLite engine. This
-// file is the fast loop and the table of edges the route tests cannot reach
-// cleanly: a thrown write, and a clock the test owns.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {

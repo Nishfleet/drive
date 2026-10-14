@@ -1,46 +1,10 @@
-// GET /v1/export and GET /api/export — one account's own data, in one JSON
-// document (drive #34, "Account lifecycle: export …", the export half of the
-// issue; drive#547 puts the same handler on the site Worker so a signed-in
-// browser can download it before the api Worker is bound).
-//
-// The issue asks for "export all files and account data". This is the data
-// half, and it is a read: the account row, the account's keys (the device
-// rows, without any secret — the store keeps only a hash), the file-name
-// index, and the version history the meter already keeps. The bytes
-// themselves are the file half, served by the storage API and the dl Worker;
-// this route names each file's path and size so a caller has the manifest a
-// byte download walks.
-//
-// Every read is pinned to the signed-in account, and only the signed-in
-// account: `ctx.account.id` is the one filter on every statement, the same
-// rule `core/files.js` applies to storage keys (drive#73). A route that took
-// an account id from the request would let one account read another's rows,
-// so it takes none.
-//
-// The route is a read of the customer's own data for the customer, which is
-// not a reserved class: it discloses nothing to anyone but the account that
-// asked, revokes nothing and deletes nothing. Account deletion and signing
-// out every device — the other two lifecycle items, both customer-data
-// deletion — are Nish-reserved and are not part of this route.
-
 import { all } from "./db.js";
 import { errorResponse, json } from "./http.js";
 
-/**
- * The site Worker's own-data export, served without the api Worker binding
- * (drive#547). The CLI still calls `/v1/export` on the api Worker.
- */
 export const EXPORT_ENDPOINT = "/api/export";
 
-/** Filename the browser saves when the usage page downloads this document. */
 export const EXPORT_FILENAME = "drive-export.json";
 
-/**
- * How many rows one export page carries. A Worker response cannot hold a
- * drive's whole file history, so the export is a bounded page and says so;
- * the cap is a round number that keeps the JSON well inside a Worker's
- * response limits while still being one document a person can read.
- */
 export const EXPORT_ROW_CAP = 5000;
 
 /**
@@ -68,62 +32,25 @@ export async function exportRoute(request, ctx) {
     return errorResponse(405, "That method is not allowed here.", { allow: "GET" });
   }
   const account = ctx.account;
-  // The account id is the scope of every statement below. A gate that let a
-  // request through without one cannot reach a handler (the registry's gate
-  // answers 401 first), but the check is written here rather than assumed: an
-  // id-less account would otherwise silently export every row in the table.
   if (typeof account?.id !== "string" || account.id === "") {
     return errorResponse(401, "Sign in to export your drive.");
   }
 
-  // `listKeys` already answers the public shape (keystore.js `publicDevice`:
-  // the key id, kind, prefix, capabilities and the three instants, with no
-  // secret at all — the store keeps only a hash). The export carries those
-  // rows as they are, so the key half cannot gain a field the rest of the api
-  // never shows and there is no second copy of the shape to drift.
   const keys = await ctx.store.listKeys(account);
-  // The file index and the version history are the customer database's
-  // (DRIVE_DB). A deployment with no database bound has no files to name, so
-  // the answer carries empty lists rather than failing: an account with no
-  // database yet has an account and keys and nothing else, and that is a
-  // truthful export.
-  //
-  // Each list is read with a cap (EXPORT_ROW_CAP) and a keyset cursor, so a
-  // drive with more rows than one Worker response can hold is walked a page at
-  // a time instead of read whole. The reads are bounded by the cap, and
-  // `truncated` is set whenever a page came back full, so a partial export can
-  // never be mistaken for a complete one — a person who is told "you have no
-  // versions" when the page simply stopped would keep a data loss they never
-  // saw. The cursor is the last row's sort key, so the next page continues
-  // where this one stopped.
   const files = [];
   const versions = [];
   let filesTruncated = false;
   let versionsTruncated = false;
   let nextFileCursor = null;
   let nextVersionCursor = null;
-  // The cursors a previous page ended on, read back from the request so a
-  // caller can walk a large drive page by page with the same route. They are
-  // the last row's sort key and nothing else: a cursor is a position in this
-  // account's own ordered rows, never a way to name another account.
   const params = ctx.url?.searchParams;
   const fileCursor = params?.get("fileCursor") ?? "";
   const versionCursorAt = Number.parseInt(params?.get("versionAt") ?? "-1", 10);
   const versionCursorId = params?.get("versionId") ?? "";
   const hasFileCursor = fileCursor !== "";
-  // created_at is epoch milliseconds and always 0 or more, so the -1 default
-  // is a real "no cursor" state and never a value on the account's first row.
   const hasVersionCursor = !Number.isNaN(versionCursorAt) && versionCursorAt >= 0;
-  // A page that follows a cursor reads only the list that cursor belongs to.
-  // The other list was already delivered in full on an earlier page, and
-  // reading it again would repeat every one of its rows in the merged
-  // document. The first page (no cursor at all) reads both from the start.
   const isFirstPage = !hasFileCursor && !hasVersionCursor;
   if (ctx.db) {
-    // ?fileCursor resumes after the last path of the previous page (the file
-    // index is ordered by path and indexed on (account_id, name) with path as
-    // the primary key, so a keyset on path is index-backed and does not skip
-    // or repeat a row the way an offset would).
     if (hasFileCursor || isFirstPage) {
       const fileRows = await all(
         ctx.db,
@@ -155,9 +82,6 @@ export async function exportRoute(request, ctx) {
         nextFileCursor = files.at(-1)?.path ?? null;
       }
     }
-    // The version index is (account_id, created_at), so the keyset is
-    // (created_at, b2_file_id): created_at rides the index and b2_file_id
-    // breaks the ties between versions written in the same millisecond.
     if (hasVersionCursor || isFirstPage) {
       const versionRows = await all(
         ctx.db,
@@ -205,10 +129,6 @@ export async function exportRoute(request, ctx) {
       keys,
       files,
       versions,
-      // A partial export says so. A person told "you have no versions" when the
-      // page simply stopped would keep a data loss they never saw, so a list
-      // that stopped at the cap carries the flag and the cursor that continues
-      // it. An export that fit carries `complete: true`.
       complete: !filesTruncated && !versionsTruncated,
       next: {
         fileCursor: nextFileCursor,

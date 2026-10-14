@@ -1,23 +1,3 @@
-// One key revoked, in the store the live Worker wires (drive issue #402).
-//
-// `DELETE /v1/keys/:keyId` used to write D1 when a device store was bound
-// and leave the stand-in map alone, and `authenticate` reads that map first,
-// so a key this isolate had just revoked kept opening the storage API until
-// the isolate died. #236 shut the same hole on the bulk path; this is the
-// single-key one.
-//
-// The route-level proof (workers/api/test/key-revoke.test.js) drives
-// `DELETE /v1/keys/:keyId` through the dispatch table. This proof is the
-// composition the live Worker builds — `storeFor` in workers/api/src/index.js
-// is `createMemoryStore({ deviceStore: createD1DeviceStore(...) })` — over the
-// real schema, so the store that writes the revoke is the one the route calls
-// and the row it wrote is the row the next request reads.
-//
-// Every assertion about the row reads it back with plain node:sqlite off the
-// same engine `devices.js` runs its statements on (test/d1-sqlite.mjs
-// `makeMeteredDB`), so nothing here is checked against a store's own answer
-// about itself.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createD1DeviceStore } from "../../core/devices.js";

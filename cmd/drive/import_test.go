@@ -39,10 +39,6 @@ func TestImportPlanDryRunPassesRcloneItsOwnFlag(t *testing.T) {
 	}
 }
 
-// TestImportPlanStopsAtTheCacheCap is issue #543's import half: the copy
-// carries rclone's own --max-transfer with the cache's free headroom and
-// --cutoff-mode soft, so it stops after the file that reaches the cap instead
-// of filling the cache past it.
 func TestImportPlanStopsAtTheCacheCap(t *testing.T) {
 	plan, err := BuildImportPlan("linux", t.TempDir(), "/usr/bin/rclone", "photos:", false)
 	if err != nil {
@@ -56,17 +52,12 @@ func TestImportPlanStopsAtTheCacheCap(t *testing.T) {
 	if !hasArgPair(args, "--cutoff-mode", "soft") {
 		t.Errorf("args = %v, want --cutoff-mode soft so the copy stops rather than errors at the cap", args)
 	}
-	// No headroom passed means no throttle: a dry run, or a mount that did not
-	// answer.
 	plan.MaxBytes = 0
 	if strings.Contains(strings.Join(plan.Args(), " "), "--max-transfer") {
 		t.Errorf("args = %v, must not cap a copy with no headroom", plan.Args())
 	}
 }
 
-// TestImportStopRefusesAPastTheCapCache proves the guard's two answers: a
-// cache with room gets that room as its byte budget, and a cache at or over
-// its cap is a named stop before rclone is started.
 func TestImportStopRefusesAPastTheCapCache(t *testing.T) {
 	maxBytes, err := importStop(cacheHeadroom{CapBytes: 20 << 30, UsedBytes: 4 << 30}, true)
 	if err != nil {
@@ -82,8 +73,6 @@ func TestImportStopRefusesAPastTheCapCache(t *testing.T) {
 	if !strings.Contains(printedFailure(err), "cache is full") {
 		t.Errorf("stop = %q, want the cache-full words", printedFailure(err))
 	}
-	// An unanswered mount is not a refusal: the copy runs and the mount's own
-	// cap still applies.
 	if maxBytes, err := importStop(cacheHeadroom{}, false); err != nil || maxBytes != 0 {
 		t.Errorf("unanswered mount = (%d, %v), want (0, nil)", maxBytes, err)
 	}
@@ -169,9 +158,6 @@ func TestUsageListsImport(t *testing.T) {
 	}
 }
 
-// TestImportIntoWindowsTargetsTheVolumeRoot is drive#544: the destination used
-// to be the bare drive letter, and `D:` is a drive-relative path, so the copy
-// landed in whatever folder was last used on that drive instead of at the top.
 func TestImportIntoWindowsTargetsTheVolumeRoot(t *testing.T) {
 	orig := windowsImportDest
 	t.Cleanup(func() { windowsImportDest = orig })
@@ -185,17 +171,12 @@ func TestImportIntoWindowsTargetsTheVolumeRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The literal, not windowsVolumeRoot(letter) on both sides: a stand-in
-	// that returned the bare letter would satisfy a self-referential check
-	// and reproduce the drive-relative bug this test exists to pin.
 	if want := `D:\`; plan.Dest != want {
 		t.Errorf("dest = %q, want the volume root %q", plan.Dest, want)
 	}
 	if got, want := strings.Join(plan.Args(), " "), `copy photos:Movies D:\`; got != want {
 		t.Errorf("args = %q, want rclone copy into the volume root %q", got, want)
 	}
-	// The production helper itself, with no stand-in installed: `D:` becomes
-	// the volume root `D:\`, and a path that is already rooted is left alone.
 	for _, tc := range []struct{ letter, want string }{
 		{"D:", `D:\`},
 		{`D:\`, `D:\`},
@@ -208,8 +189,6 @@ func TestImportIntoWindowsTargetsTheVolumeRoot(t *testing.T) {
 }
 
 func TestImportIntoWindowsSurfacesTheLetterLookupFailure(t *testing.T) {
-	// The mount's letter lookup runs schtasks, which is absent off Windows: a
-	// named failure from it reaches the person instead of an empty destination.
 	orig := windowsImportDest
 	t.Cleanup(func() { windowsImportDest = orig })
 	windowsImportDest = func() (string, error) { return "", errors.New("schtasks: not found") }

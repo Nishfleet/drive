@@ -15,33 +15,10 @@ import (
 	"time"
 )
 
-// Device-key renewal (drive#749). A device key minted over a provider that
-// names a session (STS) dies when that session ends. The Worker re-mints under
-// the same row id (POST /v1/keys/<id>/renew). This file is the CLI half: it
-// asks before the session ends, writes the fresh credential into rclone.conf
-// and rclone.env, and reloads the remote. The VFS cache is not touched, so
-// queued uploads stay queued (the same promise RestartMount makes for a cap
-// swap).
-//
-// The loop runs two ways, matching prefetch: inside `drive mount --foreground`
-// as a goroutine, and as a sidecar login item for the systemd/launchd mount
-// that runs rclone itself. Foreground stops the sidecar first so both cannot
-// remint at once. The sidecar is not PartOf the mount unit, so it can restart
-// rclone without being stopped with it.
-
 const (
-	// deviceKeyRenewFraction is how far through a session the CLI asks for a
-	// fresh credential. 0.8 is the orchestrator's default on drive#749: a
-	// one-hour STS session is renewed at 48 minutes, with 12 minutes of slack
-	// for a slow Worker.
 	deviceKeyRenewFraction = 0.8
-	// deviceKeyRenewTick is how often the loop re-reads credentials while it
-	// waits. A shorter tick would spin; a longer one could overshoot the
-	// 80 percent mark on a short session.
-	deviceKeyRenewTick = 30 * time.Second
-	// deviceKeyRenewMargin is the fallback when a credentials file carries an
-	// expiry but no TTL (a file written before this loop stored the lifetime).
-	deviceKeyRenewMargin = 5 * time.Minute
+	deviceKeyRenewTick     = 30 * time.Second
+	deviceKeyRenewMargin   = 5 * time.Minute
 )
 
 // DeviceRenewLaunchdLabel is the macOS login item that runs `drive renew`.
@@ -121,10 +98,6 @@ func deviceRenewLaunchdPlist(driveBin, home string) string {
 	return b.String()
 }
 
-// startDeviceRenewSidecar starts the login-item loop for a background mount.
-// A foreground mount runs the loop in-process and must not start this too,
-// or two writers can swap rclone.conf onto a credential the api already
-// replaced.
 func startDeviceRenewSidecar(goos, home, itemPath string, foreground bool) error {
 	if foreground {
 		return nil
@@ -171,9 +144,6 @@ func stopDeviceRenewLoginItem(goos, home string) error {
 	return nil
 }
 
-// deviceRenewSlack is how long before expiresAt the CLI asks for a fresh
-// credential. With a known TTL that is the last 20 percent of the session
-// (80 percent used). Without one it is the five-minute agent-key margin.
 func deviceRenewSlack(ttlSeconds int64) time.Duration {
 	if ttlSeconds > 0 {
 		slack := time.Duration(float64(ttlSeconds)*(1-deviceKeyRenewFraction)) * time.Second
@@ -185,8 +155,6 @@ func deviceRenewSlack(ttlSeconds int64) time.Duration {
 	return deviceKeyRenewMargin
 }
 
-// needsDeviceRenew reports whether this device's storage key should be
-// re-minted now. A key with no expiry never needs one (the key-pair path).
 func needsDeviceRenew(expiresAt, ttlSeconds int64, now time.Time) bool {
 	if expiresAt <= 0 {
 		return false
@@ -237,8 +205,6 @@ func clearDeviceRenewFailure(home string) error {
 	return nil
 }
 
-// deviceRenewStatusLine is the named failure `drive status` prints instead of
-// "waiting to upload" when a renew did not land. Empty when there is none.
 func deviceRenewStatusLine(home string) string {
 	data, err := os.ReadFile(DeviceRenewStatePath(home))
 	if err != nil {
@@ -251,8 +217,6 @@ func deviceRenewStatusLine(home string) string {
 	return failDetail("device-key-renew-failed", errors.New(st.What)).Error()
 }
 
-// applyDeviceCredential writes the fresh pair into rclone.conf, rclone.env and
-// credentials.json. It does not touch the VFS cache directory.
 func applyDeviceCredential(home string, creds Credentials, cfg StorageConfig) error {
 	if err := checkConfigValue("access key", cfg.AccessKey); err != nil {
 		return err
@@ -401,10 +365,6 @@ func renewDeviceKeyOnce(home, api string, creds Credentials) error {
 		return failDetail("device-key-renew-failed", err)
 	}
 	cred := renewed.Credential
-	// LoadStorageConfig's sixth string is secretKey (config.go). Passing the
-	// disk endpoint/bucket/region in the named slots keeps those fields the
-	// values login stored, so a swapped argument would fail the bucket
-	// assertions in TestRenewDeviceKeyOnceRewritesBeforeExpiry.
 	disk := storageFromDisk(home)
 	cfg, err := LoadStorageConfig(disk.Endpoint, disk.Bucket, disk.Prefix, disk.Region, disk.DownloadURL, cred.Secret, disk)
 	if err != nil {

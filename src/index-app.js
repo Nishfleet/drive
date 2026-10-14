@@ -1,5 +1,3 @@
-// Split out of src/index.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { methodNotAllowed } from "hono/method-not-allowed";
@@ -44,6 +42,7 @@ import {
   handleTopUpRequest,
   TOPUP_ENDPOINT,
 } from "../core/topup.js";
+import { handleUnsubscribe, UNSUBSCRIBE_PATH } from "../core/unsubscribe.js";
 import { handleWebhookRequest, WEBHOOK_ENDPOINT } from "../core/webhook-routes.js";
 import { ACCESS_SIGNIN_PATH, handleAccessSignin } from "./access-signin.js";
 import {
@@ -115,81 +114,22 @@ export function createApp() {
   /** @type {DriveApp} */
   const app = new Hono({ strict: false });
 
-  // Trailing slashes handled by the library (redirects to canonical), so no
-  // hand-written `pathname === X || pathname === X + "/"` pair remains.
   app.use(trimTrailingSlash());
 
-  // Secure headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
-  // Strict-Transport-Security, and the rest Hono ships) on every response.
   app.use("*", secureHeaders());
 
-  // The api Worker's one route in this Worker's own namespace, registered
-  // ahead of the account gate so the gate never answers it (drive#354). The
-  // api registry declares POST /api/keys/revoke outside its /v1 family
-  // (workers/api/src/routes.js, the walk's one exception) because `drive
-  // logout` posts it with the storage key the rclone config holds: the key
-  // itself is the credential, so there is no session to gate on. It is the
-  // one deliberate hole in the deny-by-default gate below — a wrong key is
-  // the api Worker's own 401, a right one its 204, and no account route is
-  // reachable through it — and test/account-gate.test.mjs pins that it is the
-  // only such route.
   app.all("/api/keys/revoke", forwardToApi);
 
-  // Deny-by-default account gate on /api/*. Public routes are declared in
-  // PUBLIC_ROUTES above.
   app.use("/api/*", accountGate);
 
-  // Same-origin / CSRF protection on every non-GET /api/* route except the
-  // two public POSTs that keep their handler copies. Registered after the
-  // account gate so an anonymous request is its 401, not a 403: the gate is
-  // the outer rule. A caller with no Origin and no Sec-Fetch-Site (curl, the
-  // Go CLI) is not a browser, so it passes this check and the account gate
-  // is what holds it. /api/starter is a write route under this one rule
-  // (drive#539), so it carries the check without its own registration.
   app.use("/api/*", csrfWhenBrowser);
 
-  // The sign-in family (Better Auth) under its basePath (src/auth.js),
-  // mounted after both checks above: PUBLIC_ROUTES passes it through the
-  // account gate, and a cross-site browser post is refused here first.
-  // Method-limited to GET and POST, which is the whole stock surface, so a
-  // request with any other method is a 405 rather than a page-less call into
-  // the library.
   app.on(["GET", "POST"], AUTH_FAMILY, authApiHandler);
 
-  // --------------------------------------------------- the second family (/v1/*)
-  // The api Worker's family on the one host that answers the CLI's one base
-  // (drive#156/#341: `drive agents` posts /v1/keys to the same APIBase
-  // `drive search` posts /api/search to, cmd/drive/api.go). This Worker is the
-  // one that answers that address, so /v1/* is forwarded here rather than
-  // served here.
-  //
-  // The prefix is the api registry's own (workers/api/src/routes.js
-  // API_PREFIX, the value every path in that registry starts with), spelled
-  // here the way every route path on this app is spelled, and
-  // cloudflare.config.ts carries the same list in runWorkerFirst, which is
-  // what routes a /v1/* request to this route instead of the asset layer.
-  // test/deploy-assets.test.mjs pins this route, the config's list and the
-  // registry against that one constant.
   app.all("/v1/*", forwardToApi);
 
-  // ---------------------------------------------------------- account routes
-  // Each method is registered on its own (rather than with app.all) so Hono's
-  // methodNotAllowed middleware answers a wrong method with 405 and an Allow
-  // header; the gate above already answered an anonymous caller 401.
-
-  // The first-run page's live flip (issue #32, #45, #556). The third
-  // argument is the queue a device on this account reported, read from the row
-  // the api Worker's report route wrote (drive issue #318): #308 made it an
-  // argument to the handler, and the read is the one line that fills it. The
-  // fourth is the account's live device rows, which are what let the page say
-  // connected at all: until #556 this route carried none, so the hard-coded
-  // "waiting" it answered was the only answer it had.
   app.get(STATUS_ENDPOINT, async (c) => {
     const account = c.get("account");
-    // Both reads answer the same poll, so they go together: the page asks
-    // every POLL_INTERVAL_MS and a second round-trip before the first answer
-    // is a longer wait on a page someone is watching. Neither read depends on
-    // the other.
     const [upload, devices] = await Promise.all([
       account ? liveQueueFor(c.env, account) : null,
       account ? liveDevicesFor(c.env, account) : [],
@@ -197,15 +137,6 @@ export function createApp() {
     return handleFirstRunStatusRequest(c.req.raw, account, upload, devices);
   });
 
-  // Search reads only the D1 file index (issue #18), behind the account gate.
-  // The write half of the same module keeps the index current by wrapping the
-  // store, so an upload, delete or restore is in the index before the next
-  // search. The rebuild is not a web route: it runs from the scheduled handler.
-  // Hono matches only registered paths, so deeper paths (e.g. /api/search/index)
-  // would hit the notFound handler and lose the asset fallback the old
-  // switch gave them. A wildcard route keeps the safety review intact
-  // (no reindex starts from a web request) while forwarding anything that
-  // is not the exact search endpoint to the asset worker unchanged.
   app.get(`${SEARCH_ENDPOINT}/*`, (c) => {
     const p = c.req.path;
     if (p !== SEARCH_ENDPOINT && p !== `${SEARCH_ENDPOINT}/`) {
@@ -214,21 +145,11 @@ export function createApp() {
     return handleSearchRequest(c.req.raw, c.env.DRIVE_DB, c.get("account"));
   });
 
-  // The files lane (issue #73). Signed-in callers read and write only their
-  // own prefix; anonymous callers never reach here (the gate answered 401).
   app.get(FILES_ENDPOINT, filesHandler);
   app.post(FILES_ENDPOINT, filesHandler);
   app.get(`${FILES_ENDPOINT}/*`, filesHandler);
   app.post(`${FILES_ENDPOINT}/*`, filesHandler);
 
-  // The optional notes starter (drive issue #15). A GET describes the template
-  // and writes nothing; a POST with `action: "create"` fills in the starter's
-  // own files, and only the ones that are missing. Same store handling as the
-  // files lane: the handler scopes the store to the account it is handed, and
-  // no withIndex, so a starter's files are not search rows a person never
-  // asked to index. Off by default is enforced by the gate and the method
-  // together: nothing in the Worker calls the create for a person, and the
-  // only route that runs it is a POST behind the account gate.
   /** @param {DriveContext} c */
   const starterHandler = (c) => {
     const account = c.get("account");
@@ -242,9 +163,6 @@ export function createApp() {
   app.get(STARTER_ENDPOINT, starterHandler);
   app.post(STARTER_ENDPOINT, starterHandler);
 
-  // Branches (build step 7, drive#8): the folder copy, the diff, approve and
-  // discard. The store is handed in unscoped (the handler scopes it) and
-  // without withIndex, so a branch's own copies never land in the search index.
   /** @param {DriveContext} c */
   const branchesHandler = (c) =>
     handleBranchesRequest(
@@ -264,10 +182,6 @@ export function createApp() {
   app.get(`${BRANCHES_ENDPOINT}/*`, branchesHandler);
   app.post(`${BRANCHES_ENDPOINT}/*`, branchesHandler);
 
-  // Agent undo (build step 11, issue #13): the one-click rewind of an agent's
-  // work, on the branch copy src/branches.js already keeps. Same store
-  // handling as the branches route above: the store goes in unscoped and
-  // handleRewindRequest scopes it after the account gate (drive#854).
   /** @param {DriveContext} c */
   const rewindHandler = (c) =>
     handleRewindRequest(
@@ -284,18 +198,11 @@ export function createApp() {
   app.get(`${REWIND_ENDPOINT}/*`, rewindHandler);
   app.post(`${REWIND_ENDPOINT}/*`, rewindHandler);
 
-  // The usage page's and the CLI's read of the month's money (issues #7, #53).
   app.get(USAGE_ENDPOINT, async (c) => {
     const account = c.get("account");
     /** @type {number} */
     let capUsd = BILLING_CONFIG.defaultCapUsd;
     let cardOnFile = false;
-    // The month's own metered numbers, read from the same store and the same
-    // `monthUsageThrough` the cap walk and the invoice read (drive#496). This
-    // is what turns /api/usage from an empty month into the account's real
-    // one, including the download bytes the earlier read dropped. It is null
-    // when there is no binding, so the handler falls back to the empty month
-    // rather than failing the page.
     /** @type {Record<string, unknown>|null} */
     let usage = null;
     if (!account) return unauthorizedResponse();
@@ -303,11 +210,6 @@ export function createApp() {
     if (c.env.DRIVE_DB) {
       const store = createD1DeviceStore(c.env.DRIVE_DB);
       capUsd = await store.getCapUsd(account.id);
-      // The card on file is the accounts row's own stamp, read the same way as
-      // the cap (drive#417). Until it is really on file the usage page says no
-      // charge has been made and shows no bill, instead of a balance line a
-      // card-less account would look like it had been charged. It is
-      // the display flag alone: the cap line and the write cap are unchanged.
       cardOnFile = await store.cardAdded(account.id);
       usage = /** @type {Record<string, unknown>} */ (
         await store.monthUsage(account.id, { capUsd })
@@ -318,15 +220,6 @@ export function createApp() {
         (await links.shares.countOpen(account.id, now)) +
         (await links.requests.countOpen(account.id, now));
     }
-    // The third argument is the live rclone upload queue, reported by the
-    // account's device over its device token and stored in DRIVE_DB
-    // (core/queues.js, drive issue #318). It is null when no
-    // device has reported recently, which is the honest answer for an account
-    // whose no device has signed in yet or whose mount is gone (drive issue
-    // #308), so the usage page hides the line rather than showing a stale
-    // one.
-    // The prepaid balance line rides beside the cap line (drive#586), so
-    // `drive status` prints the Worker's words, the top-up prompt included.
     const balance = c.env.DRIVE_DB
       ? balanceLine(await balanceCents(c.env.DRIVE_DB, account.id), {
           pauseOn: prepaidPauseOn(c.env),
@@ -346,21 +239,10 @@ export function createApp() {
       { ...account, capUsd, cardOnFile, usage, fairUse, openPublicLinks },
       await liveQueueFor(c.env, account),
       balance,
-      // The month these numbers belong to, sent as its first instant (drive#559):
-      // the one UTC month boundary the meter, the cap walk and the invoice read
-      // (src/meter.js monthStart). It rides on the answer so the page can write
-      // the month's name in the browser's own words and the customer can check
-      // their statement against it. It is not worked out here in billing.js:
-      // this file already owns the month, and a second boundary in the handler
-      // would be a second answer to the same question.
       new Date(monthStart(Date.now())).toISOString(),
     );
   });
 
-  // Own-data export (drive#547): the same handler GET /v1/export runs, served
-  // here so a signed-in browser can download it before the api Worker is bound.
-  // The account gate already answered 401 for a stranger. No DRIVE_DB means
-  // no keys and no file rows, which is a truthful empty export, not a 503.
   app.get(EXPORT_ENDPOINT, (c) => {
     const account = c.get("account");
     if (!account) return unauthorizedResponse();
@@ -376,13 +258,8 @@ export function createApp() {
     });
   });
 
-  // The prepaid balance (drive#586): the balance and recent ledger lines, and
-  // a top-up's checkout. The balance is credited only by the signed webhook
-  // below, never by this route or the checkout's redirect.
   app.get(BALANCE_ENDPOINT, async (c) => {
     const account = c.get("account");
-    // The size the bill is worked from, for the "your balance lasts" line.
-    // A read that fails leaves the line out; it never fails the balance.
     let size30Bytes;
     if (account && c.env.DRIVE_DB) {
       try {
@@ -400,8 +277,6 @@ export function createApp() {
       size30Bytes,
     });
   });
-  // The history add-on: how long deleted and replaced copies are kept. The
-  // price shown for a longer window is worked from the same size30 the bill is.
   app.get(HISTORY_ENDPOINT, async (c) => {
     const account = c.get("account");
     let size30Bytes = 0;
@@ -412,17 +287,13 @@ export function createApp() {
           await store.monthUsage(account.id, { capUsd: await store.getCapUsd(account.id) })
         );
         size30Bytes = Number(month.size30Bytes ?? 0);
-      } catch {
-        // The preview then shows the price for old copies alone.
-      }
+      } catch {}
     }
     return handleHistoryRequest(c.req.raw, account, c.env.DRIVE_DB, { size30Bytes });
   });
   app.post(HISTORY_ENDPOINT, (c) =>
     handleHistoryRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
   );
-  // Outbound webhooks (drive#901): the account's endpoints, a test send and the
-  // delivery log. Session-cookie routes like the balance beside them.
   app.get(WEBHOOK_ENDPOINT, (c) =>
     handleWebhookRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
   );
@@ -461,11 +332,6 @@ export function createApp() {
     });
   });
 
-  // The card-update path the payment-failed copy points at (drive#575). A GET
-  // because it is a link a browser follows, and the answer is a 302 to the
-  // provider's customer portal rather than a JSON body. The account gate
-  // above already answered an anonymous caller 401, so a stranger never
-  // reaches a provider call.
   app.get(PORTAL_ENDPOINT, (c) => {
     const dodo = dodoEnv(c.env);
     return handlePortalRequest(c.req.raw, c.get("account"), {
@@ -476,10 +342,6 @@ export function createApp() {
     });
   });
 
-  // Devices page (drive#525): list live keys and revoke one at the provider.
-  // The site Worker holds DRIVE_DB, so this route works while the api Worker
-  // is undeployed (#342). The store is built with the same keyProviderFor
-  // the cap and close paths use, so a revoke here withdraws the vendor key.
   /** @param {DriveContext} c */
   const devicesHandler = (c) => {
     const db = c.env.DRIVE_DB;
@@ -493,15 +355,9 @@ export function createApp() {
   app.get(`${DEVICES_ENDPOINT}/*`, devicesHandler);
   app.delete(`${DEVICES_ENDPOINT}/*`, devicesHandler);
 
-  // `drive cap <dollars>` and the usage page's cap write (drive#64). The
-  // amount is parsed with parseCapUsd() and persisted as accounts.cap_cents.
   app.get(CAP_ENDPOINT, (c) => handleCapRequest(c.req.raw, c.get("account"), null));
   app.post(CAP_ENDPOINT, async (c) => {
     const db = c.env.DRIVE_DB;
-    // The full two-provider choice (S3, else iDrive), not the S3 one alone
-    // (drive#496): on an iDrive deployment a store wired to the S3 provider
-    // alone has no provider that can revoke at the storage side, so the swap
-    // that a cap write performs was a no-op on the drive itself.
     const store = db
       ? createD1DeviceStore(db, { keyProvider: keyProviderFor(c.env) ?? undefined })
       : null;
@@ -510,11 +366,6 @@ export function createApp() {
       deviceName: sessionLabel(c.req.raw),
     });
     const account = c.get("account");
-    // After a cap raise, restore what the prepaid pause took (drive#589),
-    // because a pause that ran first left no `capped_from` for the raise to
-    // read. The swap is a no-op when the balance is still $0 or the pause
-    // never took a key. Only a cap write that actually ran (2xx) does this:
-    // a 400 must not swap keys.
     if (answered.ok && store && account && db) {
       await pauseAccountKeys(account.id, {
         db,
@@ -525,9 +376,6 @@ export function createApp() {
     return answered;
   });
 
-  // Account close (drive#235): confirm by typing email, keys revoked at once,
-  // files after 30 days. The GET feeds the usage page; both POSTs are the
-  // same gate as every other account write.
   app.get(CLOSE_ENDPOINT, async (c) => {
     const deps = closeDepsFor(c.env);
     if (!deps) {
@@ -550,9 +398,6 @@ export function createApp() {
     return handleCloseCancelRequest(c.req.raw, c.get("account"), deps);
   });
 
-  // Share links and upload requests (issue #19). The share/request roots are
-  // the owner's side and stand behind the gate; the token-carrying child
-  // routes are public and registered below.
   app.get(SHARE_ENDPOINT, (c) =>
     withFileStore(c, (store) =>
       handleShareRequest(c.req.raw, store, linksFor(c.env), c.get("account")),
@@ -561,20 +406,13 @@ export function createApp() {
   app.post(SHARE_ENDPOINT, (c) =>
     withFileStore(c, (store) =>
       handleShareRequest(c.req.raw, store, linksFor(c.env), c.get("account"), {
-        // The mint route's own bound (drive issue #549). The per-account
-        // open-link cap lives in the handler; this is the edge limit.
         limiter: c.env.SHARE_MINT_RATE_LIMITER,
-        // The known-bad list's D1 half (drive issue #826): a mint reads the
-        // rows the feed cron wrote, on the request, with no network of its
-        // own. The same binding every other authenticated route carries.
         db: c.env.DRIVE_DB,
         ...mailFromEnv(c.env),
         deviceName: sessionLabel(c.req.raw),
       }),
     ),
   );
-  // DELETE revokes a link (`drive share --revoke`); the handler answers it,
-  // but a route that is not registered is a 405 before the handler runs.
   app.delete(SHARE_ENDPOINT, (c) =>
     withFileStore(c, (store) =>
       handleShareRequest(c.req.raw, store, linksFor(c.env), c.get("account")),
@@ -588,7 +426,6 @@ export function createApp() {
   app.post(REQUEST_ENDPOINT, (c) =>
     withFileStore(c, (store) =>
       handleRequestRequest(c.req.raw, store, linksFor(c.env), c.get("account"), {
-        // The mint route's own bound (drive issue #549).
         limiter: c.env.REQUEST_MINT_RATE_LIMITER,
         ...mailFromEnv(c.env),
         deviceName: sessionLabel(c.req.raw),
@@ -601,38 +438,21 @@ export function createApp() {
     ),
   );
 
-  // ----------------------------------------------------------- public routes
-  // Sign-ups (GET is a 405 from methodNotAllowed; POST is the route).
   app.post("/api/waitlist", (c) =>
     handleWaitlistRequest(c.req.raw, c.env.WAITLIST_DB, c.env.WAITLIST_RATE_LIMITER),
   );
 
-  // The public savings calculator (drive issue #14). GET only; the handler
-  // refuses every other method. No account: it quotes the price, not a bill.
   app.get(QUOTE_ENDPOINT, (c) => handleQuoteRequest(c.req.raw));
 
-  // The meter's event intake (issue #6), behind the provider's shared token.
   app.post("/api/storage-events", (c) =>
     handleStorageEventRequest(c.req.raw, c.env.METER_DB, c.env.METER_EVENT_TOKEN),
   );
 
-  // The sign-in screen's two steps (build step 9, issue #10; Better Auth over
-  // D1, #181). The handler enforces the edge limits (issue #147) before it
-  // reads the body.
   app.post(SIGNIN_ENDPOINT, (c) => handleSigninRequest(c.req.raw, c.env));
-  // The link a sign-in email carries (drive#181): GET only.
   app.get(SIGNIN_LINK_PATH, (c) => handleSigninLinkVerify(c.req.raw, c.env));
-  // Sign-in with the identity Cloudflare Access proved, on the test address
-  // only (drive#342; src/access-signin.js answers 404 when it is not set up).
   app.get(ACCESS_SIGNIN_PATH, (c) => handleAccessSignin(c.req.raw, c.env));
   app.post(ACCESS_SIGNIN_PATH, (c) => handleAccessSignin(c.req.raw, c.env));
 
-  // The logged-out side of a share/request token (issue #19). The token in
-  // the path or query is the whole proof; an expired or revoked one is 404.
-  // A browser navigation gets the landing page (src/share-page.js, drive#883:
-  // the page that carries the report-this-link mail); the bytes stay on the
-  // embed/open flags and every non-document client, through the same
-  // handleShareFileRequest as before.
   app.get(`${SHARE_LINK_PREFIX}/*`, (c) =>
     withFileStore(c, (store) =>
       handleShareLinkVisit(c.req.raw, store, linksFor(c.env), {
@@ -654,10 +474,6 @@ export function createApp() {
         db: c.env.DRIVE_DB,
         prepaidPause: prepaidPauseOn(c.env),
         ...fairUseUploadOptions(c.env),
-        // The known-bad refusal's owner (drive issue #826): a drop that hits
-        // the list tells the account the link belongs to, so the route hands
-        // the drop the one resolver that reads that account — the same
-        // `ownerFor` the public info page and the nightly digest use.
         owner: ownerFor(c.env),
         ...mailFromEnv(c.env),
         size30DayUnpaid: c.env.DRIVE_DB
@@ -667,8 +483,6 @@ export function createApp() {
     ),
   );
 
-  // Dodo's signed payment webhook (drive#586): credits a top-up, records a
-  // refund. Public, because the signature is the proof.
   app.post(BILLING_WEBHOOK_PATH, (c) =>
     handleBillingWebhook(c.req.raw, {
       db: c.env.DRIVE_DB,
@@ -679,20 +493,14 @@ export function createApp() {
     }),
   );
 
-  // The send lane: closed with no EMAIL_SEND_TOKEN set (core/email-send.js).
+  app.get(UNSUBSCRIBE_PATH, (c) => handleUnsubscribe(c.req.raw, c.env));
   app.post(SEND_EMAIL_PATH, (c) => handleSendEmailRequest(c.req.raw, c.env));
 
-  // The health endpoint the outside monitor polls (issues #96, #36).
   app.get(HEALTH_PATH, (c) => handleHealthRequest(c.req.raw, c.env));
 
-  // ------------------------- method handling, 404, 405 and errors: the library
   app.use("*", methodNotAllowed({ app }));
   app.notFound((c) => {
     if (c.req.path.startsWith("/api/")) {
-      // The old hand-written switch fell through to assets for paths it
-      // didn't match (e.g. /api/search/index, which is not the exact
-      // search endpoint). Preserve that fallback so unknown API paths
-      // that are subpaths of a registered prefix still serve the page.
       if (c.req.path.startsWith(`${SEARCH_ENDPOINT}/`)) {
         return c.env.ASSETS.fetch(c.req.raw);
       }
@@ -702,25 +510,9 @@ export function createApp() {
   });
   app.onError(async (err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
-    // A 500 that only reached console.error was invisible: the Worker shipped
-    // with `observability: null` and no error pipeline (issue #520). Sentry
-    // sees it now; the console line stays for Workers Logs, which
-    // `observability` in cloudflare.config.ts turns on. Awaited rather than
-    // fired (drive#847): Hono awaits onError, so the POST is in flight before
-    // the 5xx answer goes out, which is what keeps a short-lived request's
-    // error from being cut off.
     await captureError(err, `${c.req.method} ${c.req.path}`, sentryFor(c.env));
     console.error("[pricing] request failed:", err.message, err.stack, err);
-    // drive#584: a browser that asked for a page gets the site's own 5xx page,
-    // so a failure deep in the Worker still looks like the site. An API caller
-    // keeps the one failure table's JSON, so a CLI never has to parse HTML.
-    // The JSON answer keys off the route family, not the Accept header alone:
-    // Java's HttpURLConnection sends a text/html default, and /v1/* is the CLI.
     const accept = c.req.header("accept") ?? "";
-    // The path family, not the Accept header (Java's HttpURLConnection sends a
-    // text/html default and /v1/* is the CLI). A bare "/api" or "/v1" cannot
-    // reach here: both are real routes (API_PATH_PREFIX's own handler and a
-    // sites route), so this sees only subpaths of either family.
     const isApiPath =
       c.req.path.startsWith("/api/") || c.req.path.startsWith(`${API_PATH_PREFIX}/`);
     if (accept.includes("text/html") && !isApiPath && c.env.ASSETS) {
@@ -730,12 +522,6 @@ export function createApp() {
       return c.env.ASSETS.fetch(new Request(errorUrl, { headers: c.req.raw.headers }))
         .then(
           (asset) =>
-            // The answer is built by hand, not by copying the asset's headers: an
-            // error response must never be cacheable, and a page request's
-            // headers (a cache modifier the browser sent) cannot ride onto a 500
-            // from an unrelated path. src/seo.js marks /500.html noindex, so a
-            // crawler that follows a broken link keeps the error out of its
-            // index too.
             new Response(asset.body, {
               status: 500,
               headers: {
