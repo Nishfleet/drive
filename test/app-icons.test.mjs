@@ -1,6 +1,3 @@
-// The home-screen icons and the web manifest (polish gap 7): every page links
-// them, and every file the manifest and the links name ships.
-
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";

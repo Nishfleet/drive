@@ -1,13 +1,3 @@
-// Customer-facing words are ours (drive issue #195).
-//
-// The main competitor's feature names and signature phrases, read from its
-// public site and docs on the date next to each term. This file fails when any
-// of them appear in the paths customers see. Internal rival analysis in
-// docs/spec.md, docs/scoreboard.md and docs/build-spec.md is exempt, and those
-// files are not in the trees this test walks. The rival's own name is barred
-// from every tracked file by test/no-rival-terms.test.mjs, so it is not a term
-// here. Drive#387 dropped public rival names and prices.
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";

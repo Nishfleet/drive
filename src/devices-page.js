@@ -1,16 +1,7 @@
-// The devices page (drive#525): list this account's live keys and revoke one
-// at the provider. The site Worker owns the page and this route, so a lost
-// laptop can be turned off even while the api Worker is undeployed (#342).
-//
-// The store is core/devices.js: `listPublic` is the same public shape
-// GET /v1/keys returns, and `revokeKey` withdraws the credential at the
-// vendor. Nothing here mints a key or reads a secret.
-
 import { errorResponse, json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 import { unauthorizedResponse } from "../core/status.js";
 
-/** The route family the devices page reads and writes. */
 export const DEVICES_ENDPOINT = "/api/devices";
 
 /**

@@ -1,16 +1,3 @@
-// Tests for the notes starter (drive issue #15): the template module, the
-// endpoint handler, and the shipped page. Two halves:
-//
-// 1. The module itself: the template files' shape, the read/write
-//    contract, and the one copy of the page's words — src/starter.js
-//    owns starterFiles(), STARTER_COPY and the endpoint, and the
-//    shipped page cannot carry its own copy (the same gate
-//    test/usage.test.mjs runs for src/usage.js).
-// 2. The shipped page: public/starter.html is a static asset that cannot
-//    import the module, so this reads the file and fails CI when its
-//    copy drifts from the module — the pages that run via the Worker
-//    instead test the endpoint live (test/account-gate.test.mjs).
-
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";

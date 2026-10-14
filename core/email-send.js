@@ -1,24 +1,3 @@
-// One send lane for every drive email, on Cloudflare Email Sending: the
-// Worker's `send_email` binding (env.EMAIL.send), the same stock provider the
-// rest of the fleet mails through. This module is the one place a message
-// reaches the network, so the headers, the text/HTML pair and the failure
-// handling are written once.
-//
-// Two things are deliberately not here, and both are named where they land:
-//   - a durable send ledger. Deduplication ("do not send the cap warning
-//     twice in the same month") needs a per-account record, and this Worker
-//     has no store for it yet (the waitlist D1 is the product's only table).
-//     The caller owns "once per month" until the meter's ledger lands
-//     (build step 5 / drive#6); the send function takes the decision as data.
-//   - Dodo. Dodo sends its own failure and receipt mail, and a receipt sent
-//     from two systems is the worse bug. These templates are the ones Dodo
-//     does not send; whether the receipt moves to Dodo's template is a
-//     follow-up (drive#47).
-//
-// Plain logic plus the standard Request/Response, so node --test exercises
-// every branch without a Worker runtime, like src/waitlist.js and
-// core/status.js.
-
 import { EMAIL_KINDS, FROM_NAME, REPLY_TO_LOCAL, renderEmail } from "./emails.js";
 import { json } from "./http.js";
 
@@ -48,10 +27,6 @@ function requireBinding(emailBinding) {
   return /** @type {EmailBinding} */ (emailBinding);
 }
 
-// The deployment's own token, compared without an early return so the
-// comparison does not say where the bytes diverge. This token -- not the
-// same-origin rule below, which a curl without an Origin header passes -- is
-// what stops our domain being used as a mail relay.
 /**
  * @param {string} presented
  * @param {string} expected
@@ -100,12 +75,7 @@ export function isSameOriginRequest(request) {
   if (origin === null) {
     return true;
   }
-  // Every response carries `Referrer-Policy: no-referrer`, and a Chromium
-  // browser then sends `Origin: null` on a form POST to the page's own origin,
-  // so the approve button on the device page was refused as "not from the
-  // drive". `Sec-Fetch-Site` is set by the browser itself and a page cannot
-  // forge it: `same-origin` there says the request came from this origin, and
-  // a cross-site form carries `cross-site` and is still refused.
+  // A Chromium browser sends `Origin: null` on a form POST to the page's own origin when the page sets `Referrer-Policy: no-referrer` (https://fetch.spec.whatwg.org/#origin-header).
   if (origin === "null") {
     return request.headers.get("sec-fetch-site") === "same-origin";
   }
@@ -156,23 +126,12 @@ export async function sendEmail(emailBinding, request) {
   if (typeof to !== "string" || to.trim().length === 0) {
     throw new TypeError(`sendEmail needs a recipient address, got ${to}`);
   }
-  // Required, not defaulted: an unset sender is a deployment that is not
-  // configured, and a placeholder domain would fail every send while looking
-  // configured. core/email-send.js turns this into a 503.
   if (typeof from !== "string" || from.trim().length === 0) {
     throw new TypeError("sendEmail needs a from address (the deployment's MAIL_FROM)");
   }
-  // renderEmail throws on an unknown kind, so a typo fails here and not as a
-  // 202 with an empty body. The route renders first (so a bad body is a 400
-  // rather than a 502) and passes the result in.
   const senderName = typeof fromName === "string" ? fromName : FROM_NAME;
-  // Derived from the deployment's own sending address and passed into the
-  // renderer, so the Reply-To header and the footer line the template prints
-  // are the same address by construction (drive#522).
   const replyTo = replyToFor(from.trim());
   const { subject, text, html } = rendered ?? renderEmail(kind, { ...data, replyTo });
-  // Both parts: some clients show only the text part, and a text part is a
-  // large part of the spam score.
   const message = await binding.send({
     to: to.trim(),
     from: { email: from.trim(), name: senderName },
@@ -194,11 +153,6 @@ export async function sendEmail(emailBinding, request) {
   return { messageId: message.messageId, subject };
 }
 
-// The five kinds, as a body must name them: an unknown kind is a 400 with the
-// allowed list named, so a caller with a typo learns the names instead of
-// guessing. The data is rendered here, not inside sendEmail, so a template
-// that cannot be built from the body's data is a request error (400) and not a
-// provider failure (502) the caller would retry forever.
 /**
  * @param {unknown} body
  * @param {string} replyTo the deployment's own reply address, derived from
@@ -210,8 +164,6 @@ function readRequest(body, replyTo) {
   if (typeof body !== "object" || body === null) {
     return { ok: false, error: "Send a JSON object with an email kind, an address and its data." };
   }
-  // Narrowed from `unknown` by the check above; the object's own fields are
-  // read by name and each is type-checked before it is used.
   const { kind, to, data } = /** @type {Record<string, unknown>} */ (body);
   if (typeof kind !== "string" || !EMAIL_KINDS.includes(kind)) {
     return {
@@ -231,9 +183,6 @@ function readRequest(body, replyTo) {
     );
     return { ok: true, kind, to: to.trim(), data, rendered };
   } catch (error) {
-    // A missing or unusable amount is named, never defaulted: a receipt sent
-    // with a $0 bill because the meter lost a number is the worst outcome
-    // this lane can produce.
     return { ok: false, error: `Cannot build the ${kind} email: ${String(error)}` };
   }
 }
@@ -273,29 +222,18 @@ export async function handleSendEmailRequest(request, env) {
     return json({ error: "EMAIL is not bound on this deployment." }, 503);
   }
   if (typeof env.MAIL_FROM !== "string" || env.MAIL_FROM.trim().length === 0) {
-    // A deployment with no sending domain yet: closed, and it says which
-    // setting is missing rather than mailing from a placeholder.
     return json({ error: "MAIL_FROM is not set on this deployment." }, 503);
   }
-  // Bound once: the check above narrows the field, and a property of a
-  // mutable object is not narrowed across the awaits below. The reply address
-  // is derived from this same setting, so a body with bad data is still a 400
-  // rather than a send failure (drive#522).
   const mailFrom = env.MAIL_FROM;
   let read;
   try {
     read = readRequest(body, replyToFor(mailFrom.trim()));
   } catch (error) {
-    // A MAIL_FROM that is set but is not an address cannot render a reply
-    // address, so it is named as the missing setting it is rather than
-    // swallowed into a 400 about the body's data.
     return json({ error: `MAIL_FROM is not a usable sending address: ${String(error)}` }, 503);
   }
   if (!read.ok) {
     return json({ error: read.error }, 400);
   }
-  // Bound once: the `ok` discriminant narrows the result, and a union property
-  // is not narrowed across the awaits below.
   const wanted = read;
   try {
     const sent = await sendEmail(env.EMAIL, {
@@ -306,8 +244,6 @@ export async function handleSendEmailRequest(request, env) {
     });
     return json({ ok: true, kind: wanted.kind, to: wanted.to, ...sent }, 202);
   } catch (error) {
-    // Named, never swallowed: the caller retries a failed send, and "sent"
-    // for a message nobody received is the one lie this lane must not tell.
     return json({ error: `Could not send the ${wanted.kind} email: ${String(error)}` }, 502);
   }
 }

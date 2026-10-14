@@ -1,42 +1,3 @@
-// Better Auth over D1 without Kysely (drive#758).
-//
-// `better-auth` (the full entry) talks to a raw D1 binding through Kysely, and
-// that path pulls in Kysely's whole dialect set — D1 SQLite, Bun SQLite, Node
-// SQLite — plus the migration planner and its SQLite introspector. `cf build`
-// emits those unused chunks beside the isolate script and the site-bundle
-// ratchet counts every one of them. Measured on origin/main (baa4cfb), the
-// chunks that exist only to reach them are:
-//
-//   sqlite-introspector  285,706   kysely-adapter        130
-//   kysely's own dist    222,044   compiled-query        429
-//   factory              266,600   sqlite-adapter      2,186
-//   memory-adapter        14,817
-//   d1 / node / bun sqlite dialects 5,147 + 3,124 + 3,124
-//
-// Two of those survive this change (factory and memory-adapter); the rest go.
-// What is left, and the ceiling that keeps them gone, is measured by
-// `cf build` and asserted by test/speed-ratchet.test.mjs against the
-// site-bundle row in bench/baseline.json — the sizes are deliberately not
-// repeated here, because a number in a comment is a number that goes stale.
-//
-// The stock shrink is `better-auth/minimal` plus an adapter from
-// `createAdapterFactory` (`better-auth/adapters`): the factory is the
-// extension point, and D1 already speaks SQL through core/db.js. The Worker
-// then ships one dialect — this file — instead of Kysely's set.
-// Returned rows stay keyed by column name; `createAdapterFactory`'s
-// `transformOutput` maps them back to field names (same as the Kysely
-// adapter). The SQLite flags below copy `@better-auth/kysely-adapter`'s
-// sqlite branch (`supportsBooleans` / `supportsDates` false), so live D1
-// rows keep the 0/1 and ISO-string shape the shipped migrations already
-// store.
-//
-// Two guards here are about rows, not bytes. An empty `where` on a mutating
-// call would turn "the row this filter names" into "the lowest-id row in the
-// table", and `consumeOne` deletes what it matches: on the `verification`
-// table that is somebody else's one-time sign-in link. And a join whose key is
-// absent from the row is "no relation", the same answer the factory's own
-// fallback gives (see attachJoins), never a bind of `undefined`.
-
 import { createAdapterFactory } from "better-auth/adapters";
 import { all, first, run } from "./db.js";
 
@@ -208,22 +169,10 @@ async function attachJoins(db, rows, join) {
   for (const row of rows) {
     for (const [joinModel, joinAttr] of Object.entries(join)) {
       if (joinAttr.relation === "many-to-many") {
-        // `JoinOption.relation` declares it (@better-auth/core
-        // db/adapter/index.d.mts) and the factory never emits it — it writes
-        // "one-to-one" or "one-to-many" — so this refuses a shape it cannot
-        // answer rather than handing back a collection where a caller expects
-        // the through-table rows.
         throw new Error(`auth D1 adapter: many-to-many join on ${joinModel} is not implemented`);
       }
       const from = row[joinAttr.on.from];
       if (from === null || from === undefined) {
-        // The factory pushes the join key into `select` before it calls the
-        // adapter ("Ensure the required field is in select if select is
-        // provided", @better-auth/core db/adapter/factory.ts) and a query
-        // without a select is `SELECT *`, so this cannot happen on a join the
-        // factory built. Its own fallback for a missing key is "no relation",
-        // and that is what this returns: a D1 bind of `undefined` would throw
-        // out of the sign-in instead of answering.
         row[joinModel] = joinAttr.relation === "one-to-one" ? null : [];
         continue;
       }
@@ -253,9 +202,6 @@ export function d1Adapter(db) {
     config: {
       adapterId: "d1",
       adapterName: "D1 Adapter",
-      // Same SQLite flags the Kysely D1 path used: the factory then stores
-      // dates as ISO strings and booleans as 0/1, which is what the shipped
-      // migrations declare.
       supportsBooleans: false,
       supportsDates: false,
       supportsJSON: false,
@@ -374,10 +320,6 @@ export function d1Adapter(db) {
         return write(db, `DELETE FROM ${ident(model)}${filter.sql}`, filter.params);
       },
       async consumeOne({ model, modelKey = model, where }) {
-        // Same guard as update / delete, and it matters more here: the
-        // subquery below picks one row by id, so an empty filter would pick the
-        // oldest row in the table and delete it. On `verification` that is
-        // another person's sign-in link.
         if (where.length === 0) {
           return null;
         }
@@ -392,8 +334,6 @@ export function d1Adapter(db) {
         );
       },
       async incrementOne({ model, modelKey = model, where, increment, set }) {
-        // The row this increments would be the oldest row in the table rather
-        // than the one the filter names, so an empty filter changes nothing.
         if (where.length === 0) {
           return null;
         }

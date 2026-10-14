@@ -1,18 +1,3 @@
-// Tests for the usage page and the usage lines (drive issue #53). Three
-// halves:
-//
-// 1. The arithmetic the endpoint carries for both surfaces: stored GB now, the
-//    last-30-days series, GB-months so far, the downloads line and the two
-//    labels sets — all from usageSummary() in core/billing.js, which the page
-//    and `drive usage` both read so neither works out money itself.
-// 2. The lines `drive usage` prints, as the CLI's contract (the Go command
-//    lands with build steps 2 and 4).
-// 3. The shipped page: public/usage.html is a static asset and cannot import
-//    the module, so this reads the file and fails CI when its copy, its
-//    endpoint or its poll interval drifts from src/usage.js — the same gate
-//    test/status.test.mjs runs for the first-run page and
-//    test/pricing-copy.test.mjs for the price.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

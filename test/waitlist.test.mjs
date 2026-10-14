@@ -1,6 +1,3 @@
-// Unit tests for the waitlist sign-up logic, exercising every branch with a
-// fake D1 object and a fake rate limiter so no network is needed.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

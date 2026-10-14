@@ -1,17 +1,3 @@
-// "Continue as <email>" (src/access-signin.js) is for the Cloudflare Access
-// test address only. Before storagebun.com goes public that route must not be
-// reachable from the public deployment (watchdog item, drive#342).
-//
-// Two things keep it shut. The route proves the person with a JWT that only
-// Cloudflare Access can sign, so a request that did not pass through Access
-// gets a 401 even where the route exists (test/access-signin.test.mjs). And
-// the route does not exist at all unless ACCESS_AUD and ACCESS_TEAM_DOMAIN are
-// set on the deployment. This test guards the second: no file the deploy
-// reads may declare either name, so a config change or a workflow cannot turn
-// the route on for the public site. They are set by hand on the test address
-// only (src/access.js), and a deploy that declared them would be the way a
-// public deployment got them.
-
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";

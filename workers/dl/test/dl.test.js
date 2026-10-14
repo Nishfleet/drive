@@ -1,13 +1,3 @@
-// The dl Worker (drive issue #58, hardened by #517). Proved here against the
-// real schema rather than a fake (test/d1-sqlite.mjs applies every migration
-// in migrations/drive/ and runs the real SQL):
-//
-//   - no read without a grant from the api for a live key of that account;
-//   - a single Range answers 206 with the right bytes and bills only those,
-//     and a range no byte answers is 416 and bills nothing;
-//   - a download's bytes land in `usage_minutes.download_bytes` exactly;
-//   - one account's path cannot reach another account's bytes.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createD1DeviceStore } from "../../../core/devices.js";

@@ -13,42 +13,15 @@ import (
 	"time"
 )
 
-// Share links and upload requests on the CLI side (drive issue #19,
-// build-spec.md "Against the competitor": "Public file links and upload requests").
-//
-//   drive share <file>      a link anyone can open, logged out, for 7 days
-//   drive request <folder>  a page anyone can drop files onto, into one folder
-//
-// Both are the owner's side of src/share.js. The api Worker mints the token
-// (POST /api/share, POST /api/request), serves the bytes at /s/<token> and the
-// upload page at upload.html?k=<token>, and refuses uploads while the account
-// is read-only at its cap. Nothing here computes a URL, a token or an expiry:
-// the CLI prints the URL the Worker returned, so the two surfaces cannot
-// disagree about a link, exactly the way `drive status` prints the money
-// /api/usage computed rather than working out its own.
-//
-// Revoking is part of the feature, not a nicety — "links expire after 7 days
-// by default and can be revoked", and a revoked link is the 404 the issue's
-// done-when names — so the same command takes --revoke, and --list is how a
-// person finds the token of a link they minted yesterday, since the drive
-// has no shares page yet.
-
-// SHARE_PATH and REQUEST_PATH are the api Worker's owner endpoints
-// (src/index.js routes these to src/share.js handleShareRequest and
-// handleRequestRequest). Exported like USAGE_PATH so no second spelling of a
-// route exists in the CLI.
+// SHARE_PATH and REQUEST_PATH are the api Worker's owner endpoints (src/index.js routes these to src/share.js handleShareRequest and handleRequestRequest).
 const (
 	SHARE_PATH   = "/api/share"
 	REQUEST_PATH = "/api/request"
 )
 
-// linkTimeout bounds a mint, list or revoke. A link a person is waiting to
-// copy is worth ten seconds; a hung request is not a link.
 const linkTimeout = 10 * time.Second
 
-// ShareLink is the minted share as the CLI prints it (src/share.js
-// `shareRow()`). Only the fields this command shows are decoded: the Worker
-// owns the rest.
+// ShareLink is the minted share as the CLI prints it (src/share.js `shareRow()`).
 type ShareLink struct {
 	Token        string `json:"token"`
 	Path         string `json:"path"`
@@ -69,8 +42,6 @@ type RequestLink struct {
 	UploadsLabel string `json:"uploadsLabel"`
 }
 
-// linkFlags are the flag shapes `drive share` and `drive request` share: one
-// endpoint, three mutually exclusive jobs (mint, list, revoke).
 type linkFlags struct {
 	api    string
 	revoke string
@@ -89,8 +60,6 @@ func addLinkFlags(fs *flag.FlagSet, action, argument string) *linkFlags {
 	return l
 }
 
-// endpoint resolves the --api value into the endpoint for one job, and refuses
-// the combinations that would make the command guess what it was asked to do.
 func (l *linkFlags) endpoint(path, home string) (string, error) {
 	if l.list && l.revoke != "" {
 		return "", fmt.Errorf("--list and --revoke are two different jobs; pick one")
@@ -109,7 +78,6 @@ func (l *linkFlags) endpoint(path, home string) (string, error) {
 	return parsed + path, nil
 }
 
-// runShare is `drive share`.
 func runShare(args []string) error {
 	fs := flag.NewFlagSet("share", flag.ContinueOnError)
 	l := addLinkFlags(fs, "share", "file")
@@ -121,9 +89,6 @@ func runShare(args []string) error {
 	if err != nil {
 		return err
 	}
-	// withFreshDeviceToken is the one re-sign-in (drive#557): the links routes
-	// are account routes behind the same device token as everything else, so a
-	// device whose sign-in lapsed heals here too instead of stopping dead.
 	return withFreshDeviceToken(common.home, l.api, os.Stdout, func(auth string) error {
 		switch {
 		case l.list:
@@ -174,7 +139,6 @@ func runShare(args []string) error {
 	})
 }
 
-// runRequest is `drive request`.
 func runRequest(args []string) error {
 	fs := flag.NewFlagSet("request", flag.ContinueOnError)
 	l := addLinkFlags(fs, "request", "folder")
@@ -186,7 +150,6 @@ func runRequest(args []string) error {
 	if err != nil {
 		return err
 	}
-	// The same one re-sign-in `drive share` gets (drive#557).
 	return withFreshDeviceToken(common.home, l.api, os.Stdout, func(auth string) error {
 		switch {
 		case l.list:
@@ -237,13 +200,6 @@ func runRequest(args []string) error {
 	})
 }
 
-// untilLabel is a link's expiry as this machine reads it: "Until 7 Oct", the
-// day written in the zone the command ran in (drive#559). The api Worker sends
-// the instant and no words for it, the same way it sends no words for any other
-// date, because a date rendered on the server is a UTC date and a link that
-// dies on the 8th must not be printed as the 7th. An instant that will not
-// parse is printed as it arrived rather than guessed at: the row came from the
-// Worker, so its bytes are the best answer this command has.
 func untilLabel(iso string) string {
 	at, err := time.Parse(time.RFC3339, iso)
 	if err != nil {
@@ -252,49 +208,26 @@ func untilLabel(iso string) string {
 	return "Until " + at.Local().Format("2 Jan")
 }
 
-// printShareLine is one row of `drive share --list`: the token a person needs
-// for --revoke, the state, the expiry, and the link itself.
 func printShareLine(link ShareLink) {
 	fmt.Printf("%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, untilLabel(link.ExpiresAtIso), link.Path, link.URL)
 }
 
 func printRequestLine(link RequestLink) {
-	// No header row: `drive request --list` is one line per link, six
-	// tab-separated fields, so a later header has to name them in this order.
 	fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\n", link.Token, link.StateLabel, untilLabel(link.ExpiresAtIso), link.Folder, link.UploadsLabel, link.URL)
 }
 
-// tokenRE is the one token shape the api Worker mints and accepts: 22
-// base64url characters (src/share.js TOKEN_PATTERN). The CLI refuses anything
-// else before it reaches the api, so junk from a mangled or hostile paste
-// never becomes a lookup against the owner's account.
 var tokenRE = regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
 
-// tokenFromArg accepts what a person actually has in hand: the token, or the
-// link it came in, because the link is what they copied. A token is exactly 22
-// base64url characters, so whatever follows it is surrounding junk to drop: a
-// trailing slash, a query string, a fragment, or tracking parameters. The
-// "k=" of the upload page is read only where a query puts it — at the start of
-// the paste, or right after ? or & — so the "k=" of some path segment is never
-// taken as the parameter. The result must be the Worker's shape or the CLI
-// refuses it, so a mangled paste never becomes a revoke call.
 func tokenFromArg(arg string) (string, error) {
 	trimmed := strings.TrimSpace(arg)
 	var token string
 	if i := strings.Index(trimmed, "/s/"); i >= 0 {
-		// The share-link form: a /s/<token> path segment.
 		token = trimmed[i+len("/s/"):]
 	} else if i := strings.Index(trimmed, "k="); i == 0 || (i > 0 && (trimmed[i-1] == '?' || trimmed[i-1] == '&')) {
-		// The upload-page form: ?k=<token>, possibly among other params.
-		// A bare "k=" (a clipboard that dropped the URL in front of it)
-		// counts too.
 		token = trimmed[i+len("k="):]
 	} else {
 		token = trimmed
 	}
-	// A token is exactly 22 base64url chars; anything after it — a trailing
-	// slash, a query string, a fragment, or tracking params (?k=<token>&utm_
-	// ...) — is surrounding junk to drop, not the token.
 	if i := strings.IndexAny(token, "#?&"); i >= 0 {
 		token = token[:i]
 	}
@@ -305,9 +238,7 @@ func tokenFromArg(arg string) (string, error) {
 	return token, nil
 }
 
-// MintShare mints a share link for one file: POST /api/share {path}. The
-// Worker answers 201 with the share row (src/share.js handleShareRequest), and
-// the row's URL is the link.
+// MintShare mints a share link for one file: POST /api/share {path}.
 func MintShare(endpoint, token, path string) (ShareLink, error) {
 	var out struct {
 		Share ShareLink `json:"share"`
@@ -357,9 +288,7 @@ func ListRequests(endpoint, token string) ([]RequestLink, error) {
 	return out.Requests, nil
 }
 
-// RevokeShare turns a share off: DELETE /api/share {token}. The Worker's
-// answer is the row in its revoked state, so the printed state is the
-// Worker's, not this command's guess.
+// RevokeShare turns a share off: DELETE /api/share {token}.
 func RevokeShare(endpoint, auth, token string) (ShareLink, error) {
 	var out struct {
 		Share ShareLink `json:"share"`
@@ -381,10 +310,6 @@ func RevokeRequest(endpoint, auth, token string) (RequestLink, error) {
 	return out.Request, nil
 }
 
-// doJSON sends one JSON request and decodes the JSON answer, turning every
-// non-2xx into the api Worker's own message (src/index.js answers failures as
-// {"error": "..."} with a status). The message is what a person should read,
-// so it is carried through instead of replaced by a generic "request failed".
 func doJSON(method, endpoint, deviceToken string, body any, out any) error {
 	var reader *bytes.Reader
 	if body != nil {
@@ -403,8 +328,6 @@ func doJSON(method, endpoint, deviceToken string, body any, out any) error {
 	if body != nil {
 		request.Header.Set("content-type", "application/json")
 	}
-	// The links routes are behind the account gate, which takes this device's
-	// token as a Bearer. Without it every call was the gate's 401.
 	if deviceToken != "" {
 		request.Header.Set("authorization", "Bearer "+deviceToken)
 	}
@@ -427,16 +350,6 @@ func doJSON(method, endpoint, deviceToken string, body any, out any) error {
 	return nil
 }
 
-// apiMessage turns a failed response into the error a person reads. The
-// Worker's {"error": "..."} is preferred; a body without one (an asset 404, a
-// proxy error page) is reported by status, and a body that cannot be read is
-// itself reported rather than swallowed.
-//
-// The answer is an *APIError rather than a bare fmt.Errorf so that a 401 from
-// the account gate is recognisable where it is made, which is what lets the
-// links commands below sign the machine back in and try once more on a fresh
-// token (drive#557). Before that it was a string, and no caller could tell a
-// dead sign-in from a file that was not there.
 func apiMessage(method, endpoint string, response *http.Response) error {
 	raw, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if readErr != nil {
@@ -466,15 +379,6 @@ func deleteJSON(endpoint, token string, body, out any) error {
 	return doJSON(http.MethodDelete, endpoint, token, body, out)
 }
 
-// withFreshDeviceToken runs call with this device's token and, if an account
-// route answers 401, signs this machine back in once and runs it again on the
-// new token (drive#557).
-//
-// The links routes take the same device token as the rest of the account gate
-// but are called through their own request path (doJSON), so without this they
-// were the one place a lapsed sign-in stopped working instead of healing. The
-// rules are the ones APIClient.do already follows: one retry, never a loop, and
-// a re-sign-in that fails reports why it failed rather than the 401 behind it.
 func withFreshDeviceToken(home, api string, out io.Writer, call func(token string) error) error {
 	creds, err := LoadCredentials(home)
 	if err != nil {
@@ -495,15 +399,6 @@ func withFreshDeviceToken(home, api string, out io.Writer, call func(token strin
 	return call(token)
 }
 
-// drivePathArg turns what a person typed into the path the api Worker expects:
-// a path inside the drive, starting with a slash (core/files.js validatePath).
-// An absolute path under the mount dir is the form a shell's ~ expansion or a
-// Finder drag produces (`/Users/nish/Drive/Photos/cat.jpg`), so it is accepted
-// and the mount dir is dropped; anything else keeps its own segments. A
-// quoted `~/Drive/...` is never expanded here — the CLI does not guess a home
-// from the argument — so it arrives as `/~/Drive/...`, names nothing, and the
-// Worker's 404 says so. The Worker is still the authority on whether the path
-// exists and whether it may be shared.
 func drivePathArg(home, arg string) (string, error) {
 	trimmed := strings.TrimSpace(arg)
 	if trimmed == "" {

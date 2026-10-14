@@ -1,5 +1,3 @@
-// Split out of core/meter-fair-use.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-
 import { fairUseCheck } from "./billing-report.js";
 import { accountPrefix } from "./files.js";
 import { scopeStore } from "./files-scope.js";
@@ -88,8 +86,6 @@ export async function reconcileMeter(db, store, now = Date.now(), onFairUseGap) 
     }
   }
   if (result.inserted > 0 || result.hidden > 0 || result.marked > 0 || result.skipped > 0) {
-    // The counts are the operator's view of what the safety net caught: a run
-    // that fixes something says so, and a run that fixes nothing stays quiet.
     console.log(
       `meter reconciler: inserted=${result.inserted} hidden=${result.hidden} ` +
         `marked=${result.marked} skipped=${result.skipped} ` +
@@ -164,12 +160,6 @@ export async function reconcileAccount(db, store, account, now) {
       error instanceof Error ? error.message : String(error),
     );
   };
-  // The account's own scoped store, the same one every other account-scoped
-  // walk uses: `scopeStore` applies the prefix and refuses a version that
-  // came back from outside it, so the reconciler never handles another
-  // account's key. The drive paths it hands back are turned into the storage
-  // key the event intake stores (`u/<id>/<path>`), so a row this run inserts
-  // and a row an event inserted are one shape.
   const prefix = accountPrefix({ id: account });
   const listed = await scopeStore(store, { id: account }).listVersions("/");
   const rows = await db.prepare(RECONCILE_ROWS_SQL).bind(account).all();
@@ -184,8 +174,6 @@ export async function reconcileAccount(db, store, account, now) {
   }
   const statements = [];
   const listedIds = new Set();
-  // A listed version with no id cannot be matched to its row, so this run
-  // cannot tell which stored rows are really gone: it marks none of them.
   let listingComplete = true;
   for (const raw of listed) {
     const version = /** @type {ProviderVersion} */ (raw);
@@ -195,13 +183,9 @@ export async function reconcileAccount(db, store, account, now) {
       continue;
     }
     if (listedIds.has(version.b2FileId)) {
-      // Two live versions with one id cannot both be true; a repair from one
-      // of them would be a coin toss, so the second is skipped by name.
       skip(`id=${version.b2FileId}`, new Error("listed twice in one account"));
       continue;
     }
-    // Listed, so its stored row is not gone, even when this version is
-    // skipped below for a bad field.
     listedIds.add(version.b2FileId);
     try {
       const statement = repairStatement(db, account, prefix, version, byId.get(version.b2FileId));
@@ -226,11 +210,6 @@ export async function reconcileAccount(db, store, account, now) {
       if (listedIds.has(row.b2_file_id)) {
         continue;
       }
-      // The provider no longer has this version. Billing runs created_at ->
-      // hidden_at and a hard delete comes after the hide, so a gone row must
-      // already be hidden; if its hidden time never arrived either, the hide
-      // is booked at the run instant, in the hour no run has rolled yet
-      // (drive#519). `deleted_at` records the disappearance either way.
       if (row.hidden_at === null) {
         statements.push(
           db
@@ -254,10 +233,6 @@ export async function reconcileAccount(db, store, account, now) {
     }
   }
   if (earliestAffectedHour !== null) {
-    // Queue this account's corrected closed hours for a re-roll, in the same
-    // batch as the repairs. Only hours the global roll already wrote need it:
-    // a deployment that has never rolled, or a correction newer than the
-    // mark, is billed by the global roll when it gets there.
     const mark = await db.prepare(ROLLED_THROUGH_READ_SQL).first();
     const rolledThrough = stampMillis(mark?.rolled_through);
     if (rolledThrough !== null && earliestAffectedHour <= rolledThrough) {
@@ -267,8 +242,6 @@ export async function reconcileAccount(db, store, account, now) {
     }
   }
   if (statements.length > 0) {
-    // One batch per account: the account's repairs land together or not at
-    // all, so a half-fixed ledger cannot exist.
     await db.batch(statements);
   }
   /** @type {{ourBytes: number, vendorBytes: number}|null} */
@@ -327,16 +300,11 @@ function repairStatement(db, account, prefix, version, row) {
   if (!Number.isFinite(sizeBytes) || sizeBytes < 0) {
     throw new TypeError(`the provider listed a version of ${sizeBytes} bytes`);
   }
-  // The key the event stream stores: the account prefix then the drive
-  // path. A drive path that is not a usable key is refused rather than
-  // stored.
   if (typeof version.path !== "string" || !version.path.startsWith("/")) {
     throw new TypeError(`the provider listed a version at ${String(version.path)}`);
   }
   const key = `${prefix}${version.path}`;
   if (!row) {
-    // A version the event stream never stored: insert it whole, so the
-    // hours it was live bill on the re-roll.
     return {
       kind: "insert",
       sql: db
@@ -351,9 +319,6 @@ function repairStatement(db, account, prefix, version, row) {
     };
   }
   if (hiddenAt !== null && row.hidden_at === null) {
-    // The hide never reached the api Worker: the row bills as if the
-    // version were still live, and the hour the version stopped is the one
-    // the re-roll must recompute (the minimum's shortfall lives there too).
     return {
       kind: "hide",
       sql: db

@@ -1,26 +1,3 @@
-// Tests for cap enforcement (drive issue #52, build step 6's cap half): the
-// read-only key swap at the cap, the write keys coming back when the cap is
-// raised, `drive cap <dollars>`'s parsing, and the cap line `drive status`
-// prints.
-//
-// The acceptance the issue names is the build-spec.md finish line for step 6:
-// "a capped account goes read-only with no file lost and starts writing again
-// once the cap is raised". The last two tests below walk exactly that: a
-// default account past 1.5 TB goes read-only through enforceCap() reading
-// core/billing.js's usageSummary(), nothing but the storage key is touched, and
-// a raised cap puts the write capability back.
-//
-// The plan and its execution are pure data and an injected provider, so the
-// whole state machine runs here with no storage account and no Worker (issue
-// #2's key store and PR #22's KeyProvider are the wiring, not the decision).
-//
-// Issue #74 added the safety rule the last group of tests pins: raising the
-// cap may only give back what the cap took away. A key the customer made
-// read-only on purpose (`drive init --read-only`) stays read-only on every run,
-// forever, because the cap records the capabilities it took and the restore
-// reads them from the key row (issue #64's wiring) rather than guessing from
-// the key's kind.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BILLING_CONFIG } from "../core/billing.js";

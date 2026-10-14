@@ -97,9 +97,6 @@ func TestLoadStorageConfigRequiresEveryValue(t *testing.T) {
 	}
 }
 
-// The access key is read from the environment only, and the secret from the
-// safe sources ReadSecretKey resolves (environment here): a flag would put a
-// device key in `ps` output and the shell history.
 func TestLoadStorageConfigReadsTheKeysFromTheEnvironment(t *testing.T) {
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "envaccess")
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "envsecret")
@@ -116,9 +113,6 @@ func TestLoadStorageConfigReadsTheKeysFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// There is no secret flag to put a key in, so a key cannot be smuggled in as
-// one. The refusal names the three safe ways and tells the person the value
-// they typed is already exposed by having been in argv.
 func TestMountRefusesTheSecretKeyFlag(t *testing.T) {
 	for _, args := range [][]string{
 		{"--secret-key", "SECRETVALUE", "--endpoint", "http://x", "--bucket", "b"},
@@ -144,8 +138,6 @@ func TestMountRefusesTheSecretKeyFlag(t *testing.T) {
 	}
 }
 
-// There is no flag to put a key in, so a key cannot be smuggled in as one. The
-// access key id has no flag either (drive#122): it is read from the environment.
 func TestMountRefusesAKeyFlag(t *testing.T) {
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "envaccess")
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "envsecret")
@@ -177,11 +169,6 @@ func TestLoadStorageConfigPrefersFlagsOverEnv(t *testing.T) {
 	}
 }
 
-// The mount must carry every VFS flag the product mounts with, on both
-// platforms, and use the platform's own rclone subcommand. --dir-cache-time is
-// the fourth: S3 sends no change notifications, so listings stay fresh via
-// vfs/refresh from the fill loop (issue #541) rather than a 5s expiry that
-// broke kept-offline folders.
 func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 	for _, tc := range []struct{ goos, sub string }{{"darwin", "nfsmount"}, {"linux", "mount"}} {
 		p := BuildMountPlan(tc.goos, "/home/test", "/usr/bin/rclone", testStorage())
@@ -204,9 +191,7 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 				t.Errorf("%s: command line missing %q:\n%s", tc.goos, want, line)
 			}
 		}
-		// The flag and its value are one pair: a plan that emitted
-		// --dir-cache-time with no value would still match the substring
-		// above, and rclone would take the next argument as the duration.
+		// rclone takes the next argument as the duration when the flag has no value of its own.
 		if args := p.Args(); !hasArgPair(args, "--dir-cache-time", vfsDirCacheTimeValue) {
 			t.Errorf("%s: --dir-cache-time and %s are not adjacent args:\n%v", tc.goos, vfsDirCacheTimeValue, args)
 		}
@@ -281,9 +266,6 @@ func TestProductArgsKeepsForegroundOnEveryPlatform(t *testing.T) {
 	}
 }
 
-// withProductBin fills DriveBin with a path shaped like the one the platform's
-// installer writes (the same paths the prefetch units are tested with), so a
-// renderer test asserts the vector a real login item carries.
 func withProductBin(p MountPlan) MountPlan {
 	switch p.GOOS {
 	case "windows":
@@ -330,8 +312,6 @@ func TestLaunchdPlistRunsTheProduct(t *testing.T) {
 	}
 }
 
-// plistProgramArguments returns the <string> elements of the plist's
-// ProgramArguments array, in order, as argv elements.
 func plistProgramArguments(t *testing.T, plist string) []string {
 	t.Helper()
 	start := strings.Index(plist, "<key>ProgramArguments</key>")
@@ -468,9 +448,6 @@ func TestWriteFileAtomicLeavesNoPartialFile(t *testing.T) {
 	}
 }
 
-// hasArgPair reports whether args carries flag immediately followed by value,
-// which is the shape rclone's flag parser requires: a flag whose value is a
-// separate argv element, not one string.
 func hasArgPair(args []string, flag, value string) bool {
 	for i, a := range args {
 		if a == flag {
@@ -480,9 +457,6 @@ func hasArgPair(args []string, flag, value string) bool {
 	return false
 }
 
-// argValue returns the value argv carries for flag, or the empty string when
-// the flag is absent. Tests use it to read a mount flag the product set and
-// hold its number to a bound.
 func argValue(args []string, flag string) string {
 	for i, a := range args {
 		if a == flag && i+1 < len(args) {
@@ -492,12 +466,6 @@ func argValue(args []string, flag string) string {
 	return ""
 }
 
-// A scoped storage credential is an STS session: the access key, the secret
-// and the session token the storage server minted together. rclone signs with
-// all three or the server answers InvalidTokenId (measured against the pinned
-// MinIO, issue #241), so a config that renders only two of them cannot mount a
-// key the api Worker actually mints. A deployment with a permanent credential
-// has no token, and then the line is simply absent.
 func TestRcloneConfigRendersTheSessionTokenWhenThereIsOne(t *testing.T) {
 	c := testStorage()
 	if strings.Contains(RcloneConfig(c), "session_token") {
@@ -511,13 +479,10 @@ func TestRcloneConfigRendersTheSessionTokenWhenThereIsOne(t *testing.T) {
 	if !strings.Contains(got, "no_check_bucket = true") {
 		t.Errorf("a scoped key cannot HeadBucket, so rclone must skip the check:\n%s", got)
 	}
-	// It has to be the s3 backend's own option name, or rclone ignores the
-	// line and signs without it.
+	// rclone ignores an s3 backend option it does not know and signs without it.
 	if !strings.Contains(got, "type = s3") {
 		t.Errorf("the session token needs the s3 backend to mean anything:\n%s", got)
 	}
-	// A dry run and a log must not print it: it is a credential like the other
-	// two, and the access key is already redacted there.
 	redacted := RcloneConfigRedacted(c)
 	if strings.Contains(redacted, c.SessionToken) {
 		t.Errorf("redacted config still carries the session token:\n%s", redacted)
@@ -538,9 +503,6 @@ func TestRcloneConfigRendersTheSessionTokenWhenThereIsOne(t *testing.T) {
 	}
 }
 
-// The token comes from the same safe sources as the secret and the access key:
-// the environment for a scripted run, never a flag, because a session token in
-// argv is readable in /proc/<pid>/cmdline for the life of the process (#75).
 func TestLoadStorageConfigReadsTheSessionTokenFromTheEnvironment(t *testing.T) {
 	t.Setenv("DRIVE_S3_ENDPOINT", "http://127.0.0.1:39181")
 	t.Setenv("DRIVE_S3_BUCKET", "drive-standin")
@@ -555,8 +517,6 @@ func TestLoadStorageConfigReadsTheSessionTokenFromTheEnvironment(t *testing.T) {
 	if c.SessionToken != "envsessiontoken" {
 		t.Errorf("SessionToken = %q, want the environment's value", c.SessionToken)
 	}
-	// A deployment with permanent credentials sets nothing, and that is not a
-	// missing value: it is the shape of every non-scoped key.
 	t.Setenv("DRIVE_S3_SESSION_TOKEN", "")
 	c, err = LoadStorageConfig("", "", "", "", "", "drivetestsecret", StorageConfig{})
 	if err != nil {
@@ -567,8 +527,6 @@ func TestLoadStorageConfigReadsTheSessionTokenFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// The token is an INI value like every other one, so the same newline check
-// that refuses an injected rclone option has to hold for it.
 func TestLoadStorageConfigRejectsASessionTokenThatWouldInjectAnOption(t *testing.T) {
 	t.Setenv("DRIVE_S3_ENDPOINT", "http://127.0.0.1:39181")
 	t.Setenv("DRIVE_S3_BUCKET", "drive-standin")
@@ -612,8 +570,6 @@ func TestLoadStorageConfigRejectsValuesThatWouldInjectAnOption(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := testStorage()
 			tc.mutate(&c)
-			// LoadStorageConfig is the gate: feed the mutated value through as
-			// the flag, which wins over env.
 			t.Setenv("DRIVE_S3_ACCESS_KEY_ID", c.AccessKey)
 			t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", c.SecretKey)
 			if _, err := LoadStorageConfig(c.Endpoint, c.Bucket, c.Prefix, c.Region, c.DownloadURL, c.SecretKey, StorageConfig{}); err == nil {
@@ -623,7 +579,6 @@ func TestLoadStorageConfigRejectsValuesThatWouldInjectAnOption(t *testing.T) {
 	}
 }
 
-// A prefix that only walks down is fine, and an empty one is the whole bucket.
 func TestLoadStorageConfigAcceptsAPrefixInsideTheDevice(t *testing.T) {
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", "a")
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", "s")
@@ -635,8 +590,6 @@ func TestLoadStorageConfigAcceptsAPrefixInsideTheDevice(t *testing.T) {
 }
 
 func TestSystemdUnitQuotesForSystemd(t *testing.T) {
-	// systemd does not use shell quoting: a plain path stays bare, and every
-	// percent must be doubled or systemd expands it as a specifier.
 	if got := systemdEscapeArg("/usr/bin/rclone"); got != "/usr/bin/rclone" {
 		t.Errorf("bare path = %q", got)
 	}
@@ -667,20 +620,10 @@ func TestBsdMountHasMountPoint(t *testing.T) {
 	}
 }
 
-// `drive mount --dry-run` renders the config it would write; it must never
-// print either device key, so a dry run on a shared screen or in a terminal
-// transcript cannot leak the key even though it was in the environment.
 func TestMountDryRunNeverPrintsAKey(t *testing.T) {
 	const access, secret = "DRYRUNACCESSKEY", "dryrun-secret-value"
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", access)
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", secret)
-	// The rclone on this machine is the one the mount would really use, and a
-	// dry run refuses it exactly as a real mount would if it were below
-	// MinRcloneVersion. CI installs the current build, so that refusal is
-	// refused by the refusal, not by the absence of an rclone: the dry run must
-	// still render the config, so it is pointed at a stand-in that answers
-	// `version` with the floor version, and the keys stay the ones the test
-	// set.
 	rclone := writeFakeRclone(t, "rclone v"+MinRcloneVersion+"\n- os/version: test\n")
 	out, err := exec.Command(driveBin(t), "mount",
 		"--endpoint", "http://127.0.0.1:1", "--bucket", "drive-dry-run",
@@ -704,8 +647,7 @@ func TestMountDryRunNeverPrintsAKey(t *testing.T) {
 	}
 }
 
-// A login item has no shell PATH, so the plan must carry an absolute rclone
-// path (Homebrew's is /opt/homebrew/bin/rclone) rather than a bare name.
+// A login item has no shell PATH, so the plan must carry an absolute rclone path rather than a bare name.
 func TestResolveRcloneReturnsAnAbsolutePath(t *testing.T) {
 	got, err := ResolveRclone("")
 	if err != nil {
@@ -726,8 +668,6 @@ func TestResolveRcloneReturnsAnAbsolutePath(t *testing.T) {
 	}
 }
 
-// The launchctl verbs are bootstrap/bootout, not the deprecated load/unload
-// that also fail when the item is already in the requested state.
 func TestLaunchctlUsesBootstrapNotDeprecatedLoad(t *testing.T) {
 	const target = "gui/501"
 	cases := []struct {
@@ -752,8 +692,6 @@ func TestLaunchctlUsesBootstrapNotDeprecatedLoad(t *testing.T) {
 	}
 }
 
-// A relative path from LookPath is not usable in a login item, which is not
-// started from a working directory.
 func TestAbsPathMakesARelativeLookPathAbsolute(t *testing.T) {
 	got, err := absPath("./rclone")
 	if err != nil {
@@ -767,9 +705,6 @@ func TestAbsPathMakesARelativeLookPathAbsolute(t *testing.T) {
 	}
 }
 
-// The Linux start path must apply the unit it just wrote, not leave a running
-// unit with the old configuration: enable --now does not restart an active
-// unit, so the caller has to restart.
 func TestMountLinuxRestartsAnAlreadyRunningUnit(t *testing.T) {
 	got := mountSystemctlActions()
 	want := []string{"daemon-reload", "enable", "restart"}
@@ -778,9 +713,6 @@ func TestMountLinuxRestartsAnAlreadyRunningUnit(t *testing.T) {
 	}
 }
 
-// The storage secret has three safe sources and no unsafe one (issue #75).
-// Each path is covered here, with the config file's mode, because a secret read
-// from a file other users can read is the same leak as a secret in argv.
 func TestReadSecretKeyFromStdin(t *testing.T) {
 	got, err := ReadSecretKey("", true, strings.NewReader("SECRETFROMSTDIN\n"))
 	if err != nil {
@@ -843,8 +775,6 @@ func TestReadSecretKeyFromALegacyRcloneConf(t *testing.T) {
 func TestReadSecretKeyRefusesAConfigFileOthersCanRead(t *testing.T) {
 	home := t.TempDir()
 	path := RcloneConfigPath(home)
-	// The mode is set explicitly, not left to the writer's default, so the test
-	// proves the check and not the other code path's chmod.
 	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -874,9 +804,6 @@ func TestReadSecretKeyRefusesAConfigFileOthersCanRead(t *testing.T) {
 	}
 }
 
-// Another remote's malformed line is not this CLI's file and not its business:
-// only the drive remote is parsed, so a config a person also uses for other
-// rclone remotes must not be refused over a line in one of them.
 func TestParseRcloneConfigIgnoresOtherRemotes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rclone.conf")
 	body := "[other]\nnot a key value line at all\n" + RcloneConfig(testStorage())
@@ -948,10 +875,6 @@ func TestParseAPIBaseRefusesCredentialsInTheURL(t *testing.T) {
 	}
 }
 
-// The secret flag is the finding this issue opens with. It must be an error
-// that names the ways that are safe, not a silently ignored flag — and because
-// the typed value is already in this process's argv, the refusal also has to say
-// that the key it exposed should be rolled.
 func TestParseAPIBaseDoesNotEchoAURLThatCarriesCredentials(t *testing.T) {
 	_, err := parseAPIBase("https://user:secretkey@example.com:notaport")
 	if err == nil {
@@ -965,19 +888,14 @@ func TestParseAPIBaseDoesNotEchoAURLThatCarriesCredentials(t *testing.T) {
 	}
 }
 
-// Every failure branch of parseAPIBase is a place a URL can leak, not just the
-// one the guard checks first: a URL that parses as scheme "user" and opaque
-// "password@host" has no User field to inspect. So no branch may echo the
-// value at all, and this table proves it for the shapes that have a credential
-// in them.
 func TestParseAPIBaseNeverEchoesACredential(t *testing.T) {
 	for _, raw := range []string{
-		"https://user:secretkey@example.com",          // userinfo, parses
-		"ftp://user:secretkey@example.com",            // wrong scheme, userinfo
-		"http://user:secretkey@",                      // userinfo, no host
-		"user:secretkey@example.com",                  // opaque, no User field
-		"https://user:secretkey@example.com:notaport", // will not parse
-		"https://user:secretkey@example.com/%zz",      // bad escape
+		"https://user:secretkey@example.com",
+		"ftp://user:secretkey@example.com",
+		"http://user:secretkey@",
+		"user:secretkey@example.com",
+		"https://user:secretkey@example.com:notaport",
+		"https://user:secretkey@example.com/%zz",
 	} {
 		_, err := parseAPIBase(raw)
 		if err == nil {
@@ -990,10 +908,6 @@ func TestParseAPIBaseNeverEchoesACredential(t *testing.T) {
 	}
 }
 
-// The storage secret is in every request the CLI makes to the Worker, so a
-// remote plain-http URL is refused; loopback is where the stand-in and a local
-// dev Worker live, and cleartext there never leaves the machine. Every spelling
-// of loopback counts, not just the one the first version happened to list.
 func TestParseAPIBaseRequiresHTTPSOffLoopback(t *testing.T) {
 	if _, err := parseAPIBase("http://example.com"); err == nil {
 		t.Error("plain http to a remote host must be refused: the secret would travel in the clear")
@@ -1018,9 +932,6 @@ func TestParseAPIBaseRequiresHTTPSOffLoopback(t *testing.T) {
 	}
 }
 
-// A config is not required to carry a whole key pair: a secret without the id
-// is a half-written file, not a file this CLI did not write, and each caller
-// asks for the half it needs.
 func TestParseRcloneConfigReportsAPartialKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rclone.conf")
 	if err := os.WriteFile(path, []byte("[drive]\nsecret_access_key = ONLYTHESECRET\n"), 0o600); err != nil {
@@ -1033,8 +944,6 @@ func TestParseRcloneConfigReportsAPartialKey(t *testing.T) {
 	if c.SecretKey != "ONLYTHESECRET" {
 		t.Errorf("SecretKey = %q, want the value the file carries", c.SecretKey)
 	}
-	// logout needs both, and refuses the half-written file rather than call it
-	// this device's key.
 	home := t.TempDir()
 	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
 		t.Fatal(err)
@@ -1047,9 +956,6 @@ func TestParseRcloneConfigReportsAPartialKey(t *testing.T) {
 	}
 }
 
-// A control byte plus userinfo is the shape that could slip a credential past a
-// "check first, then print" guard, so it is pinned in the table that proves no
-// branch echoes the value.
 func TestParseAPIBaseNeverEchoesACredentialWithAControlByte(t *testing.T) {
 	for _, raw := range []string{
 		"https://user:secretkey@example.com\n",
@@ -1066,8 +972,6 @@ func TestParseAPIBaseNeverEchoesACredentialWithAControlByte(t *testing.T) {
 	}
 }
 
-// A malformed line can be a bare secret; the error reaches the terminal, so
-// the line's contents must not.
 func TestParseRcloneConfigDoesNotEchoAMalformedLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rclone.conf")
 	if err := os.WriteFile(path, []byte("[drive]\nSECRETBLOBDATA\n"), 0o600); err != nil {
@@ -1083,8 +987,6 @@ func TestParseRcloneConfigDoesNotEchoAMalformedLine(t *testing.T) {
 }
 
 func TestReadSecretKeyRejectsMultiLineStdin(t *testing.T) {
-	// Both lines already written, then closed: the second line is sitting in the
-	// reader's buffer when the first line is read, so it is caught.
 	_, err := ReadSecretKey("", true, strings.NewReader("SECRETONE\nSECRETTWO\n"))
 	if err == nil {
 		t.Fatal("more than one line on stdin must not become one secret")
@@ -1094,18 +996,10 @@ func TestReadSecretKeyRejectsMultiLineStdin(t *testing.T) {
 	}
 }
 
-// The flag reads a line, not the whole pipe. A writer that stays open — a
-// process manager, a long-lived producer — must not hang the mount, and the
-// test proves the read returns on the newline with the writer still live. A
-// second line that is still coming is not waited for: the flag says one line,
-// and sitting on an open pipe is the hang this exists to avoid.
 func TestReadSecretKeyReturnsOnTheNewlineNotAtEOF(t *testing.T) {
 	reader, writer := io.Pipe()
 	defer writer.Close()
 	go func() {
-		// Write the line and deliberately do NOT close: an EOF-only read would
-		// block here forever, and this test would time out with a failure
-		// rather than pass.
 		_, _ = writer.Write([]byte("SECRETFROMANOPENPIPE\n"))
 	}()
 	got, err := ReadSecretKey("", true, reader)
@@ -1124,16 +1018,11 @@ func TestReadSecretKeyRejectsAnOversizeStdin(t *testing.T) {
 	}
 }
 
-// TestDefaultHomeIsTheOSHomeDirectoryNotTheEnvironment is drive#544: the
-// default home used to be os.Getenv("HOME"), and Windows exports no HOME, so
-// every default path there resolved against an empty string.
 func TestDefaultHomeIsTheOSHomeDirectoryNotTheEnvironment(t *testing.T) {
 	orig := userHomeDir
 	t.Cleanup(func() { userHomeDir = orig })
-	// The answer a Windows session gives: USERPROFILE.
 	const profile = `C:\Users\Jane`
 	userHomeDir = func() (string, error) { return profile, nil }
-	// A stale HOME is on the machine anyway. It is not the source any more.
 	t.Setenv("HOME", `/nonexistent/old-home`)
 	if got := DefaultHome(); got != profile {
 		t.Errorf("DefaultHome() = %q, want the OS's own home %q", got, profile)
@@ -1145,19 +1034,12 @@ func TestWindowsBuildWithNoHOMEResolvesTheConfigUnderTheProfile(t *testing.T) {
 	t.Cleanup(func() { userHomeDir = orig })
 	const profile = `C:\Users\Jane`
 	userHomeDir = func() (string, error) { return profile, nil }
-	// What a Windows session has: no HOME at all (drive#544).
 	t.Setenv("HOME", "")
 
 	home := DefaultHome()
 	if home != profile {
 		t.Fatalf("DefaultHome() = %q, want %q with HOME unset", home, profile)
 	}
-	// The paths the config, the cache and the login task hang off must sit
-	// under the profile, not under an empty string. An empty home put them at
-	// `.config\drive` — a relative path that resolves against whatever folder
-	// the command ran from — and the login task runs from System32, so the
-	// mount it started read no rclone config and `drive status` answered from
-	// an empty cache with the mount down.
 	for name, got := range map[string]string{
 		"config dir":    DefaultConfigDir(home),
 		"cache dir":     DefaultCacheDir(home),
@@ -1175,11 +1057,6 @@ func TestWindowsBuildWithNoHOMEResolvesTheConfigUnderTheProfile(t *testing.T) {
 }
 
 func TestWriteFileAtomicSyncsTheBytesAndTheDirectory(t *testing.T) {
-	// The rename is a directory operation, not a promise: the bytes have to
-	// reach the disk before the rename, and the rename itself has to reach the
-	// disk after it, or a machine that loses power mid-write leaves a
-	// zero-length credentials.json (drive#544). Both calls are observed here
-	// because the writes are the only part a test can see.
 	var syncedFiles []string
 	var syncedDirs []string
 	origFile, origDir := atomicwrite.SyncFile, atomicwrite.SyncDir
@@ -1201,8 +1078,6 @@ func TestWriteFileAtomicSyncsTheBytesAndTheDirectory(t *testing.T) {
 	if len(syncedFiles) != 1 {
 		t.Fatalf("synced files = %v, want the temp file synced once", syncedFiles)
 	}
-	// The temp file is a sibling of its destination, so it is the same
-	// directory the rename moves it inside.
 	if got := filepath.Dir(syncedFiles[0]); got != dir {
 		t.Errorf("synced %s, want a sibling of %s", syncedFiles[0], path)
 	}
@@ -1228,7 +1103,6 @@ func TestWriteFileAtomicNamesTheFileWhenTheSyncRefuses(t *testing.T) {
 	if !strings.Contains(err.Error(), path) {
 		t.Errorf("error %v must name the file that was not saved", err)
 	}
-	// Nothing is renamed into place, and no temp file is left behind.
 	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("stat %s = %v, want no file", path, statErr)
 	}
@@ -1238,11 +1112,6 @@ func TestWriteFileAtomicNamesTheFileWhenTheSyncRefuses(t *testing.T) {
 	}
 }
 
-// TestWriteFileAtomicKeepsTheContentsWhenTheDirectorySyncRefuses: the rename
-// is done by the time the directory fsync runs, so a machine that will not
-// fsync the directory has already put the bytes where the next read finds
-// them (drive#544). The command still says so, because nobody proved the
-// change reached the disk.
 func TestWriteFileAtomicKeepsTheContentsWhenTheDirectorySyncRefuses(t *testing.T) {
 	orig := atomicwrite.SyncDir
 	t.Cleanup(func() { atomicwrite.SyncDir = orig })

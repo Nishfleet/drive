@@ -1,7 +1,3 @@
-// Abuse guards (drive#464): one card fingerprint per active account, 1 TB
-// until the first charge, spending-cap default $20. Pure rules first, then D1 writes through the same
-// functions the Worker runs.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {

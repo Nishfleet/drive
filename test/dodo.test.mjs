@@ -1,14 +1,3 @@
-// Dodo test-mode hourly push (drive issue #51, build step 6 remainder).
-//
-// The meter already writes `usage_minutes`. This file is the billing half
-// that follows: each closed hour becomes one ingest event at
-// test.dodopayments.com, keyed by account and hour, carrying the
-// bill from monthBillCents(), held to the maximum — never the raw meter — and
-// the invoice's two dollar lines, storage and downloads.
-//
-// fetch is injected. A test that reached the live host, or that let a retried
-// hour mint a second event id, would charge twice; both are refused here.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { minutesInMonth, monthBillCents } from "../core/billing.js";
