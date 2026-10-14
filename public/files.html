@@ -1589,6 +1589,11 @@ navSignoutAll.addEventListener("click", () => {
   postSignout("signout-all");
 });
 
+// Home links here with #rewind, so "see and undo" lands on the agent list.
+if (typeof location !== "undefined" && location.hash === "#rewind") {
+  view = "rewind";
+  setTab();
+}
 refresh();
   </script>
   <!-- The one shared pending-close banner script (drive issue #424).

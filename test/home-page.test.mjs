@@ -14,7 +14,7 @@ function stub(id) {
   const listeners = new Map();
   return {
     id,
-    hidden: /id="${id}"[^>]*\shidden/.test(page),
+    hidden: new RegExp(`id="${id}"[^>]*\\shidden`).test(page),
     textContent: "",
     href: "",
     disabled: false,
@@ -85,4 +85,52 @@ test("a failed read shows a message and a Try again button, and a 401 shows the 
   });
   assert.equal(out.get("home-retry").hidden, true);
   assert.equal(out.get("nav-signin").hidden, false);
+});
+
+test("the balance tile adds the runway line, and the agents tile names the newest session", async () => {
+  const els = await run({
+    "/api/balance": {
+      body: { ...BALANCE, runway_line: "Your $12 lasts about 7 months at your current size." },
+    },
+    "/api/usage": { body: USAGE },
+    "/api/devices": { body: KEYS },
+    "/api/rewind": {
+      body: {
+        rewinds: [
+          { changedBy: "old", createdAt: 1, canRewind: false, files: { count: 9 } },
+          {
+            changedBy: "claude",
+            createdAt: 5,
+            canRewind: true,
+            restorableUntil: "2026-10-20T00:00:00.000Z",
+            files: { count: 3 },
+          },
+        ],
+      },
+    },
+  });
+  assert.equal(
+    els.get("balance-line").textContent,
+    "Enough for months. Your $12 lasts about 7 months at your current size.",
+  );
+  assert.equal(els.get("agents-what").textContent, "claude changed 3 files");
+  assert.match(els.get("agents-line").textContent, /^One click puts your files back, until /);
+  assert.equal(els.get("agents").hidden, false);
+});
+
+test("no agent sessions, or a failed read, leaves the agents tile out", async () => {
+  const none = await run({
+    "/api/balance": { body: BALANCE },
+    "/api/usage": { body: USAGE },
+    "/api/devices": { body: KEYS },
+    "/api/rewind": { body: { rewinds: [] } },
+  });
+  assert.equal(none.get("agents").hidden, true);
+  const down = await run({
+    "/api/balance": { body: BALANCE },
+    "/api/usage": { body: USAGE },
+    "/api/devices": { body: KEYS },
+  });
+  assert.equal(down.get("agents").hidden, true);
+  assert.equal(down.get("home-status").hidden, true);
 });
