@@ -341,12 +341,6 @@ func TestUpdateFailsWhenUpgradeFails(t *testing.T) {
 	}
 }
 
-// TestUpdateOffersTheRcloneUpdateWhenBelowTheFloor is drive#560's offer half
-// of bullet 3: the binary replaced itself, and an rclone below
-// MinRcloneVersion makes the mount's own flags fail (drive#105), so the update
-// is the moment that says so. The offer runs through the real CheckRclone, with
-// a stand-in rclone binary, so a mock cannot decide what the words are. The
-// restart stays off: a unit test may not restart this machine's real mount.
 func TestUpdateOffersTheRcloneUpdateWhenBelowTheFloor(t *testing.T) {
 	f := brewBins()
 	f.out["brew outdated --cask nish3451/tap/drive"] = "drive (1.0.0) < 1.1.0"
@@ -373,11 +367,6 @@ func TestUpdateOffersTheRcloneUpdateWhenBelowTheFloor(t *testing.T) {
 	}
 }
 
-// TestUpdateDoesNotRestartAMountOnAMachineWithoutOne runs the production path
-// (`drive update` sets restartMount) against a home directory with no mount in
-// it, which is what most machines are. It proves the new restart step restarts
-// nothing and fails nothing there, so adding it cannot break an update that
-// used to work.
 func TestUpdateDoesNotRestartAMountOnAMachineWithoutOne(t *testing.T) {
 	f := brewBins()
 	f.out["brew outdated --cask nish3451/tap/drive"] = "drive (1.0.0) < 1.1.0"
@@ -406,11 +395,6 @@ func TestUpdateDoesNotRestartAMountOnAMachineWithoutOne(t *testing.T) {
 	}
 }
 
-// TestUpdateDoesNotRestartWhenRcloneIsBelowTheFloor is the other half of
-// drive#560 bullet 3: the binary updated, rclone is still below the floor, and
-// RestartMount would then fail on that old rclone (drive#105). The update
-// names the rclone fix and leaves the mount alone, so a successful install
-// is not turned into an update-restart failure.
 func TestUpdateDoesNotRestartWhenRcloneIsBelowTheFloor(t *testing.T) {
 	orig := mountOn
 	t.Cleanup(func() { mountOn = orig })
@@ -454,9 +438,6 @@ func TestModuleVersionEmptyAndDevel(t *testing.T) {
 	}
 }
 
-// A binary built from a checkout, with the version-control stamping off, has
-// no module version in it, so `drive version` falls back to the source-tree
-// version.
 func TestDriveVersionFallbackForACheckoutBuild(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go not on PATH")
@@ -475,8 +456,6 @@ func TestDriveVersionFallbackForACheckoutBuild(t *testing.T) {
 	}
 }
 
-// A binary built from a dirty checkout carries the toolchain's own
-// pseudo-version, which is that binary's real identity.
 func TestDriveVersionReportsTheWorkingTreeVersion(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go not on PATH")

@@ -13,13 +13,6 @@ import (
 	"time"
 )
 
-// The speed ratchet (drive issue #226). bench/baseline.json is the ceiling:
-// a stand-in run that is slower than mean+noise fails, and a run that is
-// faster than mean-noise fails until the same PR lowers the row. Hyperfine
-// exports the CLI row; the mount rows are timed in this file against the
-// loopback stand-in (DRIVE_BENCH_SCALE=quick). Both are stock tools, no
-// helper script.
-
 const ratchetRuns = 10
 
 var ratchetRows = []string{
@@ -78,8 +71,6 @@ func loadRatchet(t testing.TB) ratchetFile {
 	return file
 }
 
-// ratchetBand is the slowdown the row is meant to catch: the measured noise,
-// at least 2 ms, because sub-millisecond opens are noisier than they are long.
 func ratchetBand(row ratchetRow) float64 {
 	if row.Stddev < 0.002 {
 		return 0.002
@@ -87,8 +78,6 @@ func ratchetBand(row ratchetRow) float64 {
 	return row.Stddev
 }
 
-// ratchetVerdict is the one rule: slower than mean+band is a regression;
-// faster than mean-band means the PR must lower the checked-in row.
 func ratchetVerdict(baseline, measured ratchetRow) string {
 	band := ratchetBand(baseline)
 	if measured.Mean > baseline.Mean+band {
@@ -124,7 +113,6 @@ func meanSampleStd(xs []float64) (mean, stddev float64) {
 
 func TestRatchetDetectsADeliberateSleep(t *testing.T) {
 	baseline := ratchetRow{Mean: 0.010, Stddev: 0.002, Runs: 10}
-	// +50 ms, the issue's "added sleep on a branch".
 	slower := ratchetRow{Mean: 0.010 + 0.050, Stddev: 0.002, Runs: 10}
 	if g := ratchetVerdict(baseline, slower); g != "slower" {
 		t.Fatalf("sleep-inflated row: verdict=%s, want slower", g)
@@ -179,8 +167,6 @@ func TestRatchetCLIColdStart(t *testing.T) {
 		t.Fatal("cli-cold-start missing from bench/baseline.json")
 	}
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		// GitHub-hosted runners are not this VPS. Fail only a slowdown
-		// the 50ms sleep proof would catch, not a 1 ms hardware delta.
 		if measured.Mean > 0.05 {
 			t.Errorf("cli-cold-start %.6fs is slower than the 50ms sleep proof", measured.Mean)
 		}
@@ -246,11 +232,6 @@ func assertRatchet(t *testing.T, id string, baseline, measured ratchetRow) {
 	}
 }
 
-// TestSpeedRatchet runs the stand-in mount rows. It skips -short so the CI
-// unit-test step stays inside its 10 minutes; the detector and the CLI row
-// still run there. A follow-up with workflows permission adds
-// `go test -run TestSpeedRatchet` as its own step (the worker App cannot
-// write workflow files).
 func TestSpeedRatchet(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stand-in speed ratchet skipped in -short mode")
@@ -402,9 +383,6 @@ func timeRatchetPuts(t *testing.T, h *benchStandin) ratchetRow {
 
 func timeRatchetEdit(t *testing.T, h *benchStandin, name string, size int64) ratchetRow {
 	t.Helper()
-	// Same clock as BenchmarkSmallEdit: append until the new size is in
-	// storage, not until Close returns. A regression in write-back is a
-	// slower save, and the scoreboard's competitor figure is the stored append.
 	xs := make([]float64, ratchetRuns)
 	want := size
 	for i := range xs {
