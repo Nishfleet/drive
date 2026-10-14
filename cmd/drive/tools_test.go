@@ -11,9 +11,6 @@ import (
 	"testing"
 )
 
-// recordingRunner records every command the adapters run instead of executing
-// it, so the tests assert the exact command each tool gets. respond, when set,
-// answers per call; otherwise fail (when set) answers every call.
 type recordingRunner struct {
 	calls   []string
 	out     string
@@ -106,8 +103,6 @@ func TestGeminiConnectNamesItsTransportAndScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Gemini's default scope is the project config, which a session elsewhere
-	// would not see, and its user scope answers the JSON path check below.
 	if err := tool.Connect(env); err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +113,6 @@ func TestGeminiConnectNamesItsTransportAndScope(t *testing.T) {
 }
 
 func TestClaudeReplacesAnExistingEntry(t *testing.T) {
-	// The spec requires `drive init` to be safe to run again, but Claude's add
-	// refuses an entry that is already there.
 	env, runner := testEnv(t)
 	tool, err := toolByName("claude")
 	if err != nil {
@@ -296,7 +289,6 @@ func TestCheckProbeMeansTheToolAnswersForItself(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A failed probe is the tool's own "no such server" answer.
 	runner.out, runner.fail = "", fmt.Errorf("claude mcp get drive: exit 1: not found")
 	if yes, err := tool.Connected(env); yes || err != nil {
 		t.Fatalf("failed probe reported connected=%v err=%v", yes, err)
@@ -358,8 +350,6 @@ func TestInitConnectsOnlyInstalledTools(t *testing.T) {
 			case "claude":
 				return "/fake/claude", nil
 			case "npx":
-				// claude is a Node application, so a machine
-				// that has it has npx too (issue #561).
 				return "/fake/npx", nil
 			}
 			return "", fmt.Errorf("not on PATH")
@@ -422,10 +412,6 @@ func TestRunAgentsRejectsAnUnknownTool(t *testing.T) {
 }
 
 func TestHomeFlagIsAcceptedOnEitherSideOfTheToolName(t *testing.T) {
-	// `drive agents connect claude --home /x` must work: Go's flag package
-	// stops at the first positional, so runAgents reads the flag itself. An
-	// unknown tool is used so the parse is exercised without running a real
-	// agent tool.
 	for _, args := range [][]string{
 		{"connect", "not-a-tool", "--home", "/x"},
 		{"--home", "/x", "connect", "not-a-tool"},
@@ -476,9 +462,6 @@ func TestEnvironWithHomeKeepsExactlyOneHome(t *testing.T) {
 }
 
 func TestDefaultRunnerCarriesTheEnvHome(t *testing.T) {
-	// --home must reach the agent tools too: they write their MCP config under
-	// $HOME, so the clean-machine proof would otherwise touch the real user's
-	// config (seen on this host 2026-09-30).
 	env := Env{Home: "/fresh"}.withDefaults()
 	runner, ok := env.Runner.(ExecRunner)
 	if !ok {
@@ -490,9 +473,6 @@ func TestDefaultRunnerCarriesTheEnvHome(t *testing.T) {
 }
 
 func TestConnectCreatesTheDriveFolderBeforeRegistering(t *testing.T) {
-	// The MCP filesystem server refuses a folder that does not exist, and the
-	// tools run it on registration: claude reported "Failed to connect"
-	// against a missing folder (seen on this host 2026-09-30).
 	env, runner := testEnv(t)
 	existedAtCall := false
 	runner.respond = func(_ int, _ string) ([]byte, error) {
@@ -527,12 +507,6 @@ func TestConnectCreatesTheDriveFolderForJSONTools(t *testing.T) {
 	}
 }
 
-// The npx gate (drive issue #561): every agent tool runs its
-// server through `npx -y @modelcontextprotocol/server-filesystem`,
-// so a machine without Node.js has tools that register but never
-// start. The check runs before anything is written, so the
-// failure is at the person's own command, naming the install
-// that fixes it, with no half-connected tool behind it.
 func TestConnectFailsBeforeWritingConfigWithoutNpx(t *testing.T) {
 	runner := &recordingRunner{}
 	env := Env{
@@ -557,8 +531,6 @@ func TestConnectFailsBeforeWritingConfigWithoutNpx(t *testing.T) {
 	if !strings.Contains(err.Error(), "Node.js") {
 		t.Fatalf("Connect without npx = %v, want it to name Node.js", err)
 	}
-	// Nothing was written: no tool config, no drive folder,
-	// and no tool command ran.
 	if _, err := os.Stat(filepath.Join(env.Home, ".cursor", "mcp.json")); !os.IsNotExist(err) {
 		t.Errorf("the tool's config was written anyway: %v", err)
 	}

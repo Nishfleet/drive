@@ -12,31 +12,6 @@ import (
 	"time"
 )
 
-// Transfer reliability proofs (drive issue #107), run against a local
-// `rclone serve s3` stand-in, the same way TestStandinMountProof and
-// TestStandinPauseProof are. They assert the issue's own bullets:
-//
-//  1. Interrupted upload: the storage goes away mid-upload of a large file,
-//     comes back, and the file arrives whole with a checksum match, with no
-//     pause/resume (that is issue #100).
-//  2. Crash: the mount process is killed with files waiting; after restart
-//     `drive status` names them and they upload.
-//
-// Disk-full is Linux-only (a tmpfs for the cache disk) in transfer_linux_test.go.
-//
-// Searched before writing anything: rclone mount VFS cache (rclone.org/commands
-// /rclone_mount/, rclone v1.75.1) --vfs-cache-mode full keeps dirty files on
-// disk and retries failed uploads with doubling delay; "If rclone is quit or
-// dies with files that haven't been uploaded, these will be uploaded next time
-// rclone is run with the same flags." rc vfs/stats diskCache.outOfSpace is the
-// full-disk flag the fill loop already reads. No second queue or retry loop is
-// written here.
-//
-// They need a mount. Where the host does not give one they skip with the same
-// message as the other stand-in proofs (run inside `unshare -Urm` on Linux).
-// Set DRIVE_STANDIN_INTERRUPT_MB to change the interrupted file's size
-// (default 1024, the issue's 1 GB; CI sets 64 so the job fits).
-
 func TestStandinInterruptUpload(t *testing.T) {
 	env := newTransferEnv(t)
 	size := interruptSize(t)
@@ -89,8 +64,6 @@ func TestStandinInterruptUpload(t *testing.T) {
 	if err := env.restart.start(t); err != nil {
 		t.Fatal(err)
 	}
-	// Full speed again so the retry is the product (rclone's own writeback),
-	// not a leftover test rate. This is rc core/bwlimit, not `drive resume`.
 	if err := rc.SetBwLimit(context.Background(), resumeRate); err != nil {
 		t.Logf("clear the test rate: %v", err)
 	}

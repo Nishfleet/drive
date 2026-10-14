@@ -8,21 +8,12 @@ import (
 	"time"
 )
 
-// `drive undo` (drive issue #774) against a stand-in that serves /api/rewind
-// the way src/rewind.js does: GET the list of previews, GET one branch's
-// preview, POST one branch to rewind it. The route is this command's only
-// partner, so a shape change in the route breaks this test rather than a
-// person's files.
-
-// undoStandIn is the stand-in's scripted behaviour.
 type undoStandIn struct {
-	list       string   // the verbatim reply to GET /api/rewind; empty uses the default two open branches
-	postState  string   // the state the POST's answer carries; empty is "discarded"
-	pollStates []string // what GET /api/branches/<name> answers while waiting, in order
+	list       string
+	postState  string
+	pollStates []string
 }
 
-// undoServer serves the rewind family, and the branch poll that waits out a
-// job the route answered before its last batch.
 func undoServer(t *testing.T, cfg undoStandIn) (*httptest.Server, *[]branchCall) {
 	t.Helper()
 	calls := &[]branchCall{}
@@ -58,8 +49,6 @@ func undoServer(t *testing.T, cfg undoStandIn) (*httptest.Server, *[]branchCall)
 			}
 			writeJSON(t, w, 202, `{"name":"new","state":"`+state+`","rewound":2,"changedBy":"codex"}`)
 		case r.Method == "GET" && r.URL.Path == BRANCHES_PATH+"/new":
-			// The wait `drive discard` also does: the route answered 202 before
-			// the last batch, and the branch tells the command when it is done.
 			state := "discarded"
 			if pollIndex < len(cfg.pollStates) {
 				state = cfg.pollStates[pollIndex]
@@ -76,8 +65,6 @@ func undoServer(t *testing.T, cfg undoStandIn) (*httptest.Server, *[]branchCall)
 }
 
 func TestRunUndoRewindsTheNewestBranch(t *testing.T) {
-	// No argument: the last agent change is the newest branch that can still be
-	// rewound, whichever order the route listed them in.
 	server, requests := undoServer(t, undoStandIn{list: `{"rewinds":[` +
 		`{"name":"old","sourcePrefix":"/Photos","state":"open","changedBy":"claude",` +
 		`"createdAt":"2026-09-01T10:00:00Z","canRewind":true,` +
@@ -95,8 +82,6 @@ func TestRunUndoRewindsTheNewestBranch(t *testing.T) {
 			t.Fatalf("runUndo: %v", err)
 		}
 	})
-	// What the rewind will throw away comes first, then the result: the line
-	// above the result is the decision the command made.
 	for _, want := range []string{
 		"codex worked in /Docs: 2 files changed (0 added, 1 changed, 1 removed).",
 		"  changed b.txt",
@@ -107,9 +92,6 @@ func TestRunUndoRewindsTheNewestBranch(t *testing.T) {
 			t.Errorf("output = %q, want %q", out, want)
 		}
 	}
-	// The newest branch (stale, 2026-11-01) cannot be rewound and was not
-	// picked: the route decides that, and the command obeys the flag rather
-	// than a rule of its own.
 	posts := 0
 	for _, call := range *requests {
 		if call.Method == "POST" {
@@ -128,8 +110,6 @@ func TestRunUndoRewindsTheNewestBranch(t *testing.T) {
 }
 
 func TestRunUndoRewindsTheNamedBranch(t *testing.T) {
-	// A named branch reads its own preview, so the command can name the folder
-	// and the files without listing (and without the account's other work).
 	server, requests := undoServer(t, undoStandIn{})
 	home := signedInHome(t)
 	out := captureStdout(t, func() {
@@ -177,8 +157,6 @@ func TestRunUndoSaysSoWhenNoBranchCanBeRewound(t *testing.T) {
 }
 
 func TestRunUndoReportsTheRoutesOwnSentenceForAnUnknownBranch(t *testing.T) {
-	// The route's 404 sentence is what a person reads: the command has no
-	// second copy of "no such branch" to drift from it.
 	server, requests := undoServer(t, undoStandIn{})
 	home := signedInHome(t)
 	err := runUndo([]string{"--api", server.URL, "--home", home, "gone"})
@@ -193,9 +171,6 @@ func TestRunUndoReportsTheRoutesOwnSentenceForAnUnknownBranch(t *testing.T) {
 }
 
 func TestRunUndoWaitsOutARewindThatIsStillRunning(t *testing.T) {
-	// The route answers 202 the moment the job is claimed (src/rewind.js), so
-	// the command waits the branch out and reports the batch count, the same
-	// way `drive discard` does.
 	sleepBranchJob = func(time.Duration) {}
 	t.Cleanup(func() { sleepBranchJob = time.Sleep })
 	server, requests := undoServer(t, undoStandIn{
@@ -230,7 +205,7 @@ func TestRunUndoRejectsASecondBranchName(t *testing.T) {
 }
 
 func TestRunUndoNeedsASignedInDevice(t *testing.T) {
-	home := t.TempDir() // no credentials.json
+	home := t.TempDir()
 	err := runUndo([]string{"--api", "https://api.example.invalid", "--home", home})
 	if err == nil || !strings.Contains(err.Error(), "not signed in") {
 		t.Fatalf("err = %v, want the not-signed-in sentence", err)
@@ -238,8 +213,6 @@ func TestRunUndoNeedsASignedInDevice(t *testing.T) {
 }
 
 func TestNewestRewindableIgnoresWhatCannotBeRewound(t *testing.T) {
-	// The pick is by the instant each branch was made, and only over the
-	// branches the route says can still be rewound.
 	chosen, ok := newestRewindable([]RewindPreview{
 		{Name: "newest-but-closed", CreatedAt: "2026-11-01T00:00:00Z"},
 		{Name: "older", CreatedAt: "2026-09-01T00:00:00Z", CanRewind: true},

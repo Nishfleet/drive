@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// uninstallHome is a home the way a mounted device looks: the key
-// and config, both login items, and a drive folder holding a file.
 func uninstallHome(t *testing.T) string {
 	t.Helper()
 	home := configWithLoginItem(t)
@@ -35,10 +33,6 @@ func uninstallHome(t *testing.T) string {
 	return home
 }
 
-// The caller test: the flag path runUninstall owns reaches Uninstall
-// with the --home it was given, and both login items — the mount item
-// and the prefetch sidecar `drive mount` writes beside it — are
-// removed, so nothing starts drive at the next login.
 func TestUninstallRemovesBothLoginItems(t *testing.T) {
 	home := uninstallHome(t)
 
@@ -56,10 +50,6 @@ func TestUninstallRemovesBothLoginItems(t *testing.T) {
 	}
 }
 
-// Uninstall is not logout. The key, the config directory and the
-// drive folder all survive it: the refusal to remove the drive folder
-// is the point of the command, so the file inside it is read back and
-// compared, not just its existence checked.
 func TestUninstallKeepsTheKeyTheConfigAndTheDriveFolder(t *testing.T) {
 	home := uninstallHome(t)
 	file := filepath.Join(DefaultMountDir(home), "file.txt")
@@ -85,9 +75,6 @@ func TestUninstallKeepsTheKeyTheConfigAndTheDriveFolder(t *testing.T) {
 	}
 }
 
-// A machine that was never mounted, or an uninstall that already ran,
-// has no login item and no mount: both are the same success, the way
-// logout is safe to run twice.
 func TestUninstallIsSafeToRunTwice(t *testing.T) {
 	home := uninstallHome(t)
 	if err := runUninstall([]string{"--home", home}); err != nil {
@@ -98,8 +85,6 @@ func TestUninstallIsSafeToRunTwice(t *testing.T) {
 	}
 }
 
-// The home flag is the one thing the caller parses: an argument that
-// is not a flag is refused, the way every other subcommand refuses.
 func TestUninstallRefusesAnUnexpectedArgument(t *testing.T) {
 	if err := runUninstall([]string{"--home", t.TempDir(), "extra"}); err == nil {
 		t.Fatal("an unexpected argument was accepted")
