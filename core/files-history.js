@@ -69,9 +69,7 @@ export async function versionsRequest(
       size: version.sizeBytes,
       savedAt: new Date(version.createdAt).toISOString(),
       replacedAt: new Date(Number(version.hiddenAt)).toISOString(),
-      restorableUntil: new Date(
-        Number(version.hiddenAt) + days * DAY_MS,
-      ).toISOString(),
+      restorableUntil: new Date(Number(version.hiddenAt) + days * DAY_MS).toISOString(),
     })),
   });
 }

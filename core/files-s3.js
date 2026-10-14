@@ -734,15 +734,16 @@ export function fileRows(entries) {
  * window closes are both UTC words if this Worker writes them (drive#559).
  * @param {FileEntry[]} entries
  * @param {number} [now]
+ * @param {number} [days] the account's window
  */
-export function trashRows(entries, now = Date.now()) {
+export function trashRows(entries, now = Date.now(), days = RECENTLY_DELETED_DAYS) {
   return entries
     .map((entry) => {
       const parsed = parseTrashName(entry.name);
       if (!parsed) {
         return null;
       }
-      const restorable = isRestorable(parsed.deletedAt, now);
+      const restorable = isRestorable(parsed.deletedAt, now, days);
       return {
         // A validated drive path always has a last segment; the `|| ""` is
         // here because split("").pop() is typed as possibly undefined and a
@@ -752,14 +753,13 @@ export function trashRows(entries, now = Date.now()) {
         deletedAt: parsed.deletedAt,
         sizeLabel: formatBytes(entry.size || 0),
         deletedIso: isoStamp(parsed.deletedAt, `the file ${parsed.path}`),
-        untilIso: isoStamp(
-          parsed.deletedAt + RECENTLY_DELETED_DAYS * DAY_MS,
-          `the file ${parsed.path}`,
-        ),
+        untilIso: isoStamp(parsed.deletedAt + days * DAY_MS, `the file ${parsed.path}`),
         restorable,
         // Past the window the button is gone, and the one line says why.
-        restoreLabel: restorable ? "Restore" : "Past the 3 days",
-        goneLabel: restorable ? "" : "This one has been gone 3 days. Restoring it is not possible.",
+        restoreLabel: restorable ? "Restore" : `Past the ${days} days`,
+        goneLabel: restorable
+          ? ""
+          : `This one has been gone ${days} days. Restoring it is not possible.`,
       };
     })
     .filter(Boolean)

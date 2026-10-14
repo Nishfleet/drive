@@ -202,7 +202,7 @@ export const HIDDEN_VERSION_DAYS = 3;
  * @returns {Promise<{versioning: S3Response, lifecycle: S3Response, notification: S3Response|null, encryption: S3Response|null}>}
  */
 export async function provisionBucket(client, config) {
-  const { bucket, notificationQueueArn, hiddenVersionDays = HIDDEN_VERSION_DAYS } = config;
+  const { bucket, notificationQueueArn } = config;
 
   const created = await client.send("PUT", { bucket });
   if (created.status !== 200 && tagValue(created.text, "Code") !== "BucketAlreadyOwnedByYou") {
@@ -218,6 +218,16 @@ export async function provisionBucket(client, config) {
       body: "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
     }),
   );
+
+  // A caller that names the days (the history add-on, sign-in) gets exactly
+  // those. A caller that does not (the key mint) must not shorten a window the
+  // account paid for, so it keeps a longer rule the bucket already has.
+  let hiddenVersionDays = config.hiddenVersionDays ?? HIDDEN_VERSION_DAYS;
+  if (config.hiddenVersionDays === undefined) {
+    const current = await client.send("GET", { bucket, query: { lifecycle: "" } });
+    const days = current.status === 200 ? Number(tagValue(current.text, "NoncurrentDays")) : 0;
+    if (Number.isFinite(days) && days > hiddenVersionDays) hiddenVersionDays = days;
+  }
 
   // S3 refuses a lifecycle body without a Content-MD5, so it is computed here
   // rather than left to the caller to remember.

@@ -4318,3 +4318,29 @@ test("removeBatch refuses more than the 1,000-key ceiling and a mixed-bucket bat
   );
   assert.equal(calls, 0, "a refused batch makes no provider call");
 });
+
+test("the purge keeps an account's Recently deleted for the history window it chose", async () => {
+  const day = 24 * 60 * 60 * 1000;
+  const { db } = makeMeteredDB();
+  for (const [id, days] of /** @type {[string, number|null][]} */ ([
+    ["free", null],
+    ["month", 30],
+  ])) {
+    await db
+      .prepare("INSERT INTO accounts (id, email, created_at, history_days) VALUES (?1, ?2, ?3, ?4)")
+      .bind(id, `${id}@x.test`, now, days)
+      .run();
+  }
+  const store = createMemoryStore();
+  for (const id of ["free", "month"]) {
+    await park(store, id, "/ten.txt", now - 10 * day);
+    await park(store, id, "/forty.txt", now - 40 * day);
+  }
+
+  await purgeExpiredTrash(db, store, now);
+
+  const names = async (/** @type {string} */ id) =>
+    (await scopeStore(store, { id }).listAll(TRASH_PATH)).map((e) => e.name);
+  assert.deepEqual(await names("free"), []);
+  assert.deepEqual(await names("month"), [trashName("/ten.txt", now - 10 * day)]);
+});

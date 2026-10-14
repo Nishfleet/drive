@@ -13,6 +13,7 @@ import { createD1DeviceStore } from "../core/devices.js";
 import { handleSendEmailRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
 import { FILES_ENDPOINT } from "../core/files.js";
+import { provisionAccountBucket } from "../core/files-memory.js";
 import { scopeStore } from "../core/files-scope.js";
 import { HISTORY_ENDPOINT, handleHistoryRequest } from "../core/history-addon.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
@@ -418,9 +419,13 @@ export function createApp() {
     }
     return handleHistoryRequest(c.req.raw, account, c.env.DRIVE_DB, { size30Bytes });
   });
-  app.post(HISTORY_ENDPOINT, (c) =>
-    handleHistoryRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
-  );
+  app.post(HISTORY_ENDPOINT, (c) => {
+    const account = c.get("account");
+    return handleHistoryRequest(c.req.raw, account, c.env.DRIVE_DB, {
+      apply: async (days) =>
+        account ? provisionAccountBucket(c.env, account.id, { hiddenVersionDays: days }) : false,
+    });
+  });
   // Outbound webhooks (drive#901): the account's endpoints, a test send and the
   // delivery log. Session-cookie routes like the balance beside them.
   app.get(WEBHOOK_ENDPOINT, (c) =>

@@ -411,7 +411,7 @@ export function storageVarsFromEnv(env) {
  * answers an empty folder for a bucket that is not there yet.
  * @param {StorageEnv} env
  * @param {string} accountId
- * @param {{fetchImpl?: typeof fetch}} [options]
+ * @param {{fetchImpl?: typeof fetch, hiddenVersionDays?: number}} [options]
  * @returns {Promise<boolean>} whether the provisioning call ran
  */
 export async function provisionAccountBucket(env, accountId, options = {}) {
@@ -430,7 +430,12 @@ export async function provisionAccountBucket(env, accountId, options = {}) {
     credentials: { accessKeyId: vars.accessKeyId, secretAccessKey: vars.secretAccessKey },
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
   });
-  await provisionBucket(client, { bucket: bucketForAccount(accountId) });
+  await provisionBucket(client, {
+    bucket: bucketForAccount(accountId),
+    ...(options.hiddenVersionDays === undefined
+      ? {}
+      : { hiddenVersionDays: options.hiddenVersionDays }),
+  });
   return true;
 }
 

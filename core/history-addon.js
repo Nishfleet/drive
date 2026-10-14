@@ -88,7 +88,9 @@ export function priceImpact(days, size30Bytes, oldBytes30) {
  * @param {Request} request
  * @param {{id: string}|null} account
  * @param {D1Database|undefined} db
- * @param {{now?: number, size30Bytes?: number}} [options]
+ * @param {{now?: number, size30Bytes?: number, apply?: (days: number) => Promise<boolean>}} [options]
+ *   `apply` sets the bucket's lifecycle rule to that many days and answers
+ *   false when this deployment has no storage credential to do it with
  * @returns {Promise<Response>}
  */
 export async function handleHistoryRequest(request, account, db, options = {}) {
@@ -123,12 +125,34 @@ export async function handleHistoryRequest(request, account, db, options = {}) {
         "Longer history counts old copies toward your size. Show the price and confirm it first.",
       );
     }
-    await run(
-      db,
-      "UPDATE accounts SET history_days = ?1 WHERE id = ?2",
-      days === HIDDEN_VERSION_DAYS ? null : days,
-      account.id,
-    );
+    const before = await historyDaysFor(db, account.id);
+    const save = () =>
+      run(
+        db,
+        "UPDATE accounts SET history_days = ?1 WHERE id = ?2",
+        days === HIDDEN_VERSION_DAYS ? null : days,
+        account.id,
+      );
+    // Whichever step can fail leaves the account on the side we can afford:
+    // a longer window is set on the bucket before it is billed, so a failed
+    // call never bills for history that is not kept; a shorter one is saved
+    // first, so a failed call never keeps history that is no longer billed.
+    try {
+      if (days > before) {
+        if (options.apply && !(await options.apply(days))) {
+          return errorResponse(503, "Longer history is not switched on yet. Nothing was changed.");
+        }
+        await save();
+      } else {
+        await save();
+        if (options.apply) await options.apply(days);
+      }
+    } catch {
+      return errorResponse(
+        502,
+        "The change did not finish, and nothing was billed for it. Please try once more shortly.",
+      );
+    }
     return json({ days });
   }
   return errorResponse(405, "Method not allowed.", { allow: "GET, POST" });
