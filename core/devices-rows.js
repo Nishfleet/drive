@@ -1,4 +1,3 @@
-// Split out of core/devices.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
 import { run } from "./db.js";
 
 export const CLOSE_CRON_LIMIT = 100;
@@ -80,13 +79,7 @@ export function deviceFromRow(row) {
     prefix: String(r.prefix ?? ""),
     capabilities: parseJsonList(r.capabilities),
     createdAt: Number(r.created_at ?? 0),
-    // Null is a key that never expires, which a person's own device key is only
-    // when the provider named no session of its own (drive#544); a column
-    // written before drive#106 is null too, so an existing row keeps the life
-    // it had rather than being handed an expiry it was never minted with.
     expiresAt: r.expires_at === null || r.expires_at === undefined ? null : Number(r.expires_at),
-    // Null is a row written before drive#106's second column existed, so the
-    // kind's hour is the ceiling on every renewal of it.
     ttlSeconds:
       r.ttl_seconds === null || r.ttl_seconds === undefined ? null : Number(r.ttl_seconds),
     lastSeenAt:
@@ -98,10 +91,6 @@ export function deviceFromRow(row) {
     ...(parseCappedFrom(r.prepaid_paused_from) === null
       ? {}
       : { prepaidPausedFrom: parseCappedFrom(r.prepaid_paused_from) }),
-    // The reason this key went read-only, when a freeze wrote one: the
-    // spending cap's own freeze is 'spend-cap', and the sweep's
-    // 'pre-charge-limit' is drive#655's to set. A row with no reason leaves
-    // the field out, so a caller tests one shape rather than an empty string.
     ...(parseCappedReason(r.capped_reason) === null
       ? {}
       : { cappedReason: parseCappedReason(r.capped_reason) }),

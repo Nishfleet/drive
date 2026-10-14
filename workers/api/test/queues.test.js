@@ -1,10 +1,3 @@
-// The live upload-queue report store (drive issue #318), against the real
-// migrations on a real SQLite engine: test/harness.mjs `createTestD1` applies
-// every migration in migrations/drive/ and speaks the D1 interface, so a
-// statement the store sends is checked against the schema the drive database
-// will actually have, and a column that does not exist fails here rather than
-// in production.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {

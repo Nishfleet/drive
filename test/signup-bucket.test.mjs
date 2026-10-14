@@ -1,11 +1,3 @@
-// The sign-up bucket proof (drive issue #540): a customer who only ever uses
-// the website gets their own storage bucket at the sign-in verify step, so the
-// Files page and web upload work before any device has signed in. The whole
-// walk runs through the Worker's own dispatch — POST /api/signin, the mailed
-// link, GET /api/signin/verify — against the pinned MinIO stand-in, the same
-// engine test/step1-storage.test.mjs proves the bucket build with, and skips
-// to a skip (never a pass) when no container engine answers.
-
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { platform } from "node:os";

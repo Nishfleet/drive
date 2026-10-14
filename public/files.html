@@ -1399,6 +1399,11 @@ navSignoutAll.addEventListener("click", () => {
   postSignout("signout-all");
 });
 
+// Home links here with #rewind, so "see and undo" lands on the agent list.
+if (typeof location !== "undefined" && location.hash === "#rewind") {
+  view = "rewind";
+  setTab();
+}
 refresh();
   </script>
   <script type="module" src="/close-banner.js"></script>

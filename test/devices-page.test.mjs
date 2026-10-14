@@ -1,7 +1,3 @@
-// The devices page (drive#525): list live keys with kind and last-used, and
-// revoke one at the provider. The handler is proven against the real D1
-// store; the Worker walk proves the account gate stands in front of it.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

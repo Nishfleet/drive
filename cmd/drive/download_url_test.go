@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// The dl Worker URL carries the key's download grant (drive#517), so it is a
-// read capability. The mount hands it to rclone through the 0600 environment
-// and never on the command line, where any local process can read it.
 const testDownloadURL = "https://dl.example.test/k/grantpayload.grantsig/"
 
 func TestMountPassesTheDownloadURLThroughTheEnvironmentOnly(t *testing.T) {
@@ -46,9 +43,6 @@ func TestMountPassesTheDownloadURLThroughTheEnvironmentOnly(t *testing.T) {
 	if strings.Contains(unit, "grantpayload") {
 		t.Errorf("the 0644 systemd unit carries the download grant:\n%s", unit)
 	}
-	// The launchd item runs the product (drive#515), so the plist carries no
-	// grant either: the product reads rclone.env and hands it to its rclone child
-	// as an environment variable.
 	darwin := BuildMountPlan("darwin", "/Users/test", "/opt/homebrew/bin/rclone", cfg)
 	plist := LaunchdPlist(darwin)
 	if strings.Contains(plist, "grantpayload") || strings.Contains(plist, testDownloadURL) {

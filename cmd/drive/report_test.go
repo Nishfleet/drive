@@ -13,18 +13,6 @@ import (
 	"time"
 )
 
-// Unit tests for the live upload-queue report (drive issue #318). The rclone
-// answers these decode are the real ones, measured on this host 2026-10-03 with
-// rclone v1.75.1 against a `rclone serve s3` stand-in, and the client reaches
-// rclone the way the product does — by running the rclone binary — so the
-// stand-in is the same tiny shim pause_test.go uses.
-
-// TestQueueReportFromTheMeasuredShapes is the join between rclone's two
-// answers and the report body: the queue's size is the total, the in-flight
-// bytes of the file also in the queue are what has gone up, and the file count
-// is the queue length. The numbers are the same ones `drive status` prints in
-// its per-file block (cmd/drive/status.go formatRCProgress), so a report and
-// the local line cannot disagree.
 func TestQueueReportFromTheMeasuredShapes(t *testing.T) {
 	queue := Queue{Queue: []QueueItem{
 		{Name: "shape.bin", Size: 10485760, Uploading: true},
@@ -39,7 +27,6 @@ func TestQueueReportFromTheMeasuredShapes(t *testing.T) {
 	if got.Files != 2 {
 		t.Errorf("files = %d, want 2", got.Files)
 	}
-	// big.bin is not in the queue, so its 12,120,064 bytes are not counted.
 	if got.UploadedBytes != 0 {
 		t.Errorf("uploadedBytes = %d, want 0: the transferring file is not in the queue", got.UploadedBytes)
 	}
@@ -50,7 +37,6 @@ func TestQueueReportFromTheMeasuredShapes(t *testing.T) {
 		t.Error("paused = true, want false")
 	}
 
-	// The in-flight file that is also in the queue contributes its bytes up.
 	stats.Transferring = []Transfer{{Name: "shape.bin", Bytes: 4194304, Size: 10485760, Percentage: 40}}
 	got = queueReportFrom(queue, stats, true)
 	if got.UploadedBytes != 4194304 {
@@ -64,10 +50,6 @@ func TestQueueReportFromTheMeasuredShapes(t *testing.T) {
 	}
 }
 
-// TestQueueReportUploadedNeverPassesTheTotal is the invariant the endpoint
-// holds (workers/api/src/queue-routes.js parseQueueReport): a queue whose
-// in-flight bytes passed the queue's total would be refused, so it is clamped
-// here rather than sent.
 func TestQueueReportUploadedNeverPassesTheTotal(t *testing.T) {
 	queue := Queue{Queue: []QueueItem{{Name: "shape.bin", Size: 10485760}}}
 	stats := Stats{Transferring: []Transfer{{Name: "shape.bin", Bytes: 20971520, Size: 20971520}}}
@@ -80,9 +62,6 @@ func TestQueueReportUploadedNeverPassesTheTotal(t *testing.T) {
 	}
 }
 
-// TestQueueReportOfAnEmptyQueue is the honest empty report: nothing waiting is
-// a complete state, and the page renders it as "Up to date" rather than as a
-// division by zero or a missing line.
 func TestQueueReportOfAnEmptyQueue(t *testing.T) {
 	got := queueReportFrom(Queue{Queue: []QueueItem{}}, Stats{}, false)
 	if got.Files != 0 || got.UploadedBytes != 0 || got.TotalBytes != 0 || got.Paused {
@@ -90,8 +69,6 @@ func TestQueueReportOfAnEmptyQueue(t *testing.T) {
 	}
 }
 
-// writingCredentials puts a signed-in device's credentials on disk, so the
-// reporter loop has an account and a token to report to.
 func writingCredentials(t *testing.T, home, apiBase string) {
 	t.Helper()
 	if err := SaveCredentials(home, Credentials{APIBase: apiBase, DeviceToken: "dtok-test"}); err != nil {
@@ -99,10 +76,6 @@ func writingCredentials(t *testing.T, home, apiBase string) {
 	}
 }
 
-// TestRunQueueReportLoopPostsTheQueue proves the loop reaches the Worker over
-// the device token the credentials hold, with the body the api route reads:
-// one tick, one POST, the JSON field names the Go and the Worker agree on
-// without a second name list.
 func TestRunQueueReportLoopPostsTheQueue(t *testing.T) {
 	var gotPath, gotAuth, gotContentType, gotBody string
 	var bodies []string
@@ -137,8 +110,6 @@ func TestRunQueueReportLoopPostsTheQueue(t *testing.T) {
 	writingCredentials(t, home, server.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	errs := RunQueueReportLoop(ctx, c, home)
-	// The first tick fires at the interval, so the loop is given one tick and
-	// then stopped: the mount's own cancel is what ends it in production.
 	timer := time.NewTimer(queueReportInterval + 2*time.Second)
 	defer timer.Stop()
 	select {
@@ -147,8 +118,6 @@ func TestRunQueueReportLoopPostsTheQueue(t *testing.T) {
 		t.Fatalf("the loop reported an error before its first tick: %v", err)
 	}
 	cancel()
-	// The loop ends without an error, so the channel closes rather than a pass
-	// having been dropped silently.
 	for err := range errs {
 		t.Errorf("the loop reported an error: %v", err)
 	}
@@ -168,9 +137,6 @@ func TestRunQueueReportLoopPostsTheQueue(t *testing.T) {
 	}
 }
 
-// TestRunQueueReportLoopIsDormantWithoutCredentials is the device that has not
-// signed in: nothing to report to, so the loop ends without an error and the
-// mount keeps running.
 func TestRunQueueReportLoopIsDormantWithoutCredentials(t *testing.T) {
 	c := fakeRclone(t, func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -192,11 +158,6 @@ func TestRunQueueReportLoopIsDormantWithoutCredentials(t *testing.T) {
 	}
 }
 
-// TestRunQueueReportLoopNamesAWorkerRefusal is the failure path: the Worker
-// refuses the report (429 inside the interval, say), and the loop says so on
-// the error channel with a named cause instead of going quiet. After the
-// delight pass (drive#117) a person reads the table's words and the Worker's
-// own sentence, and the raw 429 stays in the error chain for DRIVE_DEBUG.
 func TestRunQueueReportLoopNamesAWorkerRefusal(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -241,9 +202,6 @@ func TestRunQueueReportLoopNamesAWorkerRefusal(t *testing.T) {
 	}
 }
 
-// TestRunQueueReportLoopNamesAWorkerThatDoesNotAnswer is the mount that is up
-// and the Worker that is not: the loop keeps running and names the failure
-// rather than stopping.
 func TestRunQueueReportLoopNamesAWorkerThatDoesNotAnswer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	addr := strings.TrimPrefix(server.URL, "http://")
@@ -277,13 +235,6 @@ func TestRunQueueReportLoopNamesAWorkerThatDoesNotAnswer(t *testing.T) {
 	}
 }
 
-// TestQueueReportIntervalMatchesTheApiRoute pins the CLI's report interval to
-// the server's minimum spacing between two accepted reports
-// (core/queues.js QUEUE_REPORT_INTERVAL_SECONDS). The api route
-// refuses a report inside that interval, so a CLI that ticked faster than it
-// would be refused every time and the pages would fall silent. The Go cannot
-// import the page and the page cannot import the Go, so this test is the join
-// the same way TestStatusWordsMatchThePageWords is.
 func TestQueueReportIntervalMatchesTheApiRoute(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "core", "queues.js"))
 	if err != nil {

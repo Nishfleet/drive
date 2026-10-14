@@ -1,15 +1,3 @@
-// The public-page discovery metadata (drive issue #37) is a decision, not a
-// suggestion, so it is pinned here: the canonical origin, the Open Graph and
-// Twitter tags, the JSON-LD, sitemap.xml, robots.txt and llms.txt are all
-// built from core/seo.js and compared against the files that actually ship. A
-// later run cannot quietly drop the canonical URL, point the share card at a
-// 404, or let the structured data disagree with the config, because this fails.
-//
-// The price copy gate is test/pricing-copy.test.mjs. The bill numbers this
-// file also states are read from core/pricing.js (PRICE), the one price source
-// core/seo.js builds BILLING from (issue #23), so a re-priced product moves the
-// tags, the JSON-LD and llms.txt together with the visible copy.
-
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";

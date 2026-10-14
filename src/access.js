@@ -1,31 +1,5 @@
-// Cloudflare Access identity, verified (drive#342's live test address).
-//
-// While drive has no domain of its own, the site is on its workers.dev address
-// behind Cloudflare Access, so every request that reaches this Worker already
-// passed Access. Access proves who the person is with a signed JWT in the
-// `Cf-Access-Jwt-Assertion` header. Email sign-in cannot work on that address
-// (no sending domain until drive#199), so the test address signs a person in
-// with the identity Access already proved, and nothing else.
-//
-// The header alone proves nothing: a header is a string any caller can send.
-// What makes it a proof is the check below, which is Cloudflare's documented
-// one (developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/
-// validating-json/): the RS256 signature against the team's own public keys
-// (`<team domain>/cdn-cgi/access/certs`), `aud` equal to this Access
-// application's tag, `iss` equal to the team domain, and `exp`/`nbf`. It is
-// done here with the platform's WebCrypto rather than with jose: the Worker
-// bundle ships no jose (test/bundle-auth-crypto.test.mjs, drive#848), and
-// RS256 over a fetched JWK set is a short, fixed check.
-//
-// The whole feature is off unless both ACCESS_AUD and ACCESS_TEAM_DOMAIN are
-// set on the deployment: `accessConfig` returns null and the route answers as
-// a path that does not exist. They are set by hand on the test address only,
-// and deleting them turns the feature off without a deploy.
-
-/** The header Cloudflare Access puts the signed identity in. */
 const ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
 
-/** Where an Access team publishes the keys its JWTs are signed with. */
 const ACCESS_CERTS_PATH = "/cdn-cgi/access/certs";
 
 /** @typedef {{aud: string, issuer: string}} AccessConfig */
@@ -55,7 +29,6 @@ export function accessConfig(env) {
   return { aud, issuer: url.origin };
 }
 
-/** How long a team's fetched keys are trusted before they are fetched again. */
 const KEY_TTL_MS = 10 * 60 * 1000;
 
 /** @type {Map<string, {at: number, keys: JsonWebKey[]}>} */
@@ -141,7 +114,6 @@ async function verifiedPayload(token, issuer) {
   return valid ? JSON.parse(new TextDecoder().decode(fromBase64Url(body))) : null;
 }
 
-/** The same address shape the email sign-in accepts (src/signin.js). */
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**

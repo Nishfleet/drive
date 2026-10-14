@@ -1,37 +1,3 @@
-// The test-agent walk (drive#760): one account's whole journey, end to end,
-// with nothing live behind it. It signs a fresh test address up, reads the
-// sign-in mail out of a local stand-in, tops the account up $10 through a Dodo
-// test double and its signed webhook, mints a device key and an agent key,
-// does the file actions a mount would (create, open, copy, move, rename,
-// delete) against the pinned S3 stand-in, proves the agent key's delete is
-// refused, and deletes the test account's files again.
-//
-// The Dodo half runs against `test.dodopayments.com`: `handleTopUpRequest` is
-// handed no `baseUrl`, so the product's own default (core/dodo.js
-// `resolveDodoUrl`) picks the test host, and one checkout goes out through an
-// injected fetch (the double). The key is the literal test-mode value
-// `dodo-test-key-not-live`; no live key is read, so no money moves (drive#325,
-// drive#586).
-//
-// The mail half is the Worker's own `SIGNIN_MAIL` seam (core/auth.js), the
-// same seam every sign-in test uses: the link is pushed into a list and read
-// back, so the walk proves the mail was produced without an SMTP server.
-//
-// Cloudflare Access is mocked, not bypassed: `CF_ACCESS_CLIENT_ID` /
-// `CF_ACCESS_CLIENT_SECRET` are read from the environment when set, and when
-// they are absent the walk mints a fixed fake pair. A front-door check proves
-// the pair passes and that a missing or wrong pair is refused; the Worker is
-// never handed to a real Access edge, because the walk calls it in-process.
-//
-// The mount half is the real CLI, built from this commit, mounted against the
-// same S3 stand-in the file actions use, then `drive uninstall`ed. It needs a
-// Go toolchain and FUSE, so it runs when `DRIVE_WALK_CLI=1` (the CI job sets
-// it) and skips with a named reason otherwise. Under `CI=true` a skip is a
-// failure, the same rule `cmd/drive/e2e_test.go` follows (drive#501).
-//
-// Proof the walk carries: the test-mode payment id it credits, the S3 endpoint
-// it used, and a grep that no live key is read (see the PR body).
-
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";

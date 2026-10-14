@@ -1,23 +1,3 @@
-// Abuse guards (drive#464): one active account per card fingerprint, and the
-// 1 TB storage limit until the first successful charge.
-//
-// The limit is enforced at two doors. The web upload path refuses a save that
-// would pass it (preChargeUploadBlocked / preChargeLimitStream below), and the
-// hourly meter cron takes an over-limit unpaid account's keys read-only
-// (runPreChargeLimitCron, drive#536), because a mount holds a storage key and
-// writes without any page in front of it.
-//
-// The spending-cap default lives on BILLING_CONFIG.defaultCapUsd.
-//
-// The fingerprint is the provider's own id for the card a payment was made
-// with, and only the verified webhook may write it (drive#503). The browser
-// never supplies one: signupCardFingerprint is gone, and with it the
-// `test:<email>` stand-in a start request or a ticked checkbox produced. That
-// stand-in made one-account-per-card unprovable, because every new address got
-// a distinct string, so the guard never fired. A sign-up whose payment has not
-// landed yet simply holds no fingerprint, and claimCardFingerprint writes it
-// when the webhook arrives.
-
 import { BYTES_PER_GB, GB_PER_TB } from "./billing.js";
 import { applyCapSwap, capSwapPlan, PRE_CHARGE_LIMIT_REASON } from "./cap.js";
 import { failureMessage } from "./messages.js";
@@ -25,26 +5,12 @@ import { DAY_MS } from "./units.js";
 
 /** @typedef {ReturnType<typeof import("./devices.js").createD1DeviceStore>} DeviceStore */
 
-/** 1 TB in decimal bytes, the same GB the bill uses. */
 export const PRE_CHARGE_STORAGE_LIMIT_BYTES = GB_PER_TB * BYTES_PER_GB;
 
-/** Accounts row id used at the card step, before Better Auth mints a user. */
 const PENDING_CARD_ACCOUNT_PREFIX = "hold:";
 
-/**
- * How long an unfollowed card-step hold keeps its card. After this the hold
- * is deleted at the next card step, so a sign-up nobody finished cannot keep a
- * card locked. A day is far past the sign-in link's own life.
- */
 export const HOLD_TTL_SECONDS = DAY_MS / 1000;
 
-// What the 1 TB pre-charge limit counts (drive#536), written once and built
-// into both statements that read it: the live versions, which of those rows
-// count, and their bytes. The web save (accountStoredBytes, used by
-// preChargeUploadBlocked and preChargeLimitStream) and the hourly sweep
-// (preChargeOverLimitAccounts) cannot then count different rows. The sweep's
-// eligibility filter - which accounts the limit still applies to - stays out
-// of the shared part, because it is not part of how many bytes an account holds.
 const LIVE_VERSIONS = "file_versions v";
 const LIVE_VERSION_ROWS = "v.hidden_at IS NULL";
 const LIVE_STORED_BYTES = "COALESCE(SUM(v.size_bytes), 0)";
@@ -192,7 +158,6 @@ export async function claimCardFingerprint(db, options) {
     throw new TypeError(`now must be a finite epoch millisecond, got ${String(options.now)}`);
   }
   const at = Math.floor(nowMs / 1000);
-  // A hold nobody followed within a day gives its card back.
   await db
     .prepare(
       `DELETE FROM accounts
@@ -360,7 +325,6 @@ export function preChargeLimitStream(allowance) {
   });
 }
 
-/** The error preChargeLimitStream fails with. */
 export class PreChargeLimitError extends Error {
   constructor() {
     super(failureMessage("pre-charge-storage-limit"));
@@ -433,7 +397,6 @@ export async function accountStoredAndBranchBytes(db, accountId, branchKeyPrefix
         WHERE ${LIVE_VERSION_ROWS}
           AND v.account_id = ?1`,
     )
-    // LIKE ESCAPE is `\`, so JS sends `\%` / `\_` / `\\` as one escaped char.
     .bind(accountId, `${branchKeyPrefix.replace(/[\\%_]/g, "\\$&")}%`)
     .first();
   const stored = Number(/** @type {{stored?: unknown} | null | undefined} */ (row)?.stored ?? 0);
@@ -557,18 +520,12 @@ export async function runPreChargeLimitCron(input) {
         },
       );
       if (plan.swaps.length === 0) {
-        // Already where the sweep put it: a second hourly run plans no swap,
-        // so an account capped once is not churned every hour.
         continue;
       }
       await applyCapSwap(plan, devices.keyProviderFor(row.accountId));
       capped += 1;
     } catch (error) {
       failures += 1;
-      // A constant format string with the account's own values bound as
-      // arguments, not concatenated in: console.error's first argument is a
-      // format string, and a value interpolated into it is a format specifier
-      // waiting to be injected (semgrep unsafe-formatstring, blocking).
       console.error(
         "pre-charge limit: account %s holds %s live bytes, past the 1 TB pre-charge " +
           "limit, but its keys could not be taken read-only: %s",
@@ -595,7 +552,6 @@ export async function runPreChargeLimitCron(input) {
  * @returns {Promise<{givenBack: number, failures: number}>}
  */
 async function givePreChargeKeysBack(db, devices) {
-  // A failure of this query throws out of the trip after the sweep ran; the next hourly run retries.
   const frozen = await db
     .prepare(
       `SELECT DISTINCT d.account_id AS account_id

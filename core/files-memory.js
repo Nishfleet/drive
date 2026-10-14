@@ -15,11 +15,6 @@ import { createS3Client, provisionBucket } from "./s3.js";
  */
 export function createMemoryStore() {
   const objects = new Map();
-  // The version history behind the live tree, keyed by storage key: one entry
-  // per write, with the instant it started and the instant a later write (or
-  // a remove) hid it. This is the in-memory stand-in's answer to the
-  // provider's own version listing, so `listVersions` is exercisable with no
-  // bucket and the reconciler is testable through the real store interface.
   /** @type {Map<string, Array<{id: string, createdAt: number, hiddenAt: number|null, sizeBytes: number, object?: {body: Uint8Array, contentType: string, modified: number, etag: string}}>>} */
   const versions = new Map();
   let nextVersionId = 1;
@@ -60,9 +55,6 @@ export function createMemoryStore() {
    * @param {string} path
    */
   const oneLevel = (path) => {
-    // The scopeStore prefix already ends in a slash, and the drive root is
-    // one too, so the key a child lives under is the path plus its own
-    // separator rather than a second slash.
     const prefix = path.endsWith("/") ? path : `${path}/`;
     const folders = new Map();
     const files = [];
@@ -94,9 +86,6 @@ export function createMemoryStore() {
       return oneLevel(path);
     },
     async listPage(path, options = {}) {
-      // The whole one-level listing, paged in the order a full list returns
-      // it. The cursor is the offset, which never leaves this store: the page
-      // passes it back opaque, the same contract S3's continuation token has.
       const entries = oneLevel(path);
       const start =
         options.cursor === null || options.cursor === undefined ? 0 : Number(options.cursor);
@@ -109,10 +98,6 @@ export function createMemoryStore() {
       return { entries: slice, nextCursor: next < entries.length ? String(next) : null };
     },
     async listAll(path) {
-      // Every file under the prefix at every depth: the walk the Recently
-      // deleted view does now that a deleted file nests under
-      // `.trash/<path>/<ts>` (drive#570). Folders do not exist as objects in
-      // this store, so every key under the prefix is a file row.
       const prefix = path.endsWith("/") ? path : `${path}/`;
       const found = [];
       for (const [key, value] of objects) {
@@ -138,8 +123,6 @@ export function createMemoryStore() {
         return null;
       }
       const total = value.body.byteLength;
-      // The conditional the preview answers with 304, decided here so the
-      // handler stays store-shape-agnostic (drive#570).
       if (options.ifNoneMatch && etagMatches(options.ifNoneMatch, value.etag)) {
         return {
           status: 304,
@@ -150,8 +133,6 @@ export function createMemoryStore() {
           contentLength: 0,
         };
       }
-      // The one byte range the client asked to forward, sliced here so the
-      // stand-in behaves as the S3 store does when storage answers 206.
       if (options.range) {
         const range = parseByteRange(options.range, total);
         if (range === "unsatisfiable") {
@@ -177,9 +158,6 @@ export function createMemoryStore() {
             contentLength: end - range.start + 1,
           };
         }
-        // A range this store cannot parse (multi-range, foreign unit) is not
-        // ours to refuse: the full object answers, the same way S3 treats a
-        // header it will not honor.
       }
       return {
         status: 200,
@@ -199,8 +177,6 @@ export function createMemoryStore() {
     async write(path, body, contentType) {
       const bytes = new Uint8Array(await new Response(body).arrayBuffer());
       const now = Date.now();
-      // The previous live version is hidden the instant this one starts, the
-      // same hide-not-delete lifecycle the provider's versioning keeps.
       startVersion(path, bytes.byteLength, now);
       objects.set(path, {
         body: bytes,
@@ -211,14 +187,6 @@ export function createMemoryStore() {
       keepLive(path);
     },
     async writeIfAbsent(path, body, contentType) {
-      // The bytes are read first, then two exists-checks bracket the etag:
-      // the first short-circuits an ordinary duplicate before any fingerprint
-      // is worth computing, and the second is the atomic one — it runs with
-      // nothing awaited between it and the set below, so inside one JS event
-      // loop two concurrent creates on one key cannot both see the key as
-      // absent and both land (drive#644). The winner starts a version exactly
-      // like `write`; the loser answers false without touching the live
-      // object or its versions.
       const bytes = new Uint8Array(await new Response(body).arrayBuffer());
       if (objects.has(path)) {
         return false;
@@ -234,26 +202,14 @@ export function createMemoryStore() {
       return true;
     },
     async remove(path, { ifMatch } = {}) {
-      // The conditional half: a caller that read this key's ETag before it
-      // decided to remove it (a delete that parks the file first, drive issue
-      // #567) hands it back, and a key whose bytes changed under it is left
-      // alone rather than removed. A key with no ETag to compare against is
-      // removed as it always was, so a store that answers no ETag for a version
-      // it keeps never turns every delete into a refusal.
       const value = objects.get(path);
       if (value !== undefined && etagMismatch(value.etag, ifMatch)) {
         throw new ChangedUnderUsError(path);
       }
-      // A delete hides the live version rather than forgetting it, exactly as
-      // the drive's storage lifecycle does (build-spec.md "Old versions"), so
-      // the bytes stay readable until the provider's own retention ends them.
       hideVersion(path, Date.now());
       objects.delete(path);
     },
     async listKeys(path, options = {}) {
-      // Sorted, so a batch boundary is the same boundary on the next run and
-      // a `startAfter` cursor never skips an unvisited key. The raw key scan
-      // hides nothing: the purge has to reach `.trash` and `.branches` too.
       const prefix = path.endsWith("/") ? path : `${path}/`;
       const { startAfter, limit } = options;
       const keys = [];
@@ -311,18 +267,11 @@ export function createMemoryStore() {
         ? versions.get(from)?.find((version) => version.id === options.versionId)?.object
         : objects.get(from);
       if (!value) {
-        // A copy of a file that is not there is a real failure (S3 answers
-        // 404), not a silent no-op: `drive branch` must never report success
-        // for a folder it did not copy.
         throw new Error(`cannot copy ${from}: that file is not in the drive`);
       }
-      // Nothing is awaited between this check and the write below, so in this
-      // stand-in no save can land between them (drive issue #605).
       if (options.ifAbsent && objects.has(to)) {
         throw new ChangedUnderUsError(to);
       }
-      // The bytes and their fingerprint move together; only the modified time
-      // is the copy's own, exactly as S3's CopyObject behaves.
       const now = Date.now();
       startVersion(to, value.body.byteLength, now);
       objects.set(to, { ...value, modified: now });
@@ -475,8 +424,6 @@ export function parseByteRange(header, total) {
   }
   const [, rawStart, rawEnd] = match;
   if (rawStart === undefined) {
-    // A suffix range, `bytes=-N`: the last N bytes. `-0` names no byte at
-    // all, which is unsatisfiable, not ignorable.
     if (rawEnd === "") {
       return null;
     }

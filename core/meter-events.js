@@ -1,5 +1,3 @@
-// Split out of core/meter-usage.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-
 import { eventIndexStatement } from "./file-index.js";
 import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";
 import { HOUR_MS, hourStart, rollupHour, toMillis, wholeBytes } from "./meter.js";
@@ -26,14 +24,7 @@ export function validateEvent(input) {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return { error: "Send one storage event as a JSON object." };
   }
-  // A webhook sends JSON, so every field below is unknown until it is checked;
-  // this is the one narrowing of the whole body, and every field is still
-  // read through the checks that follow (no field is trusted on its type).
   const event = /** @type {Record<string, unknown>} */ (input);
-  // The action first, because it is the one question that decides whether
-  // the rest of the event matters at all: an action the meter does not bill
-  // is refused by name whatever else the event carries, and the checks below
-  // never have to reason about an effect that does not exist.
   const action = typeof event.action === "string" ? event.action.trim().toLowerCase() : "uploaded";
   const effect =
     action in EVENT_ACTIONS
@@ -42,12 +33,6 @@ export function validateEvent(input) {
   if (effect === null) {
     return { error: `Unknown storage event action: ${action}` };
   }
-  // The account is read from whichever field carries the key's folder: a
-  // provider event may name the key, the file, or both. The stored path is
-  // the file's own path when the event has one, and the key's name prefix
-  // when it does not (some providers only name the prefix on a create). The
-  // folder is read from the root of that path, so a "/u/" deeper in a file's
-  // own name is never taken for an account.
   const named = /** @type {string[]} */ (
     [event.path, event.keyName].filter((value) => typeof value === "string" && value !== "")
   );
@@ -58,30 +43,12 @@ export function validateEvent(input) {
   if (accountId.length > 128) {
     return { error: "The event's account folder is too long." };
   }
-  // The row's path: the field that resolved the account, so the row is never
-  // left without a path and never carries one that names another account.
   const path = named.find((value) => folderAccount(value) === accountId) ?? named[0];
   const b2FileId = typeof event.b2FileId === "string" ? event.b2FileId.trim() : "";
   if (b2FileId === "" || b2FileId.length > 512) {
     return { error: "The event does not name a file version." };
   }
-  // The event's own time, which is what a hide or delete event carries: the
-  // version's creation time may not be in the event at all, and the instant
-  // the provider saw the change is the honest moment billing stops.
   const eventTimestamp = event.eventTimestamp;
-  // The size is only ever set by a create, and it must be a real byte count:
-  // `Number(null)`, `Number("")` and `Number(true)` are all 0 or 1, so a
-  // coercion here would let a create whose size never arrived be stored as a
-  // 0-byte version and bill nothing for a file the customer is paying to
-  // store. A whole number of bytes in, or a decimal string of one, is the only
-  // shape accepted; everything else is refused by name.
-  //
-  // Only a create MUST carry one: a hide says the version stopped being
-  // visible, and the provider sends when it disappeared, not how big it was.
-  // A size-less hide stores the NOT NULL column's 0 as a placeholder, which
-  // bills nothing meanwhile and is overwritten by the create that follows
-  // (the upsert takes the size from a create, or out of a 0 placeholder,
-  // only), so both delivery orders end on the same row.
   let sizeBytes;
   if (effect === "create" || event.sizeBytes !== undefined) {
     sizeBytes = wholeBytes(event.sizeBytes);
@@ -91,16 +58,6 @@ export function validateEvent(input) {
   } else {
     sizeBytes = 0;
   }
-  // created_at comes from the event's own time, never from arrival. A CREATE
-  // must say it: a create with no creation time cannot say when the version
-  // was written, and storing the arrival instant instead would bill the file
-  // from the moment the meter heard about it - or, once it is hidden, not at
-  // all. So it is refused instead. A HIDE may carry none (the provider sends
-  // when a version disappeared, not when it was written): its event
-  // timestamp seeds the row, which is never wrong by more than the version's
-  // own life and is corrected to the truth by the create that follows, since
-  // the upsert's created_at = MIN always takes the earliest time any event
-  // for the version carries. Both orders therefore end on the same row.
   if (
     effect === "hide" &&
     (event.hiddenAt === undefined || event.hiddenAt === null || event.hiddenAt === "") &&
@@ -116,9 +73,6 @@ export function validateEvent(input) {
     return { error: "The event does not say when the version was written." };
   }
   try {
-    // A hide without an explicit createdAt seeds created_at from its own
-    // timestamp: hidden_at IS that instant, and file_versions.created_at
-    // is NOT NULL. A late create then corrects it backwards via MIN.
     const createdSource = event.createdAt ?? (effect === "hide" ? eventTimestamp : undefined);
     createdAt = toMillis(
       typeof createdSource === "number" ||
@@ -150,8 +104,6 @@ export function validateEvent(input) {
       return { error: "The event's hidden time is before the version was written." };
     }
   } else if (event.hiddenAt !== undefined && event.hiddenAt !== null && event.hiddenAt !== "") {
-    // A create that already carries a hidden time (a provider that reports a
-    // replaced file in one event) is stored with it.
     try {
       const source = event.hiddenAt;
       hiddenAt = toMillis(
@@ -167,9 +119,6 @@ export function validateEvent(input) {
       return { error: "The event's hidden time is before the version was written." };
     }
   }
-  // The dedup key. A provider event carries its own id; when the caller has
-  // none, the version and its times are the identity: the same version at the
-  // same instants is the same event, no matter when it was delivered.
   const eventId =
     typeof event.eventId === "string" && event.eventId.trim() !== ""
       ? event.eventId.trim()
@@ -177,9 +126,6 @@ export function validateEvent(input) {
   if (eventId.length > 512) {
     return { error: "The event's id is too long." };
   }
-  // `effect` is what the upsert needs and validateEvent is the only place
-  // that knows it: a hide carries no size of its own, and one must never be
-  // taken from a hide.
   return { accountId, b2FileId, path, sizeBytes, createdAt, hiddenAt, eventId, effect };
 }
 
@@ -208,8 +154,6 @@ export function validateEvent(input) {
  */
 function eventStatements(db, event, receivedAt) {
   if (event.error !== undefined) {
-    // The intake validates before it stores, so an invalid event reaching here
-    // is a programming error: fail loudly rather than write half an event.
     throw new TypeError(`the meter cannot store an event that failed validation: ${event.error}`);
   }
   const statements = [
@@ -263,15 +207,7 @@ export async function recordEvent(db, event, now = Date.now()) {
   return { stored: seen > 0 };
 }
 
-// How many events from one request share a batch. Each event is two
-// statements, or three when the event names an indexable file (drive#566).
-// A provider's retry replays the whole request; the batches
-// already committed are made of repeats the dedup drops, so a retry after a
-// mid-request failure costs a re-read and never a second version row. The
-// batch is chunked because a very large batch (thousands of statements) can
-// hit D1's 30-second invocation timeout and per-statement execution limits.
-// 32 events = 96 statements at three per create, under the 100-statement
-// bound the two-statement events used to sit on.
+// A very large batch can hit D1's invocation timeout and per-statement execution limits (https://developers.cloudflare.com/d1/platform/limits/).
 export const EVENTS_PER_BATCH = 32;
 
 /**
@@ -294,8 +230,6 @@ async function recordEvents(db, events, now = Date.now()) {
   for (let start = 0; start < events.length; start += EVENTS_PER_BATCH) {
     const group = events.slice(start, start + EVENTS_PER_BATCH);
     const statements = [];
-    /** Where each event's dedup row landed, because an event is two or three
-     * statements and the count is no longer a function of the index (drive#566). */
     const dedupAt = [];
     for (const event of group) {
       dedupAt.push(statements.length);
@@ -311,12 +245,6 @@ async function recordEvents(db, events, now = Date.now()) {
   return { stored, deduped: events.length - stored };
 }
 
-// The header the storage provider's event rule sends. The value is a Worker
-// secret binding, never a value in this repo (AGENTS.md: secrets live in the
-// VPS credential store). A request without it, or with the wrong one, is
-// refused before the body is read: this endpoint writes the numbers a bill is
-// worked out from, so an open one would let anyone inflate an account's
-// storage.
 export const EVENT_TOKEN_HEADER = "x-drive-event-token";
 
 /**
@@ -335,33 +263,18 @@ export async function handleStorageEventRequest(request, db, eventToken) {
     });
   }
   if (!db) {
-    // The binding is missing on this deployment: an operator problem, so it
-    // goes to the log by name and the caller gets words without the binding
-    // name, like the waitlist's missing-binding path.
     console.error("meter: METER_DB binding is not configured");
     return json({ error: "The meter cannot reach its database right now." }, 503);
   }
-  // The token is checked before the body is read, and a missing secret fails
-  // closed: an unconfigured binding must never leave an endpoint that writes
-  // billing rows open to whoever finds the path.
   if (typeof eventToken !== "string" || eventToken === "") {
     console.error("meter: METER_EVENT_TOKEN binding is not configured");
     return json({ error: "The meter cannot reach its database right now." }, 503);
   }
   if (
     !(await tokensMatch(request.headers.get(EVENT_TOKEN_HEADER), eventToken)) &&
-    // The header a stock bucket can actually send. MinIO's own notify webhook
-    // sets `Authorization` to `Bearer <MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_*>` and
-    // cannot send a header of its own (there is no `MINIO_NOTIFY_WEBHOOK_HEADERS_*`
-    // variable), so a rule configured the way the vendor's docs show arrives with
-    // a bearer token and no x-drive-event-token (measured 2026-10-02 against the
-    // pinned stand-in). Both are the same secret; this endpoint accepts either, so
-    // the vendor's own event rule works without a custom-header capability MinIO
-    // does not have.
+    // MinIO's notify webhook sends `Authorization: Bearer <token>` and cannot send a custom header.
     !(await tokensMatch(bearerToken(request), eventToken))
   ) {
-    // One sentence, no echo of what was presented: a wrong token is a caller
-    // with a stale or misconfigured event rule, and its text is not a hint.
     return json({ error: "The event could not be accepted from this caller." }, 401);
   }
   let parsed;
@@ -379,13 +292,6 @@ export async function handleStorageEventRequest(request, db, eventToken) {
     console.error("meter: could not read the event body", error);
     return json({ error: "The event could not be read." }, 400);
   }
-  // A provider batch is a list of events, a single event is one object, and
-  // the bucket's own notification is a `Records` envelope of S3 records.
-  // All three are shapes the providers send; anything else is refused rather
-  // than coerced, because guessing at it is how an event gets billed to the
-  // wrong account. A record inside any of them is put through
-  // `notificationRecord` first, so the provider's field names and the
-  // intake's names are one shape by the time `validateEvent` sees them.
   let rawEvents;
   try {
     rawEvents = notificationRecords(parsed).map((record) =>
@@ -400,14 +306,6 @@ export async function handleStorageEventRequest(request, db, eventToken) {
   if (rawEvents.length === 0) {
     return json({ error: "The batch has no events in it." }, 400);
   }
-  // Events are validated one by one, and a bad one does not hold the good
-  // ones back: a batch is a delivery unit, not a billing unit, and holding a
-  // day's good events hostage to one malformed one is how an account's meter
-  // falls behind the provider's own report. The valid events are stored; the
-  // rejected ones are reported per event, with the index in the batch, and
-  // the reply is a 400 so the provider's own logs show a delivery that was
-  // not fully accepted. The retry such a reply causes is free - the dedup
-  // turns the stored events into repeats and the bad one is reported again.
   const events = [];
   const rejected = [];
   for (const [index, raw] of rawEvents.entries()) {
@@ -423,8 +321,6 @@ export async function handleStorageEventRequest(request, db, eventToken) {
     ({ stored } = await recordEvents(db, events));
   } catch (error) {
     console.error("meter: could not store the storage event", error);
-    // The caller retries the batch, and the dedup makes the retry safe: the
-    // events already stored are repeats the second time around.
     return json({ error: "The event could not be stored." }, 503);
   }
   const deduped = events.length - stored;
@@ -443,38 +339,12 @@ export async function handleStorageEventRequest(request, db, eventToken) {
   return json({ ok: true, stored, deduped }, 200);
 }
 
-// The schedule the hourly meter runs on: 5 past the hour, after the hour has
-// closed. cloudflare.config.ts declares the same string as this Worker's cron
-// trigger, and test/meter.test.mjs pins the two together, the way the static
-// pages are pinned to their copy.
 export const METER_CRON = "5 * * * *";
 
-// How far back a run re-rolls what a previous run already wrote. One hour: an
-// event for an hour is often delivered minutes after the roll of that hour,
-// and the hour before the newest closed one is still within reach of the next
-// trigger. A stored version row is the only input, so re-rolling recomputes
-// the same total and adds no row - the grace costs a re-roll, never a bill.
-// An event later than this window is the nightly reconciler's job (#59).
 const REROLL_GRACE_HOURS = 1;
 
-// The most hours one run rolls. A backlog (a Cron Trigger that did not fire,
-// a run that failed) is drained oldest hour first, this many hours per run,
-// and the mark below advances to the last hour actually rolled, so a long
-// outage cannot leave hours unrolled and cannot make one run unbounded work:
-// successive runs walk the whole backlog without skipping an hour.
-//
-// Sized to the query budget: one hour costs three D1 calls (one grouped read
-// returning a row per account, one batch of every account's usage writes
-// beside the empty-hour cleanup, one mark write), and the Workers free plan
-// allows 50 subrequests per invocation, so 12 hours (36 calls) plus the run's
-// own housekeeping (state read, floor read, purge) stays inside that ceiling
-// with headroom.
 export const MAX_CATCHUP_HOURS = 12;
 
-// How long a dedup row is kept. The provider's own retries land inside
-// minutes, so a week is generous; past it the row is deleted by the run below
-// and a very late redelivery is handled by the version upsert, which takes
-// the earliest times and therefore recomputes the same row.
 export const EVENTS_SEEN_RETENTION_MS = 7 * 24 * HOUR_MS;
 
 export const ROLLED_THROUGH_READ_SQL = "SELECT rolled_through FROM meter_rollup_state WHERE id = 1";
@@ -484,23 +354,10 @@ const ROLLED_THROUGH_WRITE_SQL = `INSERT INTO meter_rollup_state (id, rolled_thr
 const EARLIEST_VERSION_SQL = "SELECT MIN(created_at) AS earliest FROM file_versions";
 const PURGE_EVENTS_SEEN_SQL = "DELETE FROM events_seen WHERE received_at < ?1";
 
-// One statement for the health check's freshness read (issue #520): the
-// watermark beside the oldest stored version, in one round trip. The two
-// scalar subqueries are the two reads runMeterCron itself starts from
-// (ROLLED_THROUGH_READ_SQL, EARLIEST_VERSION_SQL), asked together because
-// staleness is decided by the pair — a watermark means nothing without
-// knowing whether there are versions waiting behind it.
 const METER_FRESHNESS_SQL =
   "SELECT (SELECT rolled_through FROM meter_rollup_state WHERE id = 1) AS rolled_through, " +
   "(SELECT MIN(created_at) FROM file_versions) AS earliest";
 
-// How far behind the last closed hour the watermark may sit before /api/health
-// reports the meter stale (issue #520). The hourly trigger fires at :05 and
-// rolls the hour that closed before it, so between two healthy runs the
-// watermark is at most about one hour behind the last closed hour; three
-// hours means at least two runs were missed and never made up, or the
-// 12-hour catch-up cap is draining real backlog — either is worth a human's
-// attention.
 export const METER_STALE_AFTER_HOURS = 3;
 
 /**
@@ -532,12 +389,6 @@ export async function meterFreshness(db, now = Date.now()) {
     if (earliest === null) {
       return { stale: false, detail: "nothing to bill yet" };
     }
-    // A mark does not exist until the first rollup after the oldest
-    // version's hour closes, so the wait is judged from that hour, one hour
-    // stricter than a real watermark's lag: a mark proves at least one run
-    // succeeded, and no mark at all proves nothing has (review finding on
-    // PR #697 — a first upload must not page before its first scheduled
-    // rollup, or a new deployment 503s its own deploy smoke).
     const firstPending = hourStart(earliest);
     if (firstPending > lastClosed) {
       return {
@@ -609,46 +460,20 @@ export async function runMeterCron(db, now = Date.now()) {
     throw new Error("meter: METER_DB binding is not configured");
   }
   const at = toMillis(now, "now");
-  // The hour that just closed. The hour in progress is incomplete: a version
-  // created at :59 must wait for the next trigger, which bills it with the
-  // 1-hour minimum in the hour it was created.
   const lastClosed = hourStart(at) - HOUR_MS;
   const mark = await db.prepare(ROLLED_THROUGH_READ_SQL).first();
   const rolledThrough = stampMillis(mark?.rolled_through);
   let from;
   if (rolledThrough === null) {
-    // No mark: this deployment has never rolled. The floor is the hour of the
-    // oldest version stored, so the catch-up starts at the meter's own data
-    // and not at an arbitrary instant; no versions at all means there is
-    // nothing but the hour that just closed.
-    //
-    // SQL NULL is "nothing stored", and it must be read as such. `MIN()` over
-    // an empty table returns NULL, and `Number(null)` is 0, so a
-    // `Number.isFinite(Number(...))` guard accepts it and sets the floor to
-    // the epoch. The run then wrote 1970 into the mark, and every later run
-    // advanced it MAX_CATCHUP_HOURS hours at a time: the trigger reported
-    // success every hour while the meter billed nothing for a year. So the
-    // stamp is read through stampMillis, which refuses null before it is ever
-    // a number.
     const earliest = await db.prepare(EARLIEST_VERSION_SQL).first();
     const earliestAt = stampMillis(earliest?.earliest);
     from = earliestAt === null ? lastClosed : hourStart(earliestAt);
   } else {
-    // The mark is the newest hour rolled; with the grace, the same hour is
-    // rolled once more and the run continues from there.
     from = rolledThrough - (REROLL_GRACE_HOURS - 1) * HOUR_MS;
   }
-  // A mark ahead of the newest closed hour (a clock that moved backwards, a
-  // manual run with a future instant) must not silence the rollup: the run
-  // still rolls the hour that just closed and rewrites the mark to it.
   from = Math.min(from, lastClosed);
   const through = Math.min(lastClosed, from + (MAX_CATCHUP_HOURS - 1) * HOUR_MS);
   const hours = Math.round((through - from) / HOUR_MS) + 1;
-  // The name the trigger reports, not a per-hour walk input: the account
-  // count is what the newest rolled hour covered, which rollupHour already
-  // knows from its GROUP BY. The old whole-history account list is gone: it
-  // was a second statement per run whose result nothing rolled past, and it
-  // scanned every version ever stored.
   let gbMinutes = 0;
   let accounts = 0;
   for (let hour = from; hour <= through; hour += HOUR_MS) {
@@ -661,23 +486,14 @@ export async function runMeterCron(db, now = Date.now()) {
     .prepare(PURGE_EVENTS_SEEN_SQL)
     .bind(at - EVENTS_SEEN_RETENTION_MS)
     .run();
-  // The one-account re-rolls the reconciler queued (drive#519), after the
-  // newest hours, so a backlog of corrections never delays this hour's bill.
   const rerolledHours = await drainAccountRerolls(db, at);
   return { from, through, hours, accounts, gbMinutes, rerolledHours };
 }
 
-// The most one-account hours one hourly run re-rolls (drive#519). Each hour is
-// two D1 calls (one read, one write), the same price as an hour of the global
-// catch-up, so this keeps a run's work bounded however old the correction:
-// a 180-day correction is re-rolled over the following days, oldest hour
-// first, and every other account's hours are never touched by it.
 const MAX_REROLL_HOURS_PER_RUN = 12;
 
 const PENDING_REROLLS_SQL = `SELECT account_id, from_hour, through_hour
   FROM meter_account_rerolls ORDER BY from_hour, account_id LIMIT ?1`;
-// Guarded on the range the run read: a reconcile that widened the range in
-// between keeps its row, and the next run re-rolls from the wider start.
 const REROLL_DONE_SQL = `DELETE FROM meter_account_rerolls
   WHERE account_id = ?1 AND from_hour = ?2 AND through_hour = ?3`;
 const REROLL_ADVANCE_SQL = `UPDATE meter_account_rerolls SET from_hour = ?4, updated_at = ?5
@@ -725,30 +541,11 @@ async function drainAccountRerolls(db, at) {
   return rerolled;
 }
 
-// --- Retention: hidden versions leave the ledger (drive issue #564) -----
-
-/**
- * How long a hidden version's row stays. The number is two clocks added, plus
- * margin: a deleted file can be restored for 30 days (RECENTLY_DELETED_DAYS
- * in src/files.js), and a provider keeps a hidden version listed for up to 30
- * days of its own (docs/build-spec.md "Old versions"), so a row dropped
- * inside either window could come back as a reconciler insert with its hours
- * re-rolled. Five days of margin sit on top of the larger clock, and the
- * prune runs nightly after the reconciler, so a row leaves only when every
- * summarising rollup is long since booked and no provider listing can
- * resurrect it.
- */
 export const VERSION_RETENTION_DAYS = 35;
 export const VERSION_RETENTION_MS = VERSION_RETENTION_DAYS * 24 * HOUR_MS;
 
 export const PRUNE_VERSIONS_SQL = `DELETE FROM file_versions
   WHERE hidden_at IS NOT NULL AND hidden_at < ?1`;
 export const FAIR_USE_DECISIONS_PRUNE_SQL = "DELETE FROM fair_use_decisions WHERE decided_at < ?1";
-// The partial index that predicate reads (migrations/drive/
-// 0023_file_versions_hidden_at.sql), so the nightly delete is a range read
-// over hidden rows and not a full-table scan on the meter's fastest grower
-// (drive issue #564, in-run review). It is partial because the predicate's
-// other half is `hidden_at IS NOT NULL`, so the index holds only the rows a
-// prune can reach, and inserting a live row pays nothing for it.
 
 export const OLDEST_REROLL_SQL = "SELECT MIN(from_hour) AS from_hour FROM meter_account_rerolls";

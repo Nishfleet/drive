@@ -1,26 +1,3 @@
-// The meter's binding parity, pinned (drive issue #735).
-//
-// The hourly meter trip carries two names on env for one database: METER_DB
-// carries the meter's own tables and DRIVE_DB carries the file index and the
-// pre-charge sweep drive#536 added. test/abuse-guards.test.mjs pins the trip
-// to both bindings, and the trip fails closed with a retry when DRIVE_DB is
-// absent, because a trip that skipped the sweep would report the hour rolled
-// with every over-limit account still writing through its key.
-//
-// That the two names bind the same database is why that guard never fires in
-// production: cloudflare.config.ts binds both to the one drive-data database
-// (drive issue #6, "same database, so same id"), so the file index, the meter's
-// ledger and the sweep all read one set of rows. The parity lived only as prose
-// — the config's own comment and the comments on two test stubs
-// (test/dodo.test.mjs, and test/meter-scale.test.mjs since drive#734). Nothing
-// read any of it. An edit that gave one name a database of its own would have
-// been green everywhere while splitting the meter's ledger from the file index
-// it bills, and the deploy would have carried a meter that reads nothing.
-//
-// This file is the gate on that prose. It reads cloudflare.config.ts the way
-// test/deploy-secrets.test.mjs does, and asserts the two d1 bindings share one
-// id, so the silent split is a red test rather than a comment nobody grep'd.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

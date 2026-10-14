@@ -1,7 +1,3 @@
-// High-end gaps item 7: the home hero reads as an offer, not a closed door.
-// The standing "not open yet" claim (test/version-1-claims.test.mjs) stays on
-// the page, but beside the waitlist form, not under the first button.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

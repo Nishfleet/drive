@@ -1,14 +1,3 @@
-// The queue-report route (drive issue #318), walked through the real registry
-// and the real dispatcher (not the handler called directly), the way
-// device-keys.test.js walks the device flow: a device signs in, reports its
-// queue, the row lands, a report inside the interval is refused, and the
-// account gate answers an anonymous caller 401 before any handler runs.
-//
-// The credential is a real device token, minted by walking the real sign-in
-// flow over the real dispatcher: the reporter loop posts with the token
-// cmd/drive/report.go reads out of the credentials file, so a test that
-// invented one would not be walking the same path.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AUTH_COOKIE_PREFIX } from "../../../core/auth.js";

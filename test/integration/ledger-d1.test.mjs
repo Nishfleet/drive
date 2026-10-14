@@ -1,15 +1,3 @@
-// Integration test for the prepaid balance (drive#586): every migration under
-// migrations/drive/ applied to a real SQLite database, the signed webhook
-// handled end to end, and the rows read back with plain node:sqlite, so a row
-// the adapter remembered and the schema never got could not pass.
-//
-// Proves:
-//   - the ledger is append-only in the database itself (triggers),
-//   - a replayed or duplicated payment webhook credits once,
-//   - the first credit lifts the 1 TB limit and saves the customer id (#503),
-//   - a refund before its payment waits (409) and then records once,
-//   - the reconciliation finds a payment the ledger missed.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {

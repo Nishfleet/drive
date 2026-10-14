@@ -1,37 +1,14 @@
-// The prepaid balance's one ledger (drive#586, folds in #577).
-//
-// Every money movement on an account is one append-only row in
-// `balance_ledger` (migrations/drive/0020_balance_ledger.sql): a top-up (+),
-// a usage draw (-), a refund (-) or an adjustment (+/-). The balance is the
-// SUM of the account's rows, read by `balanceCents`, and nothing else in the
-// codebase stores a balance, so there is no second number to drift from it.
-//
-// Idempotency is the database's, not this module's memory: each row carries
-// a unique `idempotency_key` and the insert is `ON CONFLICT DO NOTHING`. A
-// replayed webhook, a webhook that races its own retry, or a meter run retried
-// after a failed write lands on the same key and inserts nothing. A key that
-// comes back with a different account, kind or amount is a data error and
-// throws, because silently keeping either side would hide money that moved.
-//
-// No provider call happens here. The webhook (core/topup.js) verifies the
-// provider's signature before it calls creditTopUp, so this module trusts its
-// caller about who paid and owns only the arithmetic and the rows.
-
 import { claimCardFingerprint, paymentCardFingerprint } from "./abuse-guards.js";
 import { PREPAID } from "./pricing.js";
 
 const LEDGER_KINDS = Object.freeze(["topup", "usage", "refund", "adjustment"]);
 
-/** The smallest top-up, in cents. */
 export const MIN_TOP_UP_CENTS = PREPAID.minTopUpUsd * 100;
 
-/** The largest single top-up, in cents (a typo guard, not a balance limit). */
 export const MAX_TOP_UP_CENTS = PREPAID.maxTopUpUsd * 100;
 
-/** The balance at or under which the low-balance email goes out, in cents. */
 export const LOW_BALANCE_CENTS = PREPAID.lowBalanceUsd * 100;
 
-/** The page where a person adds money: every "Top up" prompt links here. */
 export const TOP_UP_PAGE = "/usage";
 
 /**
@@ -263,9 +240,6 @@ async function assertSameEntry(db, row) {
     throw new Error(`ledger: the insert for ${row.idempotencyKey} wrote nothing and found no row`);
   }
   const found = /** @type {Record<string, unknown>} */ (existing);
-  // Every field that names the movement, not only the money: the same key for
-  // another payment or another hour is a different movement, and treating it
-  // as a replay would drop it without a word.
   const same =
     found.account_id === row.accountId &&
     found.kind === row.kind &&
@@ -439,8 +413,6 @@ export async function creditTopUp(db, payment) {
   }
   const balance = await balanceCents(db, payment.accountId);
   if (inserted) {
-    // Money landed: a started auto top-up is finished, and a balance back over
-    // $2 re-arms the "$2 left" email for the next crossing (drive#586).
     await db
       .prepare(
         `UPDATE accounts
@@ -492,8 +464,6 @@ export async function recordRefund(db, refund) {
   }
   const accountId = String(paid.account_id);
   const key = refundKey(refund.refundId);
-  // A replay is answered before the amount is worked out: the cap below counts
-  // this refund's own row, so recomputing it on a replay would give 0.
   const seen = await db
     .prepare("SELECT 1 AS hit FROM balance_ledger WHERE idempotency_key = ?1")
     .bind(key)
@@ -514,7 +484,6 @@ export async function recordRefund(db, refund) {
   const share = Math.round((amountCents * credited) / gross);
   const debit = Math.min(share, credited - refunded);
   if (debit <= 0) {
-    // Everything this payment credited is already given back.
     return { found: true, recorded: false, accountId };
   }
   const { inserted } = await appendLedgerEntry(db, {
