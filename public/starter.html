@@ -8,12 +8,6 @@
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="manifest" href="/site.webmanifest">
   <meta name="description" content="An optional notes starter for your drive: a vault your notes app opens, a daily note, and one note your agent reads. Off by default, and never required.">
-  <!-- drive issue #15: canonical, Open Graph and the JSON-LD a Rich Results /
-       AI-answer crawler reads. Every value mirrors src/seo.js, and every price
-       in those mirrors src/pricing.js, the one price source; test/seo.test.mjs
-       fails CI when the tags and that config drift apart. This page is the one
-       indexable page that is not the product's own surface, so it carries the
-       same complete card. -->
   <!-- rel="canonical" declares a URL for a crawler to read; the browser never
        fetches it as a subresource, so there is nothing whose bytes an integrity
        hash could verify. That is why the nosemgrep rule id is on the tag: this
@@ -60,12 +54,6 @@
   <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
-/* Notes starter: the palette, the reset and the chrome the other pages use are
-   in the shared site stylesheet (public/site.css, drive #71); what is left here
-   is this page's own layout, with no custom property declared because every
-   token it needs belongs to the shared file. class="drive" on <html> aliases
-   those tokens onto the home-page look (drive#458). */
-
 body {
   padding: 0 clamp(20px, 5vw, 72px) 72px;
 }
@@ -126,8 +114,6 @@ li {
   margin-bottom: 6px;
 }
 
-/* The optional-and-never-required rule, set first and highest on the page so
-   it is the first thing a reader sees after the heading. */
 .optional {
   margin: 0 0 18px;
   padding: 14px 16px;
@@ -168,9 +154,6 @@ li {
   border-bottom: 1px solid var(--rule);
 }
 
-/* The one action. It is a button the page only enables for a signed-in
-   session, so a reader who is not signed in sees the walk-through and not a
-   control that would answer 401. */
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -258,13 +241,6 @@ button:disabled {
     <a href="/signin">Sign in</a>
   </header>
 
-  <!-- The pending-close banner (drive issue #424). Hidden until
-       GET /api/account/close says this account is closing, then
-       public/close-banner.js fills the two slots from that payload: the
-       sentence is the module's own words with the purge date in them, and the
-       link goes to the page where the close and the cancel both live. The
-       styles are the shared stylesheet's, so the four pages that carry this
-       aside are one banner. -->
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
     <a id="close-banner-cancel" href="/usage">Cancel closing</a>
@@ -286,10 +262,6 @@ button:disabled {
         never overwrites the notes you already have.
       </p>
       <ul class="files" id="starter-files">
-        <!-- The four files the create writes, so a crawler or a no-JS reader
-             sees the list on an indexable page. The script replaces these
-             with the endpoint's own list, and test/starter.test.mjs fails CI
-             when this shipped list drifts from STARTER_FILE_LIST. -->
         <li>/Notes/README.md</li>
         <li>/Notes/Inbox.md</li>
         <li>/Notes/Templates/Daily note.md</li>
@@ -355,17 +327,7 @@ button:disabled {
   </footer>
 
   <script>
-// The starter's own script (drive#15). It reads the file list and the copy from
-// the endpoint, so the page carries no second copy of either, and it posts one
-// request to create the starter. Nothing on this page writes until a signed-in
-// person presses the button: that is the "off by default" rule, and it is also
-// enforced by the Worker.
 const STARTER_ENDPOINT = "/api/starter";
-// The message table's own two pairs (src/messages.js): the offline pair for a
-// browser that never reached the service, and the fallback pair for a reply
-// that carried no words of its own. test/starter.test.mjs reads this page and
-// fails CI when any of the four sentences drifts from the table. The same
-// shape public/index.html and public/signin.html use.
 const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
 const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
 
@@ -383,18 +345,11 @@ function setStatus(state, what, next) {
   status.querySelector(".next").textContent = next;
 }
 
-// One sentence from the message table carries both its own `what` and its
-// `next`, so the page ships the pair whole; this splits it back into the two
-// paragraphs the stylesheet already styles, keeping the first period with the
-// `what` so the words are the table's own.
 function pairOf(sentence) {
   const at = sentence.indexOf(". ");
   return [sentence.slice(0, at + 1), sentence.slice(at + 2)];
 }
 
-// The endpoint is behind the account gate, so a signed-out reader is answered
-// 401. That is the honest signal that the page shows the sign-in line instead
-// of a button: nothing here decides anything the gate has not already decided.
 fetch(STARTER_ENDPOINT)
   .then((response) => {
     if (!response.ok) throw new Error(`status: ${response.status}`);
@@ -402,9 +357,6 @@ fetch(STARTER_ENDPOINT)
   })
   .then((payload) => {
     if (Array.isArray(payload.files)) {
-      // The shipped list is the module's, and the endpoint's list replaces it
-      // so the page always shows what a create actually writes. Replace, not
-      // append: the static list is the same four paths.
       filesList.replaceChildren();
       for (const path of payload.files) {
         const item = document.createElement("li");
@@ -431,8 +383,6 @@ button.addEventListener("click", async () => {
         body: JSON.stringify({ action: "create" }),
       });
     } catch (networkError) {
-      // fetch rejects only when the browser cannot reach the network at all;
-      // that is the offline pair, the table's words, never the raw error.
       console.error("starter: create could not reach the service", networkError);
       setStatus("error", ...pairOf(OFFLINE_MESSAGE));
       return;
@@ -441,9 +391,6 @@ button.addEventListener("click", async () => {
     try {
       payload = await response.json();
     } catch (parseError) {
-      // A non-JSON reply (an error page, a captive portal) is not something
-      // this page can explain; the table's fallback pair is shown and the raw
-      // text stays out of the live region.
       console.error("starter: create reply was not JSON", parseError);
       setStatus("error", ...pairOf(UNEXPECTED_MESSAGE));
       return;
@@ -452,10 +399,6 @@ button.addEventListener("click", async () => {
       setStatus("done", payload.what, payload.next);
       return;
     }
-    // What happened is the endpoint's own refusal when it sent one; the one
-    // thing to do next is the endpoint's when it sent one, and the table's
-    // fallback when it did not — never a second copy of a message the module
-    // owns.
     setStatus(
       "error",
       typeof payload.error === "string" && payload.error.length > 0
@@ -471,10 +414,6 @@ button.addEventListener("click", async () => {
   }
 });
   </script>
-  <!-- The one shared pending-close banner script (drive issue #424).
-       The static signed-in pages load this file as a module; get-started
-       imports the same file into its one bundle so it stays inside the
-       Lighthouse script-count budget. -->
   <script type="module" src="/close-banner.js"></script>
 </body>
 </html>

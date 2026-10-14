@@ -5,14 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Storagebun — status</title>
   <meta name="description" content="The current state of the Storagebun site, read from its own health check, and what stays up when the API does not.">
-  <!-- drive#546: the one served favicon, so no tab asks for /favicon.ico and
-       gets the 404 page. -->
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="manifest" href="/site.webmanifest">
-  <!-- drive#584: a trust page. src/legal.js lists these pages, and
-       test/legal.test.mjs and test/seo.test.mjs pin the tags below against
-       src/seo.js. The page's rules live in public/site.css (body.policy). -->
   <link rel="canonical" href="https://storagebun.com/status"><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://storagebun.com/status">
@@ -54,8 +49,6 @@
   <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
-/* Shared policy-page rules are in site.css (body.policy). This block holds
-   only the page's own side gutter. */
 body {
   padding: 0 clamp(16px, 5vw, 72px) 72px;
 }
@@ -119,18 +112,7 @@ body {
   <!-- /shell:footer -->
 
   <script>
-// The status line, read from the site's own health route (src/health.js).
-// The page is an asset, so it cannot import the Worker: it fetches the route
-// the Worker already exposes. Every path in this script writes a line, so the
-// live region never sits on the paragraph's own default; and if the script
-// does not run at all (JavaScript off, or a future header blocking it), that
-// default below still tells a reader where the machine-readable answer is.
 const line = document.getElementById("status-line");
-// Every answer below is shorter than the default sentence, and the answer
-// lands after first paint, so a paragraph that shrank to fit it pulled the
-// sections below it up: a layout shift that broke the CLS budget
-// (lighthouserc.json) on main. The paragraph keeps the height it painted
-// with, so nothing below it moves.
 line.style.minHeight = `${line.offsetHeight}px`;
 
 fetch("/api/health", { headers: { accept: "application/json" } })
@@ -140,9 +122,6 @@ fetch("/api/health", { headers: { accept: "application/json" } })
       line.textContent = "All systems operational.";
       return;
     }
-    // The failing name is a binding name (WAITLIST_DB, METER_DB, ...), the
-    // machine-facing detail /api/health already reports. This page speaks the
-    // customer's words and links the route for the name.
     line.textContent =
       "One part of the site is not answering right now. We are looking into it. The health check below names the part.";
   })
@@ -151,10 +130,6 @@ fetch("/api/health", { headers: { accept: "application/json" } })
       "We could not reach the health route from this page. Try again in a moment, or open /api/health.";
   });
 
-// The incident history: public/incidents.json, newest first. One entry per
-// incident {id, title, started, resolved, summary}; `resolved` is null while
-// it is still going on. The list is written by hand after an incident, so
-// this page never invents a record: an empty list says so plainly.
 const historyLine = document.getElementById("history-line");
 const historyList = document.getElementById("history-list");
 

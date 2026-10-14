@@ -157,8 +157,6 @@ form.add fieldset {
     <a href="/devices">Devices</a>
     <a href="/signin" id="nav-signin">Sign in</a>
       <noscript>
-        <!-- Not Django: POST /api/signin refuses a cross-site post
-             (isSameOriginRequest). A token in the markup would protect nothing. -->
         <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
         <form method="POST" action="/api/signin">
           <input type="hidden" name="step" value="signout">
@@ -174,13 +172,6 @@ form.add fieldset {
       <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
   </header>
 
-  <!-- The pending-close banner (drive issue #424). Hidden until
-       GET /api/account/close says this account is closing, then
-       public/close-banner.js fills the two slots from that payload: the
-       sentence is the module's own words with the purge date in them, and the
-       link goes to the page where the close and the cancel both live. The
-       styles are the shared stylesheet's, so the four pages that carry this
-       aside are one banner. -->
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
     <a id="close-banner-cancel" href="/usage">Cancel closing</a>
