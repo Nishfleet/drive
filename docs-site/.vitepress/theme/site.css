@@ -1,11 +1,3 @@
-/* Storagebun docs: the home page's palette and type (public/site.css --drive-*
-   and --font-*, drive#152 / #458), so the docs are part of the site rather
-   than a section pasted from somewhere else. The tokens are copied because
-   VitePress cannot import a served asset; test/docs.test.mjs checks each
-   colour against public/site.css, so the two cannot drift apart. The docs'
-   own numbers come from src/billing.js through src/render-docs.js, never
-   from here. */
-
 :root {
   --vp-c-bg: #f5efe4;
   --vp-c-bg-alt: #ebe3d4;
@@ -140,8 +132,6 @@
   line-gap-override: 0%;
 }
 
-/* The site's own measure, not VitePress's 688px: the pricing page reads at
-   about 70 characters, and the docs should read the same way. */
 .VPDoc .container,
 .VPDoc .content-container {
   max-width: 44rem;
@@ -155,10 +145,7 @@
   letter-spacing: -0.01em;
 }
 
-/* VitePress puts has-sidebar on VPNavBar in a post-effect after first paint
-   (empty classes ref in VPNavBar.vue). That moved the nav container 0.022
-   against a 0.01 budget (drive#458). Every docs page has a sidebar, so the
-   first paint already uses that layout. */
+/* VitePress adds has-sidebar to VPNavBar after first paint, which moves the nav container. */
 @media (min-width: 960px) {
   .VPNavBar .wrapper {
     padding: 0;
@@ -223,11 +210,7 @@
   letter-spacing: -0.01em;
 }
 
-/* The tables on the Pricing and Security pages are data, so the numbers align
-   and a long cell does not wrap mid-figure. The table keeps display: table;
-   drive#546: Chrome ignores overflow on a table box, so the .table-wrap div
-   the markdown renderer emits is the scroll container. A wide table scrolls
-   sideways inside its wrapper and the page stays 375px wide. */
+/* Chrome ignores overflow on a table box, so the .table-wrap div is the scroll container. */
 .VPDoc .table-wrap {
   overflow-x: auto;
 }
@@ -253,8 +236,6 @@
   text-align: left;
 }
 
-/* A code sample is a command a person will paste; it should not be the widest
-   thing on the page on a phone. */
 .VPDoc div[class*="language-"] {
   font-size: 0.9em;
 }
