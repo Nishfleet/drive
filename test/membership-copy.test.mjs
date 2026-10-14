@@ -94,6 +94,9 @@ function dataFor(kind) {
   if (kind === "first-file-nudge") {
     return { hours: 72, replyTo: REPLY_TO };
   }
+  if (kind === "runway-notice") {
+    return { runwayLine: "Your $14 lasts about 1 month at your current size.", replyTo: REPLY_TO };
+  }
   throw new Error(`no test data for ${kind}`);
 }
 

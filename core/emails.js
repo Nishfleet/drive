@@ -41,6 +41,8 @@ const USAGE_LINK = Object.freeze({
   url: USAGE_URL,
 });
 
+const TOP_UP_LINK = Object.freeze({ label: "Add to your balance", url: USAGE_URL });
+
 // The sender name every drive email carries. The address itself is a
 // deployment setting (env.MAIL_FROM), because drive has no sending domain of
 // its own yet: a placeholder domain in this file would make every send fail
@@ -856,6 +858,40 @@ function firstFileNudgeTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
+// ---------------------------------------------------------------------------
+// Runway -- the balance covers about 30 more days at the current size, sent
+// once per dip (src/runway-notice.js). { runwayLine }, the same sentence Home
+// and Usage print (core/runway.js), so the inbox cannot disagree with them.
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function runwayNoticeTemplate(data = {}) {
+  const runwayLine = requireText(data.runwayLine, "runwayLine");
+  const subject = "About a month of storage left on your balance";
+  const lines = [
+    runwayLine,
+    "",
+    "Add to your balance when it suits you. If it runs out, uploads pause, downloads keep working and nothing is deleted.",
+  ];
+  const html_lines = [
+    `<p>${escapeHtml(runwayLine)}</p>`,
+    "<p>Add to your balance when it suits you. If it runs out, uploads pause, downloads keep working and nothing is deleted.</p>",
+  ];
+  const unsubscribe =
+    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+      ? data.unsubscribeUrl
+      : null;
+  return finish({
+    subject,
+    lines,
+    html_lines,
+    replyTo: data.replyTo,
+    link: TOP_UP_LINK,
+    unsubscribe,
+  });
+}
+
 // The kind names every caller and the test suite use. Order is the spec's.
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
@@ -873,6 +909,7 @@ export const EMAIL_KINDS = Object.freeze([
   "upload-arrivals",
   "security-event",
   "first-file-nudge",
+  "runway-notice",
 ]);
 
 /**
@@ -894,6 +931,7 @@ const TEMPLATES = Object.freeze({
   "upload-arrivals": uploadArrivalsTemplate,
   "security-event": securityEventTemplate,
   "first-file-nudge": firstFileNudgeTemplate,
+  "runway-notice": runwayNoticeTemplate,
 });
 
 /**
