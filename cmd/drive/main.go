@@ -41,6 +41,8 @@ Usage:
   drive cache              show the disk the mount's cache uses and its limit
   drive cache --max 5G     change that limit
   drive cache --clear      empty the cache; uploads still waiting and files kept offline stay
+  drive restore <file>     list the earlier copies of a file saved over or deleted (30 days, free)
+  drive restore <file> --latest  put back the newest earlier copy (--copy N for another)
   drive share <file>       make a link anyone can open, logged out
   drive request <folder>   make a page anyone can drop files onto
   drive share --list       list this account's links (also on drive request)
@@ -122,6 +124,11 @@ Link flags (share, request):
   --list        list this account's links instead of minting one
   --revoke      revoke the link with this token (a full link URL also works)
 
+Restore flags:
+  --api     drive api base URL (env DRIVE_API_URL)
+  --latest  put back the newest earlier copy
+  --copy N  put back the Nth copy in the list (1 is the newest)
+
 Cache flags:
   --max     the cache limit, a size like 5G or 500M (default 20G)
   --clear   empty the cache now; uploads waiting and files kept offline stay
@@ -182,6 +189,7 @@ var commands = map[string]func([]string) error{
 	"cap":       runCap,
 	"cache":     runCache,
 	"share":     runShare,
+	"restore":   runRestore,
 	"request":   runRequest,
 	"logout":    runLogout,
 	"export":    runExport,

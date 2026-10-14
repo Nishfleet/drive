@@ -85,24 +85,12 @@ const MENTION = /`drive ([0-9a-z][0-9a-z-]*)`/g;
 // with the reason, in the same spirit as docs.test.mjs's nonDriveSamples: a
 // deliberate negative has to be written down here to ship, and an entry that
 // is no longer needed fails the gate below rather than lingering.
-const ALLOWED = Object.freeze({
-  // limits.md's honest note: the Files page can restore a delete for 30 days,
-  // and there is no `restore` command. A page that says a command is absent is
-  // the copy doing its job, so the gate has to read the sentence to tell it
-  // from a promise — which is why it is an allowance and not a wider regex.
-  "docs-site/limits.md:restore":
-    'the honest note that `drive restore` is not in the CLI (docs/limits, "No `restore` command yet")',
-  // The changelog entry for the day the notes stopped advertising it. History
-  // is frozen: the sentence is about what the copy used to say.
-  "docs-site/changelog.md:restore":
-    "the 2026-10-04 entry recording that the agent notes no longer advertise `drive restore`",
-});
+const ALLOWED = Object.freeze({});
 
 test("every `drive <command>` the copy names is a command the CLI runs", () => {
   const table = commandTable();
   const used = new Set();
   let mentions = 0;
-  let allowed = 0;
   for (const surface of SURFACES) {
     const text = read(surface);
     for (const match of text.matchAll(MENTION)) {
@@ -112,7 +100,6 @@ test("every `drive <command>` the copy names is a command the CLI runs", () => {
       const key = `${surface}:${command}`;
       if (Object.hasOwn(ALLOWED, key)) {
         used.add(key);
-        allowed += 1;
         continue;
       }
       assert.fail(
@@ -122,7 +109,6 @@ test("every `drive <command>` the copy names is a command the CLI runs", () => {
     }
   }
   assert.ok(mentions >= 20, `the copy must carry the mentions (found ${mentions})`);
-  assert.ok(allowed >= 1, "the honest negative about `restore` must still be there to be allowed");
   for (const key of Object.keys(ALLOWED)) {
     assert.ok(
       used.has(key),
