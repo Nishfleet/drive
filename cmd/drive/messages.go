@@ -1,26 +1,5 @@
 package main
 
-// The CLI's one message table (drive#117, the CLI side of core/messages.js
-// FAILURE_MESSAGES). Every error a person can read comes from this table and
-// carries two things:
-//
-//	what - what happened, in one plain sentence.
-//	next - the exact next command or action, in one sentence.
-//
-// No raw rclone or storage error reaches the terminal: the underlying detail
-// stays in the failure's detail (shown only with DRIVE_DEBUG=1) or in the
-// mount's own log, and the next step names where to look. The words for the
-// failures the drive has on every surface are copied from core/messages.js so
-// the CLI and the pages say the same thing; test/messages.test.mjs keeps that
-// table honest on the web side, and TestSharedKindsMatchThePageTable pins the
-// join here. Everything else is a CLI-shaped failure whose next step is an
-// exact command.
-//
-// Entries carry {1}, {2}... placeholders for the call's own values (the
-// missing settings, the log path, the tool name). A placeholder that an entry
-// does not use stays untouched, so what and next never have to want the same
-// values.
-
 import (
 	"errors"
 	"fmt"
@@ -32,38 +11,25 @@ import (
 	"github.com/Nishfleet/drive/internal/api"
 )
 
-// signInCommand is the one command that signs this machine in. The web
-// table's same string is core/messages.js SIGN_IN_COMMAND. The two cannot
-// import each other. drive#557: drive init does not sign anyone in.
 const signInCommand = "drive login"
 
-// failure is one entry of the message table, bound to a failure site. detail
-// is the underlying error, kept for DRIVE_DEBUG and for errors.As callers;
-// it is never printed by default (north star "Safe": no raw error text).
 type failure struct {
 	Kind    string
 	What    string
 	Next    string
-	service string // the api Worker's own sentence, when there is one
-	detail  error  // kept for DRIVE_DEBUG and for errors.As callers
+	service string
+	detail  error
 }
 
-// TableFailure marks a failure that already carries message-table words, so
-// the api client passes it through instead of calling it "offline".
+// TableFailure marks a failure that already carries message-table words, so the api client passes it through instead of calling it "offline".
 func (f *failure) TableFailure() {}
 
-// withService attaches the api Worker's own sentence (docs/api.md: errors are
-// {error: <sentence>}). That sentence is the product's own words, written for
-// a person, so it is shown between what happened and the next step; the raw
-// status line stays in the detail.
 func (f *failure) withService(sentence string) *failure {
 	f.service = sentence
 	return f
 }
 
-// Error returns what happened, the service's own sentence when there is one,
-// and the next step, so any code path that prints the error with %v still
-// shows a person everything they need.
+// Error returns what happened, the service's own sentence when there is one, and the next step, so any code path that prints the error with %v still shows a person everything they need.
 func (f *failure) Error() string {
 	parts := []string{f.What}
 	if f.service != "" {
@@ -78,13 +44,7 @@ func (f *failure) Error() string {
 // Unwrap exposes the underlying error to errors.Is and errors.As.
 func (f *failure) Unwrap() error { return f.detail }
 
-// messageTable is the table itself: kind -> what happened, next step. A kind
-// is added here before any call site can use it, and
-// TestFailureTableIsComplete holds every entry to the two-sentence shape.
 var messageTable = map[string][2]string{
-	// The five kinds the drive shares with the web pages. Their what lines
-	// are the core/messages.js words; TestSharedKindsMatchThePageTable pins
-	// them together.
 	"offline": {
 		"You look offline.",
 		"Check your connection and try again.",
@@ -110,7 +70,6 @@ var messageTable = map[string][2]string{
 		"Try again in a moment; if it fails again, run `drive status` and keep its output.",
 	},
 
-	// CLI-shaped failures: the next step is an exact command.
 	"no-api": {
 		"No drive api is configured.",
 		"Run `drive login`, or pass `--api <url>`, or set DRIVE_API_URL.",
@@ -127,16 +86,10 @@ var messageTable = map[string][2]string{
 		"The drive's api refused the request.",
 		"Run `drive init` again; if it repeats, run `drive status` and keep its output.",
 	},
-	// The api Worker answered 426: this build is older than the minimum
-	// version the deployment still serves (drive#560). The fix is one exact
-	// command, so it is a CLI-shaped entry.
 	"cli-too-old": {
 		"This drive is too old for the server it talks to.",
 		"Run drive update to get the current version, then run the command again.",
 	},
-	// `drive update` landed but the mount did not come back (drive#560). The
-	// mount may still be the old binary, or it may be down after an unmount
-	// that did not remount, so the words name the one fact both share.
 	"update-restart": {
 		"Storagebun updated, but its mount did not restart, so this machine is not yet serving the new drive.",
 		"Run `drive status` to see the mount, then `drive mount` to start it.",
@@ -301,13 +254,10 @@ var messageTable = map[string][2]string{
 		"rclone could not copy those files into the drive.",
 		"Run `rclone config` to check the remote, then run `drive import` again.",
 	},
-	// The api address is behind Cloudflare Access (the live test address,
-	// drive#342), and the stock tool that gets an Access token is missing.
 	"access-cloudflared-missing": {
 		"This drive address is behind Cloudflare Access, and cloudflared is not installed.",
 		"Install cloudflared: brew install cloudflared",
 	},
-	// cloudflared ran but handed back no token for the address.
 	"access-login-failed": {
 		"The Cloudflare Access sign-in for {1} did not finish.",
 		"Run `cloudflared access login {1}`, then run the drive command again.",
@@ -342,22 +292,13 @@ var messageTable = map[string][2]string{
 	},
 }
 
-// fail builds a table failure with no call values and no underlying detail.
 func fail(kind string) *failure { return failDetail(kind, nil) }
 
-// failf builds a table failure; the values replace {1}, {2}... in the entry's
-// what and next wherever they appear.
 func failf(kind string, args ...string) *failure { return failDetail(kind, nil, args...) }
 
-// failDetail builds a table failure and keeps the underlying error for
-// DRIVE_DEBUG. An empty detail is passed through as nil.
 func failDetail(kind string, detail error, args ...string) *failure {
 	entry, ok := messageTable[kind]
 	if !ok {
-		// A kind missing from the table is a programmer error, the same way
-		// failureMessage throws in core/messages.js. The CLI still has to print
-		// a next step rather than crash, so it falls back to unexpected and
-		// keeps the missing kind in the detail for DRIVE_DEBUG=1.
 		missing := fmt.Errorf("no message table entry for %q", kind)
 		if detail != nil {
 			missing = fmt.Errorf("no message table entry for %q: %w", kind, detail)
@@ -373,7 +314,6 @@ func failDetail(kind string, detail error, args ...string) *failure {
 	return &failure{Kind: kind, What: fill(entry[0], args), Next: fill(entry[1], args), detail: detail}
 }
 
-// fill replaces {1}, {2}... with the call's values, left to right.
 func fill(template string, args []string) string {
 	if len(args) == 0 {
 		return template
@@ -385,14 +325,8 @@ func fill(template string, args []string) string {
 	return strings.NewReplacer(pairs...).Replace(template)
 }
 
-// debugDetail reports whether the underlying error may be shown.
 func debugDetail() bool { return os.Getenv("DRIVE_DEBUG") == "1" }
 
-// printFailure writes err to w the way main shows it: what happened, then the
-// next step. A failure's underlying detail is shown only with DRIVE_DEBUG=1;
-// an error that is not in the table prints the unexpected entry plus a
-// marker, so an unclassified failure can never pass for a table entry.
-// It returns the process exit code (always 1).
 func printFailure(w io.Writer, err error) int {
 	var f *failure
 	if !errors.As(err, &f) {
@@ -416,9 +350,6 @@ func printFailure(w io.Writer, err error) int {
 	return 1
 }
 
-// apiFailureKind names the message table kind for a failed api Worker call:
-// the Worker's own refusals (APIError) split by status, anything else is the
-// network. err is never nil at a call site.
 func apiFailureKind(err error) string {
 	return api.FailureKind(err)
 }
