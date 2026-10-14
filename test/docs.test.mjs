@@ -297,13 +297,10 @@ test("the limits page is honest: not open, no install script, and the CLI gaps n
   // to be on this list: cmd/drive/main.go now ships branch, branches, diff,
   // approve and discard, and the agents page documents them (issue #306), so
   // the gap line was removed and the page must not claim the gap anymore.
-  for (const missing of ["restore"]) {
-    assert.match(
-      page,
-      new RegExp(`No \`${missing}\` command yet|No branch or approve commands`),
-      `the limits page must say there is no ${missing} command yet`,
-    );
-  }
+  // `restore` shipped (delight item 1), so it is no longer a gap: the page
+  // must describe `drive restore` as a command that exists.
+  assert.match(page, /`drive restore <file>`/, "the limits page must speak of drive restore");
+  assert.doesNotMatch(page, /No `restore` command yet/);
   assert.doesNotMatch(
     page,
     /No branch or approve commands/,

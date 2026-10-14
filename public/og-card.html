@@ -2,41 +2,18 @@
 <html lang="en" class="drive">
 <head>
   <meta charset="utf-8">
-  <!-- The share card's source (drive issue #123). public/og.png is rendered
-       from this page, so the next price change is an edit to the sentences
-       below and a re-render, not a redraw. test/og-card.test.mjs reads those
-       strings and fails CI when they drift from src/pricing.js (PRICE), the
-       one price source, the way test/pricing-copy.test.mjs gates the pricing
-       page. This page is noindex: nobody navigates here, it exists so the card
-       is reproducible from the repo.
-
-       Render (1200x630), from the repo root, with the site served so /site.css
-       resolves:
-         python3 -m http.server 8137 --directory public &
-         npx playwright screenshot --viewport-size "1200,630" \
-           http://127.0.0.1:8137/og-card.html public/og.png
-  -->
   <title>Storagebun — share card source</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta name="description" content="The 1200x630 share card, rendered from the pricing page's own palette and the one price config so a repriced product moves the card with the page.">
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="/site.css">
   <style>
-/* The share card: the pricing page's own price statement on a 1200x630
-   canvas, in the page's own palette. Everything but the composition comes
-   from the shared stylesheet (drive #71); this block declares no custom
-   property, so the palette cannot drift from public/site.css. */
-
 html,
 body {
   width: 1200px;
   height: 630px;
 }
 
-/* The shared stylesheet resets the body margin but no child's, and a <p> at
-   150px would carry a 150px margin of its own and push the last line past the
-   630px canvas, so the card zeroes its own paragraph margins. This is a rule,
-   not a custom property, so the card still owns no palette token. */
 p {
   margin: 0;
 }
@@ -92,8 +69,6 @@ body {
   </style>
 </head>
 <body>
-  <!-- The card's visible name is SITE_NAME ("Storagebun"), gated by
-       test/og-card.test.mjs, not the lowercase logo the pages use. -->
   <span class="wordmark"><i aria-hidden="true"></i>Storagebun</span>
   <p class="lead">Add $10 or more.</p>
   <p class="amount">2¢</p>
