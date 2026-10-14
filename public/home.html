@@ -134,8 +134,6 @@ code {
     <a href="/devices">Devices</a>
     <a href="/signin" id="nav-signin">Sign in</a>
       <noscript>
-        <!-- Not Django: POST /api/signin refuses a cross-site post
-             (isSameOriginRequest). A token in the markup would protect nothing. -->
         <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
         <form method="POST" action="/api/signin">
           <input type="hidden" name="step" value="signout">
@@ -255,7 +253,6 @@ function setText(id, text) {
   document.getElementById(id).textContent = text;
 }
 
-// One next step, in the order a new account needs them.
 function nextStep(balanceCents, deviceCount) {
   if (balanceCents <= 0) {
     return { what: "Add $10 to open your drive", line: "Your balance pays for storage. It never expires.", href: "/usage", label: "Top up" };

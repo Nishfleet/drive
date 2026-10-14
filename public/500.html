@@ -6,21 +6,12 @@
   <title>Storagebun — something went wrong</title>
   <meta name="description" content="That did not work. The error is logged, and the home page has the price and the way in.">
   <meta name="robots" content="noindex">
-  <!-- drive#546: the one served favicon, so no tab asks for /favicon.ico and
-       gets the 404 page. -->
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="manifest" href="/site.webmanifest">
-  <!-- The site's own 5xx page (drive#584). src/index.js serves this file from
-       app.onError when a page request fails, so a browser gets the site's
-       chrome instead of a bare JSON body. Same chrome, palette and type as the
-       rest of the funnel (drive#458). No prices typed here. -->
   <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
-/* 500: shared tokens via class="drive". This block is the column and the
-   heading, nothing the shared file already owns. */
-
 body {
   padding: 0 clamp(20px, 5vw, 72px) 72px;
 }
