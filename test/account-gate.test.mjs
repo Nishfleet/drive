@@ -10,6 +10,7 @@ import { handleFilesRequest } from "../core/files-handlers.js";
 import { createMemoryStore } from "../core/files-memory.js";
 import { scopeStore } from "../core/files-scope.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { MILESTONES_ENDPOINT } from "../core/milestones.js";
 import { AUTO_TOPUP_ENDPOINT } from "../core/prepaid.js";
 import { RECEIPT_ENDPOINT } from "../core/receipts.js";
 import { STATUS_ENDPOINT } from "../core/status.js";
@@ -149,6 +150,7 @@ const ACCOUNT_ROUTES = [
   `${TOPUP_ENDPOINT}/`,
   `${AUTO_TOPUP_ENDPOINT}`,
   // Drive#901: the account's webhook endpoints, their test send and log.
+  `${MILESTONES_ENDPOINT}`,
   `${WEBHOOK_ENDPOINT}`,
   `${WEBHOOK_ENDPOINT}/:id`,
   `${WEBHOOK_ENDPOINT}/:id/test`,
