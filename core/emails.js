@@ -856,6 +856,37 @@ function firstFileNudgeTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
+// ---------------------------------------------------------------------------
+// Share link opened -- someone opened a link the owner made, sent once a night
+// per link (src/share-opened.js). { fileName, opens }
+// ---------------------------------------------------------------------------
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function shareOpenedTemplate(data = {}) {
+  const fileName = requireText(data.fileName, "fileName");
+  const opens = Number(data.opens);
+  if (!Number.isInteger(opens) || opens < 1) {
+    throw new TypeError(`opens must be a whole number of 1 or more, got ${String(data.opens)}`);
+  }
+  const times = opens === 1 ? "once" : `${opens} times`;
+  const subject = "Your shared link was opened";
+  const lines = [
+    `Your link to ${fileName} was opened ${times} since the last time we wrote.`,
+    "",
+    "You can turn a link off any time from the Files page or with drive share --revoke.",
+  ];
+  const html_lines = [
+    `<p>Your link to ${escapeHtml(fileName)} was opened ${times} since the last time we wrote.</p>`,
+    "<p>You can turn a link off any time from the Files page or with <code>drive share --revoke</code>.</p>",
+  ];
+  const unsubscribe =
+    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+      ? data.unsubscribeUrl
+      : null;
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
+}
+
 // The kind names every caller and the test suite use. Order is the spec's.
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
@@ -873,6 +904,7 @@ export const EMAIL_KINDS = Object.freeze([
   "upload-arrivals",
   "security-event",
   "first-file-nudge",
+  "share-opened",
 ]);
 
 /**
@@ -894,6 +926,7 @@ const TEMPLATES = Object.freeze({
   "upload-arrivals": uploadArrivalsTemplate,
   "security-event": securityEventTemplate,
   "first-file-nudge": firstFileNudgeTemplate,
+  "share-opened": shareOpenedTemplate,
 });
 
 /**

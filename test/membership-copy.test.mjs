@@ -91,6 +91,9 @@ function dataFor(kind) {
       replyTo: REPLY_TO,
     };
   }
+  if (kind === "share-opened") {
+    return { fileName: "report.pdf", opens: 3, replyTo: REPLY_TO };
+  }
   if (kind === "first-file-nudge") {
     return { hours: 72, replyTo: REPLY_TO };
   }
