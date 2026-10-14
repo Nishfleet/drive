@@ -1251,6 +1251,7 @@ test("the pages' mastheads read as one navigation", () => {
   // page's masthead is its wordmark alone — its links are its footer nav,
   // which is issue #11's and is checked below.
   const nav = [
+    '<a href="/home"',
     '<a href="/files"',
     '<a href="/"',
     '<a href="/get-started"',
@@ -1280,7 +1281,7 @@ test("the pages' mastheads read as one navigation", () => {
     assert.deepEqual(
       links,
       nav,
-      `${name}'s header carries the site's six links, and nothing else, in the same order`,
+      `${name}'s header carries the site's seven links, and nothing else, in the same order`,
     );
     assert.match(header, /<header class="masthead">/, `${name} carries the shared masthead header`);
     assert.doesNotMatch(header, /<header class="topbar">/, `${name} has no top bar of its own`);
