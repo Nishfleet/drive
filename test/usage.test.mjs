@@ -1179,7 +1179,10 @@ test("the cap is a control, not a readout, and it saves through the api", async 
   // The slider ships usable: the signed-out state is what disables it, which
   // is the gate (drive#73) rather than a not-yet-implemented placeholder.
   assert.doesNotMatch(page.slice(page.indexOf("<body>")), /id="cap-slider"[^>]*disabled/);
-  assert.match(page, /<button type="button" id="cap-save" hidden>Save cap<\/button>/);
+  assert.match(
+    page,
+    /<button type="button" id="cap-save" hidden class="btn btn-primary">Save cap<\/button>/,
+  );
   assert.match(page, /capAmount\.addEventListener\("input"/);
   assert.match(page, /capSaveEl\.addEventListener\("click"/);
   // The write: the same body `drive cap` sends, and the answer's own sentence

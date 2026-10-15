@@ -742,7 +742,17 @@ body:has(.app-side) main h1 {
   font-size: 14px;
 }
 
-:where(input:not([type]), input[type="text"], input[type="email"], input[type="url"], input[type="number"], input[type="search"], input[type="password"], select, textarea),
+:where(
+  input:not([type]),
+  input[type="text"],
+  input[type="email"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  input[type="password"],
+  select,
+  textarea
+),
 .field {
   width: 100%;
   min-height: 44px;
@@ -770,4 +780,14 @@ body:has(.app-side) main h1 {
 .slider {
   width: 100%;
   accent-color: var(--accent);
+}
+
+.btn[hidden],
+.field[hidden],
+.check[hidden] {
+  display: none;
+}
+
+body:has(.app-side) .wordmark {
+  font-size: 22px;
 }
