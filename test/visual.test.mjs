@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
-import { Readable } from "node:stream";
 import { test } from "node:test";
 import { FILES_ENDPOINT } from "../core/files.js";
 import { createMemoryStore } from "../core/files-memory.js";
@@ -86,23 +85,28 @@ function serve(page, workerFetch, env, ctx, cookie) {
       headers.set(name, Array.isArray(value) ? value.join(", ") : (value ?? ""));
     }
     headers.set("cookie", cookie);
-    const workerRequest = new Request(`${TEST_BASE_URL}${url.pathname}${url.search}`, {
-      method: request.method,
-      headers,
-      body:
-        request.method === "GET" || request.method === "HEAD"
-          ? undefined
-          : /** @type {BodyInit} */ (Readable.toWeb(request)),
+    /** @type {Buffer[]} */
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      const hasBody = request.method !== "GET" && request.method !== "HEAD";
+      const workerRequest = new Request(`${TEST_BASE_URL}${url.pathname}${url.search}`, {
+        method: request.method,
+        headers,
+        body: hasBody ? Buffer.concat(chunks) : undefined,
+      });
+      relay(workerRequest);
     });
-    workerFetch(workerRequest, env, ctx).then(
-      async (answer) => {
-        response.writeHead(answer.status, Object.fromEntries(answer.headers));
-        response.end(Buffer.from(await answer.arrayBuffer()));
-      },
-      (error) => {
-        response.writeHead(500).end(String(error));
-      },
-    );
+    const relay = (/** @type {Request} */ workerRequest) =>
+      workerFetch(workerRequest, env, ctx).then(
+        async (answer) => {
+          response.writeHead(answer.status, Object.fromEntries(answer.headers));
+          response.end(Buffer.from(await answer.arrayBuffer()));
+        },
+        (error) => {
+          response.writeHead(500).end(String(error));
+        },
+      );
   });
 }
 
