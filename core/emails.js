@@ -734,15 +734,31 @@ function monthlyStoryTemplate(data = {}) {
   if (!Number.isInteger(added) || added < 0) {
     throw new TypeError(`filesAdded must be a whole number, got ${String(data.filesAdded)}`);
   }
+  const sessions = data.agentSessions === undefined ? 0 : Number(data.agentSessions);
+  if (!Number.isInteger(sessions) || sessions < 0) {
+    throw new TypeError(`agentSessions must be a whole number, got ${String(data.agentSessions)}`);
+  }
+  const agentLine =
+    sessions === 0
+      ? null
+      : `Your agents worked in your drive ${sessions === 1 ? "once" : `${sessions} times`}. Each one is under Rewind if you want it undone.`;
   const subject = `Your drive in ${month.replace(", UTC", "")}`;
   const addedLine =
     added === 0
       ? "No new files were added."
       : `${added} ${added === 1 ? "file was" : "files were"} added.`;
-  const lines = [`Here is your drive for ${month}.`, "", peak, addedLine, spent];
+  const lines = [
+    `Here is your drive for ${month}.`,
+    "",
+    peak,
+    addedLine,
+    spent,
+    ...(agentLine === null ? [] : ["", agentLine]),
+  ];
   const html_lines = [
     `<p>Here is your drive for ${escapeHtml(month)}.</p>`,
     `<p>${escapeHtml(peak)}<br>${addedLine}<br>${escapeHtml(spent)}</p>`,
+    ...(agentLine === null ? [] : [`<p>${escapeHtml(agentLine)}</p>`]),
   ];
   const unsubscribe = unsubscribeLinkOf(data);
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
