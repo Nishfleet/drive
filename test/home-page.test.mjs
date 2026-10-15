@@ -183,3 +183,19 @@ test("the Get started checklist ticks itself from devices and files, and leaves 
 test("the grid honours the hidden attribute, so an error replaces it instead of pushing it down", () => {
   assert.match(page, /\.grid\[hidden\]\s*\{\s*display:\s*none;/);
 });
+
+test("What's new shows the newest changelog line, and a missing file leaves it out", async () => {
+  const base = {
+    "/api/balance": { body: BALANCE },
+    "/api/usage": { body: USAGE },
+    "/api/devices": { body: KEYS },
+  };
+  const shown = await run({
+    ...base,
+    "/whats-new.json": { body: { date: "2026-10-09", text: "Sign-in is bounded" } },
+  });
+  assert.equal(shown.get("whats-new-text").textContent, "Sign-in is bounded");
+  assert.equal(shown.get("whats-new").hidden, false);
+  const missing = await run(base);
+  assert.equal(missing.get("whats-new").hidden, true);
+});
