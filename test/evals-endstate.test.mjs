@@ -12,7 +12,11 @@ const module = () => read(MODULE);
 test("the end-state slice runs on Inspect, pinned, in its own venv", () => {
   const requirements = read("evals/agents/requirements.txt");
   assert.match(requirements, /^inspect-ai==\d+\.\d+\.\d+$/m, "inspect-ai is an exact pin");
-  assert.match(requirements, /^openai==\d+\.\d+\.\d+$/m, "the openai-api provider needs the openai package, which inspect-ai does not install");
+  assert.match(
+    requirements,
+    /^openai==\d+\.\d+\.\d+$/m,
+    "the openai-api provider needs the openai package, which inspect-ai does not install",
+  );
   const ignored = read("evals/agents/.gitignore");
   assert.match(ignored, /^\.venv\/$/m, "the venv is not tracked");
   const pkg = JSON.parse(read("package.json"));
