@@ -29,6 +29,10 @@ Blender is named because a build machine may not have it on PATH; the
 other two tools (ffmpeg, and the agent CLI) are found the ordinary way, and
 a host missing any of the three skips the run rather than writing a partial
 record. `DRIVE_STANDIN_VIDEO_GB` changes the video's size and the video
-row's heading with it. A Mac run (a real Finder window, Final Cut, a
-Finder-side scrub) is out of reach for a Linux build machine and is listed
-on issue #113 as an open check, never estimated here.
+row's heading with it. A recorded row that drifts from the numbers this
+file already carries fails the run, so a re-record is a deliberate act:
+`DRIVE_DEMOS_DOC=docs/demos.md node --test test/home-demos.test.mjs`
+writes here, and the default run diffs instead of writing (drive#582).
+A Mac run (a real Finder window, Final Cut, a Finder-side scrub) is out of
+reach for a Linux build machine and is listed on issue #113 as an open
+check, never estimated here.
