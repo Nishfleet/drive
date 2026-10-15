@@ -898,6 +898,7 @@ function say(message, kind) {
 }
 
 function showSignedOut(message) {
+  forgetRows();
   list.textContent = "";
   empty.hidden = true;
   signedOutWhat.textContent = message;
@@ -1523,9 +1524,44 @@ function openViewer(row) {
 
 viewerClose.addEventListener("click", () => viewer.close());
 
+const CACHE_PREFIX = "files:";
+
+function cachedRows() {
+  try {
+    const kept = sessionStorage.getItem(`${CACHE_PREFIX}${path}`);
+    const rows = kept === null ? null : JSON.parse(kept);
+    return Array.isArray(rows) ? rows : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function keepRows(rows) {
+  try {
+    sessionStorage.setItem(`${CACHE_PREFIX}${path}`, JSON.stringify(rows));
+  } catch (_error) {}
+}
+
+function forgetRows() {
+  try {
+    for (const key of Object.keys(sessionStorage)) {
+      if (key.startsWith(CACHE_PREFIX)) {
+        sessionStorage.removeItem(key);
+      }
+    }
+  } catch (_error) {}
+}
+
 async function refresh(keepStatus) {
   if (!keepStatus) {
     say("");
+  }
+  if (view === "folder" && !keepStatus) {
+    const rows = cachedRows();
+    if (rows !== null && rows.length > 0) {
+      showSignedIn();
+      renderRows(rows);
+    }
   }
   try {
     if (view === "rewind") {
@@ -1540,6 +1576,9 @@ async function refresh(keepStatus) {
     showSignedIn();
     applyHistoryWindow(payload.historyDays);
     nextCursor = view === "folder" ? (payload.nextCursor ?? null) : null;
+    if (view === "folder") {
+      keepRows(payload.rows || []);
+    }
     renderRows(payload.rows || []);
     showMore(nextCursor);
     if (view === "folder") {
@@ -1869,6 +1908,7 @@ function showSessionNav(signedIn) {
 }
 
 async function postSignout(step) {
+  forgetRows();
   navSignout.disabled = true;
   navSignoutAll.disabled = true;
   let response;
