@@ -39,6 +39,14 @@ h1 {
   color: var(--ink-soft);
 }
 
+.grid[hidden] {
+  display: none;
+}
+
+.stage {
+  min-height: 260px;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -168,6 +176,7 @@ code {
     <h1 id="home-heading" tabindex="-1">Your drive</h1>
     <p class="lede" id="home-lede">Your balance, what you store and your devices, in one place.</p>
 
+    <div class="stage">
     <div class="status" id="home-status" role="status" aria-live="polite" hidden>
       <p class="what"></p>
       <p class="next"></p>
@@ -193,6 +202,7 @@ code {
         <p class="more" id="devices-line"></p>
         <p><a href="/devices">Manage devices</a></p>
       </section>
+    </div>
     </div>
 
     <section class="tile" id="checklist" aria-labelledby="checklist-title" hidden>
