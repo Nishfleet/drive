@@ -1,5 +1,6 @@
 import { DEFAULT_CAP_USD } from "./cap-default.js";
 import { emailShell } from "./email-layout.js";
+import { monthLabel, requireDay, requireDays } from "./emails-fields.js";
 import { escapeHtml } from "./escape-html.js";
 import { INSTALL_COMMAND, SIGN_IN_COMMAND, TOP_UP_PROMPT } from "./messages.js";
 import { absoluteUrl } from "./seo.js";
@@ -197,36 +198,6 @@ export function paymentFailedTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
-const MONTH_ISO = /^\d{4}-(0[1-9]|1[0-2])-01T00:00:00\.000Z$/;
-const MONTH_NAMES = Object.freeze([
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-]);
-
-/**
- * @param {unknown} value
- * @returns {string} the month named "October 2026", for the subject and the first line
- */
-function monthLabel(value) {
-  if (typeof value !== "string" || !MONTH_ISO.test(value)) {
-    throw new TypeError(
-      `monthIso must be a month's first instant (2026-10-01T00:00:00.000Z), got ${String(value)}`,
-    );
-  }
-  const at = new Date(value);
-  return `${MONTH_NAMES[at.getUTCMonth()]} ${at.getUTCFullYear()}, UTC`;
-}
-
 /**
  * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
@@ -261,35 +232,6 @@ export function monthlyReceiptTemplate(data = {}) {
     html_lines.push(`<p>${saved}</p>`);
   }
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, saved });
-}
-
-/**
- * @param {unknown} value
- * @param {string} name
- * @returns {number}
- */
-function requireDays(value, name) {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new TypeError(`${name} must be a whole number of days, got ${String(value)}`);
-  }
-  return value;
-}
-
-/**
- * @param {unknown} value
- * @param {string} name
- * @returns {string}
- */
-function requireDay(value, name) {
-  if (
-    typeof value !== "string" ||
-    !/^[1-9]\d? (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \(UTC\)$/.test(value)
-  ) {
-    throw new TypeError(
-      `${name} must be a short date with its zone (3 Nov (UTC)), got ${String(value)}`,
-    );
-  }
-  return value;
 }
 
 /**
@@ -778,9 +720,38 @@ export const EMAIL_KINDS = Object.freeze([
   "security-event",
   "first-file-nudge",
   "share-opened",
+  "monthly-story",
   "runway-notice",
   "bill-dropped",
 ]);
+
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function monthlyStoryTemplate(data = {}) {
+  const month = monthLabel(data.monthIso);
+  const peak = requireText(data.peakLine, "peakLine");
+  const spent = requireText(data.spentLine, "spentLine");
+  const added = Number(data.filesAdded);
+  if (!Number.isInteger(added) || added < 0) {
+    throw new TypeError(`filesAdded must be a whole number, got ${String(data.filesAdded)}`);
+  }
+  const subject = `Your drive in ${month.replace(", UTC", "")}`;
+  const addedLine =
+    added === 0
+      ? "No new files were added."
+      : `${added} ${added === 1 ? "file was" : "files were"} added.`;
+  const lines = [`Here is your drive for ${month}.`, "", peak, addedLine, spent];
+  const html_lines = [
+    `<p>Here is your drive for ${escapeHtml(month)}.</p>`,
+    `<p>${escapeHtml(peak)}<br>${addedLine}<br>${escapeHtml(spent)}</p>`,
+  ];
+  const unsubscribe =
+    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+      ? data.unsubscribeUrl
+      : null;
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
+}
 
 /**
  * @type {Readonly<Record<string, (data: Record<string, unknown>) => {subject: string, text: string, html: string, saved: string|null}>>}
@@ -802,6 +773,7 @@ const TEMPLATES = Object.freeze({
   "security-event": securityEventTemplate,
   "first-file-nudge": firstFileNudgeTemplate,
   "share-opened": shareOpenedTemplate,
+  "monthly-story": monthlyStoryTemplate,
   "runway-notice": runwayNoticeTemplate,
   "bill-dropped": billDroppedTemplate,
 });

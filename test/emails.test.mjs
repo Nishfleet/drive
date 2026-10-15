@@ -115,6 +115,7 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "security-event",
     "first-file-nudge",
     "share-opened",
+    "monthly-story",
     "runway-notice",
     "bill-dropped",
   ]);
@@ -424,6 +425,14 @@ function dataFor(kind) {
       };
     case "share-opened":
       return { ...base, fileName: "report.pdf", opens: 3 };
+    case "monthly-story":
+      return {
+        ...base,
+        monthIso: "2026-09-01T00:00:00.000Z",
+        peakLine: "Your drive peaked at 40 GB.",
+        filesAdded: 12,
+        spentLine: "It cost $0.80.",
+      };
     case "first-file-nudge":
       return { ...base, hours: 24 };
     case "bill-dropped":
