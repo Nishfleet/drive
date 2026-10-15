@@ -13,7 +13,9 @@ rolling back a deploy.
 
 ## A file a person deleted
 
-1. If they deleted it from the Files page, it is in `.trash/` for 30 days and
+1. If they deleted it from the Files page, it is in `.trash/` for 3 days
+   (`RECENTLY_DELETED_DAYS`, `core/files.js`), or for the account's chosen
+   history window (30 days or 1 year, `core/history-addon.js`), and
    they can restore it themselves from "Recently deleted" (`purgeExpiredTrash`,
    `core/files-scope.js:37`). Send them there first.
 2. If they deleted it any other way (the CLI, an rclone command), the object
@@ -21,7 +23,9 @@ rolling back a deploy.
    versions, and the reconciler reads them through `store.listVersions`
    (`core/files-s3.js:587`, the shape the reconciler and an operator both read). An
    operator restores the wanted version into the current key. The window is the
-   provider's version window, so do this as soon as the request arrives.
+   provider's version window, 3 days by default (`HIDDEN_VERSION_DAYS`,
+   `core/s3.js`) or the account's chosen history window, so do this as soon as
+   the request arrives.
 3. Do not run the nightly trash purge by hand to "tidy up" while a restore is
    in flight. It runs at 05:00 UTC (`TRASH_PURGE_SCHEDULE`, `core/files.js:639`).
 

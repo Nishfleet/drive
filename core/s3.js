@@ -137,8 +137,8 @@ export function createS3Client(config) {
 export const HIDDEN_VERSION_DAYS = 3;
 
 /**
- * The bucket build step 1 asks for: versioning on, hidden versions kept for a
- * day, and the event notifications pointed at the api Worker. Idempotent, so
+ * The bucket build step 1 asks for: versioning on, hidden versions kept for
+ * HIDDEN_VERSION_DAYS days, and the event notifications pointed at the api Worker. Idempotent, so
  * a run that configures an existing bucket is not a failure.
  *
  * The lifecycle rule is the hidden-version rule from docs/build-spec.md: a

@@ -29,7 +29,8 @@ Nothing here runs on its own except the workflows named in each section.
   The gap drains itself on later runs; a warning that repeats every hour for
   a day means the drain is stuck.
 - **Workers Logs** — `observability.enabled` in `cloudflare.config.ts`
-  collects every invocation's console lines for 14 days, sampling
+  collects every invocation's console lines for up to 7 days (Cloudflare's
+  Workers Logs retention), sampling
   everything. This is the floor under Sentry, not the pager.
 - **`/api/health`** — answers `{"ok":true}` only when the meter's watermark
   is fresh and the storage reader works; a stale meter or the in-memory
