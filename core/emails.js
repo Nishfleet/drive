@@ -16,6 +16,8 @@ const USAGE_LINK = Object.freeze({
   url: USAGE_URL,
 });
 
+const TOP_UP_LINK = Object.freeze({ label: "Add to your balance", url: USAGE_URL });
+
 export const FROM_NAME = "Storagebun";
 
 export const REPLY_TO_LOCAL = "support";
@@ -677,6 +679,58 @@ function firstFileNudgeTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function runwayNoticeTemplate(data = {}) {
+  const runwayLine = requireText(data.runwayLine, "runwayLine");
+  const subject = "About a month of storage left on your balance";
+  const lines = [
+    runwayLine,
+    "",
+    "Add to your balance when it suits you. If it runs out, uploads pause, downloads keep working and nothing is deleted.",
+  ];
+  const html_lines = [
+    `<p>${escapeHtml(runwayLine)}</p>`,
+    "<p>Add to your balance when it suits you. If it runs out, uploads pause, downloads keep working and nothing is deleted.</p>",
+  ];
+  const unsubscribe =
+    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+      ? data.unsubscribeUrl
+      : null;
+  return finish({
+    subject,
+    lines,
+    html_lines,
+    replyTo: data.replyTo,
+    link: TOP_UP_LINK,
+    unsubscribe,
+  });
+}
+
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function billDroppedTemplate(data = {}) {
+  const fromLine = requireText(data.fromLine, "fromLine");
+  const toLine = requireText(data.toLine, "toLine");
+  const subject = `Your monthly bill just dropped to ${toLine}`;
+  const lines = [
+    `The biggest size your drive reached in the last 30 days has aged out, so your monthly bill went from ${fromLine} to ${toLine}.`,
+    "",
+    "Nothing to do. You pay for the biggest size in the last 30 days, so a big delete shows up in the bill once that peak is 30 days old.",
+  ];
+  const html_lines = [
+    `<p>The biggest size your drive reached in the last 30 days has aged out, so your monthly bill went from ${escapeHtml(fromLine)} to ${escapeHtml(toLine)}.</p>`,
+    "<p>Nothing to do. You pay for the biggest size in the last 30 days, so a big delete shows up in the bill once that peak is 30 days old.</p>",
+  ];
+  const unsubscribe =
+    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+      ? data.unsubscribeUrl
+      : null;
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
+}
+
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
   "cap-warning",
@@ -694,6 +748,8 @@ export const EMAIL_KINDS = Object.freeze([
   "security-event",
   "first-file-nudge",
   "monthly-story",
+  "runway-notice",
+  "bill-dropped",
 ]);
 
 /**
@@ -744,6 +800,8 @@ const TEMPLATES = Object.freeze({
   "security-event": securityEventTemplate,
   "first-file-nudge": firstFileNudgeTemplate,
   "monthly-story": monthlyStoryTemplate,
+  "runway-notice": runwayNoticeTemplate,
+  "bill-dropped": billDroppedTemplate,
 });
 
 /**

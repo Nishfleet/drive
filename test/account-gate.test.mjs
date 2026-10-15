@@ -9,6 +9,7 @@ import { FILES_ENDPOINT } from "../core/files.js";
 import { handleFilesRequest } from "../core/files-handlers.js";
 import { createMemoryStore } from "../core/files-memory.js";
 import { scopeStore } from "../core/files-scope.js";
+import { HISTORY_ENDPOINT } from "../core/history-addon.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { AUTO_TOPUP_ENDPOINT } from "../core/prepaid.js";
 import { RECEIPT_ENDPOINT } from "../core/receipts.js";
@@ -148,6 +149,8 @@ const ACCOUNT_ROUTES = [
   `${TOPUP_ENDPOINT}`,
   `${TOPUP_ENDPOINT}/`,
   `${AUTO_TOPUP_ENDPOINT}`,
+  // The history add-on: the account's retention window and its price.
+  `${HISTORY_ENDPOINT}`,
   // Drive#901: the account's webhook endpoints, their test send and log.
   `${WEBHOOK_ENDPOINT}`,
   `${WEBHOOK_ENDPOINT}/:id`,

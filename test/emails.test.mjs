@@ -115,6 +115,8 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "security-event",
     "first-file-nudge",
     "monthly-story",
+    "runway-notice",
+    "bill-dropped",
   ]);
 });
 
@@ -430,6 +432,10 @@ function dataFor(kind) {
       };
     case "first-file-nudge":
       return { ...base, hours: 24 };
+    case "bill-dropped":
+      return { ...base, fromLine: "$10.00", toLine: "$2.00" };
+    case "runway-notice":
+      return { ...base, runwayLine: "Your $14 lasts about 1 month at your current size." };
     default:
       throw new Error(`no test data for ${kind}`);
   }
