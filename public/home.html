@@ -89,6 +89,13 @@ h1 {
   color: var(--ink-soft);
 }
 
+.milestone {
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border: 1px solid var(--drive-orange, currentColor);
+  border-radius: 10px;
+}
+
 .checklist {
   margin: 8px 0 0;
   padding: 0;
@@ -199,6 +206,7 @@ code {
 
   <main>
     <h1 id="home-heading" tabindex="-1">Your drive</h1>
+    <p class="milestone" id="milestone" role="status" aria-live="polite" hidden></p>
     <p class="lede" id="home-lede">Your balance, what you store and your devices, in one place.</p>
 
     <div class="stage">
@@ -270,6 +278,7 @@ const BALANCE_ENDPOINT = "/api/balance";
 const USAGE_ENDPOINT = "/api/usage";
 const DEVICES_ENDPOINT = "/api/devices";
 const REWIND_ENDPOINT = "/api/rewind";
+const MILESTONES_ENDPOINT = "/api/milestones";
 const FILES_ENDPOINT = "/api/files";
 const WHATS_NEW_URL = "/whats-new.json";
 const SIGNIN_ENDPOINT = "/api/signin";
@@ -373,6 +382,7 @@ async function read() {
   gridEl.setAttribute("aria-busy", "false");
   readChecklist(devices.payload.keys);
   readAgents();
+  readMilestones();
   readWhatsNew();
 }
 
@@ -388,6 +398,25 @@ async function readWhatsNew() {
 // The newest agent session, in one line: who, how many files, and whether
 // Rewind can still put them back. The tile is left out when there is none or
 // the read fails, because it is a bonus on this page and never its error.
+async function readMilestones() {
+  let fresh;
+  try {
+    const answer = await getJson(MILESTONES_ENDPOINT);
+    fresh = answer.ok ? answer.payload?.milestones : null;
+  } catch (_error) {
+    return;
+  }
+  if (!Array.isArray(fresh) || fresh.length === 0) return;
+  const line = document.getElementById("milestone");
+  line.textContent = fresh.map((milestone) => milestone.text).join(" ");
+  line.hidden = false;
+  fetch(MILESTONES_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ids: fresh.map((milestone) => milestone.id) }),
+  }).catch(() => {});
+}
+
 async function readChecklist(keys) {
   let hasFile = false;
   try {

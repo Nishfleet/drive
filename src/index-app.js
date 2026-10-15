@@ -20,6 +20,7 @@ import { failureMessage } from "../core/messages.js";
 import { handleStorageEventRequest } from "../core/meter-events.js";
 import { fairUseSnapshot } from "../core/meter-fair-use.js";
 import { downloadRecorder, monthStart } from "../core/meter-usage.js";
+import { handleMilestonesRequest, MILESTONES_ENDPOINT } from "../core/milestones.js";
 import {
   AUTO_TOPUP_ENDPOINT,
   handleAutoTopUpRequest,
@@ -281,6 +282,12 @@ export function createApp() {
       size30Bytes,
     });
   });
+  app.get(MILESTONES_ENDPOINT, (c) =>
+    handleMilestonesRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
+  );
+  app.post(MILESTONES_ENDPOINT, (c) =>
+    handleMilestonesRequest(c.req.raw, c.get("account"), c.env.DRIVE_DB),
+  );
   app.get(HISTORY_ENDPOINT, async (c) => {
     const account = c.get("account");
     let size30Bytes = 0;
