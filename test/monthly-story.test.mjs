@@ -91,3 +91,27 @@ test("it sends nothing after the first days of the month", async () => {
   });
   assert.deepEqual(out, { sent: 0, failed: 0 });
 });
+
+test("a new milestone is told once in the story and then counts as seen", async () => {
+  const w = world();
+  w.add("a");
+  w.usage("a", 2 * GB);
+  w.db.sqlite
+    .prepare(
+      "INSERT INTO file_versions (account_id, b2_file_id, path, size_bytes, created_at) VALUES ('a', 'f1', 'u/a/x.bin', 5, ?1)",
+    )
+    .run(SEP);
+  const sent = /** @type {Array<{to: string, text: string}>} */ ([]);
+  const run = (/** @type {number} */ now) =>
+    runMonthlyStories({ db: w.db, email: mailer(sent), mailFrom: "n@d.example", now });
+
+  assert.deepEqual(await run(OCT_2), { sent: 1, failed: 0 });
+  assert.match(sent[0].text, /Your first file is in your drive\./);
+  const row = w.db.sqlite.prepare("SELECT milestones_seen FROM accounts WHERE id = 'a'").get();
+  assert.equal(row?.milestones_seen, "first-file");
+
+  w.db.sqlite.prepare("UPDATE accounts SET story_month = NULL WHERE id = 'a'").run();
+  assert.deepEqual(await run(OCT_2 + 3_600_000), { sent: 1, failed: 0 });
+  assert.match(sent[1].text, /Your drive has passed 1 GB\./);
+  assert.doesNotMatch(sent[1].text, /first file/);
+});

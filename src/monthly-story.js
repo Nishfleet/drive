@@ -1,4 +1,5 @@
 import { sendEmail } from "../core/email-send.js";
+import { markSeen, unseen } from "../core/milestones.js";
 import { formatBytes } from "../core/status.js";
 import { formatCents } from "../core/topup.js";
 import { unsubscribeUrl } from "../core/unsubscribe.js";
@@ -71,6 +72,7 @@ export async function runMonthlyStories(input) {
         .bind(month.label, row.id)
         .run();
       if (Number(claimed.meta?.changes ?? 0) === 0) continue;
+      const { seen, fresh } = await unseen(input.db, row.id, input.now);
       try {
         await sendEmail(input.email, {
           to: row.email,
@@ -81,6 +83,7 @@ export async function runMonthlyStories(input) {
             peakLine: `Your drive peaked at ${formatBytes(peak)}.`,
             filesAdded: Number(row.added),
             agentSessions: Number(row.agent_sessions),
+            milestoneLine: fresh[0]?.text,
             spentLine: `It cost ${formatCents(Number(row.spent))} from your balance.`,
             unsubscribeUrl:
               input.secret && input.origin
@@ -89,6 +92,7 @@ export async function runMonthlyStories(input) {
           },
         });
         sent += 1;
+        if (fresh[0]) await markSeen(input.db, row.id, seen, [fresh[0].id]);
       } catch (error) {
         await input.db
           .prepare("UPDATE accounts SET story_month = NULL WHERE id = ?1 AND story_month = ?2")
