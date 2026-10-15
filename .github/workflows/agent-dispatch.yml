@@ -31,8 +31,25 @@ on:
   # idle 01:37-05:20Z on 2026-10-02).
   schedule:
     - cron: '17 * * * *'
+# One running and one pending run per PR and PR action; GitHub replaces the
+# pending run, so a burst of pushes or labels cannot fan out. A new push
+# cancels the run for the push before it, since only the latest head matters.
+# A PR close and every other event get their own group and never queue (the
+# callee owns the sweep's own group). The fallback is named apart from the
+# callee's own per-run group: a caller and callee sharing one group deadlock.
+concurrency:
+  group: >-
+    ${{ (github.event_name == 'pull_request_target' && github.event.action != 'closed') && format('agent-dispatch-pr-{0}-{1}-{2}', github.repository, github.event.pull_request.number, github.event.action) ||
+    format('agent-dispatch-stub-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' && github.event.action == 'synchronize' }}
 jobs:
   dispatch:
+    # Every pull_request_target action but closed (the callee's hold-risky,
+    # ejected and PR sweeps use them) is dispatched only for a same-repo head,
+    # so a fork's PR opening, pushing or being labelled starts nothing.
+    if: >-
+      github.event_name != 'pull_request_target' || github.event.action == 'closed' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     uses: Nishfleet/fleet-ops/.github/workflows/agent-dispatch.yml@main # same ref runner group 3 enforces for agent.yml; a SHA pin here drifts from agent.yml@main and strands jobs (0509#5231)
     # contents: write is the ceiling for two fleet-ops jobs: hold-risky's
     # merge-queue dequeue and the close job's branch delete. fleet-ops writers
