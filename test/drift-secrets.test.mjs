@@ -25,7 +25,6 @@ const DECLARED_NAMES = new Set([
   "DRIVE_DB",
   "DEVICE_RATE_LIMITER",
   "DEVICE_GLOBAL_RATE_LIMITER",
-  "IDRIVE_E2_API_TOKEN",
 ]);
 
 // Allowlisted names that are intentionally undeclared, with a reason.
@@ -44,6 +43,7 @@ const ALLOWLIST = new Map([
   ["STORAGE_MASTER_ACCESS_KEY_ID", "per-deployment choice"],
   ["STORAGE_MASTER_SECRET_ACCESS_KEY", "per-deployment choice"],
   ["STORAGE_EVENT_TOKEN", "per-deployment choice"],
+  ["IDRIVE_E2_API_TOKEN", "per-deployment choice; optional"],
   ["IDRIVE_S3_ENDPOINT", "per-deployment choice"],
   ["IDRIVE_S3_REGION", "per-deployment choice"],
   ["IDRIVE_S3_ACCESS_KEY_ID", "per-deployment choice"],

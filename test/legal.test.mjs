@@ -372,7 +372,7 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
     ["restore.md", "core/s3.js", "HIDDEN_VERSION_DAYS"],
     ["secrets-rotation.md", "core/meter-events.js", "METER_EVENT_TOKEN"],
     ["secrets-rotation.md", "core/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
-    ["secrets-rotation.md", "workers/api/cloudflare.config.ts", "IDRIVE_E2_API_TOKEN"],
+    ["secrets-rotation.md", "core/keyprovider-env.js", "IDRIVE_E2_API_TOKEN"],
   ];
   for (const [runbook, source, ...symbols] of claims) {
     // Both texts are checked: the runbook must still name the symbol, and the

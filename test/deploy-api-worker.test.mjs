@@ -68,11 +68,10 @@ test("the api Worker's config declares the rate limiters the routes read", () =>
   }
 });
 
-test("the config binds the api Worker to the drive database, the device limits, and the reseller token", () => {
+test("the config binds the api Worker to the drive database, the device limits, and no secret", () => {
   // The declarations are the env this Worker has: the one database its stores
   // and Better Auth's user and session tables live on, the two limiters above,
-  // and the iDrive e2 reseller token (drive#462) the per-bucket key provider
-  // mints with, plus the send_email binding device approval uses to mail the
+  // plus the send_email binding device approval uses to mail the
   // owner (drive#518). The accounts store the device
   // approval reads is the user table already on this database (#181), not a
   // second one.
@@ -81,12 +80,9 @@ test("the config binds the api Worker to the drive database, the device limits, 
     "DEVICE_RATE_LIMITER",
     "DEVICE_GLOBAL_RATE_LIMITER",
     "KEYS_RATE_LIMITER",
-    "IDRIVE_E2_API_TOKEN",
     "EMAIL",
   ]);
-  // The iDrive token is a secret binding, so its value is never in the config
-  // and `wrangler types` reads it off the deployed Worker (drive#462).
-  assert.equal(apiConfig.env.IDRIVE_E2_API_TOKEN.type, "secret");
+  assert.ok(!("IDRIVE_E2_API_TOKEN" in apiConfig.env));
   assert.equal(apiConfig.env.EMAIL.type, "send-email");
   assert.equal(
     apiConfig.env.DRIVE_DB.name,

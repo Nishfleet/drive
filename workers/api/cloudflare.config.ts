@@ -117,28 +117,6 @@ export default defineWorker({
       namespace: "1012",
       simple: { limit: 10, period: 60 },
     }),
-    // drive#462: the iDrive e2 reseller API token, the credential that mints
-    // a key limited to ONE bucket. iDrive e2 cannot scope a key to a folder
-    // and its STS refuses `AssumeRole` outright (measured 2026-10-03,
-    // drive#173), so on the primary vendor the only way to hand out a
-    // per-account key is the reseller API's `create_access_key` — which is
-    // what `keyProviderFor` picks when this value is set and no `STORAGE_*`
-    // is (workers/api/src/index.js). With it, the boundary a key carries is
-    // the account's own bucket (`drv-<id>`, `drv-t-<teamId>`,
-    // keyprovider.js `bucketForAccount` / `bucketForTeam`), so the storage
-    // server itself refuses one account's key against another's files.
-    //
-    // Declared so the runtime injects it and the name cannot drift from the
-    // code that reads it; a missing value is a warning at dev/deploy and
-    // `keyProviderFor` answers null, which is the closed door
-    // ("storage is not configured on this deployment"), not a mint against
-    // something the vendor never approved. The token itself is never a value
-    // in this file and is never logged. Set it once, beside the two above
-    // (it persists across deploys):
-    //   cf workers secrets update IDRIVE_E2_API_TOKEN --type secret_text \
-    //     --text <token> --worker drive-api
-    // (--type is required: cf refuses the update without it.)
-    IDRIVE_E2_API_TOKEN: bindings.secret(),
     // Device approval mails the owner (drive#518). Same stock send_email
     // binding the site Worker uses; MAIL_FROM stays undeclared so a missing
     // sending domain is a skipped notice, not a refused deploy.
@@ -170,12 +148,11 @@ export default defineWorker({
     // provider read their own STORAGE_* values off env too (workers/api/src/
     // index.js, s3-keys.js, event-routes.js), all set the same way per
     // deployment; the stand-in credential is what the Worker falls back to
-    // when a deployment leaves them unset. The same is true of the iDrive e2
-    // side: the reseller token above is the only one of the storage
-    // credentials declared as a binding, because it is the only one whose
-    // absence must be visible in the deploy rather than in a route's answer —
-    // the STORAGE_* values are a per-deployment choice (stand-in, B2) and
-    // declaring any one of them would refuse the deploy for a deployment that
-    // chose the other.
+    // when a deployment leaves them unset.
+    // The same is true of IDRIVE_E2_API_TOKEN, the iDrive e2 reseller token:
+    // storage is a per-deployment choice (stand-in, B2, iDrive e2), so no
+    // storage credential is declared, and a deployment that chose iDrive sets
+    // the token with `cf workers secrets update IDRIVE_E2_API_TOKEN --type
+    // secret_text --text <token> --worker drive-api`.
   },
 });
