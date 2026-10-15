@@ -20,6 +20,7 @@ import { pauseAccountKeys } from "../core/prepaid-pause.js";
 import { absoluteUrl } from "../core/seo.js";
 import { CLOSE_SCHEDULE, runAccountCloseCron } from "./account-close.js";
 import { runActivationNudges } from "./activation.js";
+import { runBillDropNotices } from "./bill-drop.js";
 import { dodoEnv, ownerFor, prepaidPauseFromEnv, sentryFor, storeFor } from "./index-support.js";
 import { KNOWN_BAD_FEED_SCHEDULE, loadKnownBadFeed } from "./malware.js";
 import { METER_JOB_KINDS, meterJobsQueue, sendMeterJobs } from "./meter-jobs.js";
@@ -31,6 +32,7 @@ import {
   reportUnbillableAccounts,
   withCronCheckIn,
 } from "./monitoring.js";
+import { runRunwayNotices } from "./runway-notice.js";
 import { indexAccounts, REINDEX_SCHEDULE, REINDEX_SEND_BATCH } from "./search.js";
 import { runShareOpenedNotices } from "./share-opened.js";
 import { purgeStaleLinks, sendArrivalDigests } from "./share-store.js";
@@ -368,6 +370,24 @@ export async function runScheduled(event, env, context, store) {
           now: event.scheduledTime,
         });
         console.log(`activation: nudged=${nudges.sent} failed=${nudges.failed}`);
+        const runwayNotices = await runRunwayNotices({
+          db: env.DRIVE_DB,
+          email: env.EMAIL,
+          mailFrom: secrets.MAIL_FROM ?? "",
+          secret: /** @type {{BETTER_AUTH_SECRET?: string}} */ (env).BETTER_AUTH_SECRET,
+          origin: new URL(absoluteUrl("/")).origin,
+          now: event.scheduledTime,
+        });
+        console.log(`runway: sent=${runwayNotices.sent} failed=${runwayNotices.failed}`);
+        const drops = await runBillDropNotices({
+          db: env.DRIVE_DB,
+          email: env.EMAIL,
+          mailFrom: secrets.MAIL_FROM ?? "",
+          secret: /** @type {{BETTER_AUTH_SECRET?: string}} */ (env).BETTER_AUTH_SECRET,
+          origin: new URL(absoluteUrl("/")).origin,
+          now: event.scheduledTime,
+        });
+        console.log(`bill-drop: sent=${drops.sent} failed=${drops.failed}`);
         const opened = await runShareOpenedNotices({
           db: env.DRIVE_DB,
           email: env.EMAIL,
