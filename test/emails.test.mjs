@@ -114,6 +114,7 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "upload-arrivals",
     "security-event",
     "first-file-nudge",
+    "share-opened",
     "monthly-story",
     "runway-notice",
     "bill-dropped",
@@ -422,6 +423,8 @@ function dataFor(kind) {
         deviceName: "office laptop",
         happenedAt: "2026-10-06T09:00:00.000Z",
       };
+    case "share-opened":
+      return { ...base, fileName: "report.pdf", opens: 3 };
     case "monthly-story":
       return {
         ...base,
