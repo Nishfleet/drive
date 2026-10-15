@@ -153,3 +153,7 @@ test("no milestone, or a failed read, leaves the line out", async () => {
   });
   assert.equal(none.get("milestone").hidden, true);
 });
+
+test("the grid honours the hidden attribute, so an error replaces it instead of pushing it down", () => {
+  assert.match(page, /\.grid\[hidden\]\s*\{\s*display:\s*none;/);
+});
