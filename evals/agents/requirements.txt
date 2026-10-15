@@ -1,2 +1,3 @@
 inspect-ai==0.3.277
 pyyaml==6.0.3
+openai==3.31.0
