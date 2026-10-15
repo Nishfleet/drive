@@ -1,7 +1,7 @@
 // The History section on /usage (retention, Nish 2026-10-14): the page shows
 // the price the Worker words for a window before it asks to turn it on, and
 // sends accept_price only for the window on screen. The block is the second
-// inline script (data-part="balance"), run here against a stub page.
+// inline script (data-part="history"), run here against a stub page.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import { test } from "node:test";
 import vm from "node:vm";
 
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
-const OPEN_TAG = '<script data-part="balance">';
+const OPEN_TAG = '<script data-part="history">';
 const start = page.indexOf(OPEN_TAG);
 const script = page.slice(start + OPEN_TAG.length, page.indexOf("</script>", start));
 

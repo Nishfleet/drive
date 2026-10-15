@@ -10,6 +10,7 @@
         "http://localhost/usage.html",
         "http://localhost/devices.html",
         "http://localhost/webhooks.html",
+        "http://localhost/billing.html",
         "http://localhost/upload.html",
         "http://localhost/get-started.html",
         "http://localhost/terms.html",

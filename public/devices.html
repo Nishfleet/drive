@@ -153,13 +153,14 @@ th {
 </style>
 </head>
 <body>
-  <a class="skip-link" href="#keys-heading">Skip to your keys</a>
+  <a class="skip-link" href="#keys-heading">Skip to your devices</a>
   <!-- shell:app-header current="/devices" -->
   <nav class="app-side" aria-label="Main">
     <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
     <a href="/home">Home</a>
     <a href="/files">Files</a>
-    <a href="/usage">Usage and billing</a>
+    <a href="/usage">Usage</a>
+    <a href="/billing">Billing</a>
     <a href="/devices" aria-current="page">Devices</a>
     <a href="/webhooks">Webhooks</a>
     <span class="app-side-end">
@@ -169,8 +170,9 @@ th {
   </nav>
   <header class="app-top">
     <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
-    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
-    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <a class="balance-chip" id="balance-chip" href="/billing" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <button class="btn btn-ghost palette-open" id="palette-open" type="button" aria-haspopup="dialog">Search <kbd>Ctrl K</kbd></button>
+    <a class="top-up" href="/billing#topup-form">Top up</a>
     <details class="account-menu" id="account-menu">
       <summary>Account</summary>
       <div class="account-panel">
@@ -196,9 +198,26 @@ th {
     <a href="/home">Home</a>
     <a href="/files">Files</a>
     <a href="/usage">Usage</a>
+    <a href="/billing">Billing</a>
     <a href="/devices" aria-current="page">Devices</a>
     <a href="/webhooks">Hooks</a>
   </nav>
+  <dialog class="palette" id="palette" aria-label="Search and commands">
+    <input class="field" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" aria-label="Search pages, files and commands" placeholder="Jump to a page, a file or a command" autocomplete="off" spellcheck="false">
+    <div id="palette-list" role="listbox" aria-label="Results"></div>
+  </dialog>
+  <dialog class="palette" id="shortcuts" aria-labelledby="shortcuts-title">
+    <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+    <dl>
+      <dt><kbd>Ctrl</kbd> <kbd>K</kbd></dt><dd>Search and commands</dd>
+      <dt><kbd>?</kbd></dt><dd>This list</dd>
+      <dt><kbd>/</kbd></dt><dd>Filter the files in this folder</dd>
+      <dt><kbd>U</kbd></dt><dd>Upload files</dd>
+      <dt><kbd>Delete</kbd></dt><dd>Delete the picked files</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close, or clear the pick</dd>
+    </dl>
+    <button class="btn" type="button" id="shortcuts-close">Close</button>
+  </dialog>
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
   <!-- /shell:app-header -->
 
@@ -238,7 +257,7 @@ th {
     </details>
 
     <section aria-labelledby="keys-heading">
-      <h2 id="keys-heading" tabindex="-1">Keys</h2>
+      <h2 id="keys-heading" tabindex="-1">Devices and agents</h2>
       <div class="status" id="devices-status" role="status" aria-live="polite" hidden>
         <p class="what"></p>
         <p class="next"></p>
@@ -262,6 +281,7 @@ th {
       </table>
     </section>
   </main>
+  <!-- shell:footer -->
   <footer class="footer">
     <nav class="legal-links" aria-label="Legal">
       <a href="/terms">Terms</a>
@@ -272,7 +292,10 @@ th {
       <a href="/accessibility">Accessibility</a>
       <a href="/status">Status</a>
     </nav>
+    <p>A Finder drive for people and their agents.</p>
+    <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
   </footer>
+  <!-- /shell:footer -->
   <script>
 const DEVICES_ENDPOINT = "/api/devices";
 const SIGNIN_ENDPOINT = "/api/signin";

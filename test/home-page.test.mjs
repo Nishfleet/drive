@@ -139,6 +139,29 @@ test("no agent sessions, or a failed read, leaves the agents tile out", async ()
   assert.equal(down.get("home-status").hidden, true);
 });
 
+test("a new milestone shows as one quiet line and is acknowledged", async () => {
+  const els = await run({
+    "/api/balance": { body: BALANCE },
+    "/api/usage": { body: USAGE },
+    "/api/devices": { body: KEYS },
+    "/api/milestones": {
+      body: { milestones: [{ id: "first-file", text: "Your first file is in your drive." }] },
+    },
+  });
+  assert.equal(els.get("milestone").textContent, "Your first file is in your drive.");
+  assert.equal(els.get("milestone").hidden, false);
+});
+
+test("no milestone, or a failed read, leaves the line out", async () => {
+  const none = await run({
+    "/api/balance": { body: BALANCE },
+    "/api/usage": { body: USAGE },
+    "/api/devices": { body: KEYS },
+    "/api/milestones": { body: { milestones: [] } },
+  });
+  assert.equal(none.get("milestone").hidden, true);
+});
+
 test("the Get started checklist ticks itself from devices and files, and leaves when all is done", async () => {
   const base = {
     "/api/balance": { body: BALANCE },

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -7,6 +8,7 @@ import { BILLING_WEBHOOK_PATH, signWebhook, TOPUP_PURPOSE } from "../core/topup.
 import { chromeSkip, launchChrome, startSite } from "./e2e-site.mjs";
 import { TEST_BASE_URL } from "./harness.mjs";
 
+const axeSource = readFileSync(createRequire(import.meta.url).resolve("axe-core"), "utf8");
 const OPTIONS = { timeout: 180_000, skip: chromeSkip };
 
 async function browserSignIn(
@@ -18,7 +20,6 @@ async function browserSignIn(
   page.setDefaultTimeout(60_000);
   const before = site.mail.length;
   await page.goto(`${site.origin}/signin`, { waitUntil: "load" });
-  await page.click("#age");
   await page.type('input[type="email"]', email);
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => /check your email|sent/i.test(document.body.innerText));
@@ -92,7 +93,7 @@ test(
       }
     });
 
-    await page.goto(`${site.origin}/usage`, { waitUntil: "load" });
+    await page.goto(`${site.origin}/billing`, { waitUntil: "load" });
     await page.waitForSelector("#balance-body:not([hidden])");
     const [add10] = await page.$$("#topup-presets button");
     await add10.click();
@@ -141,7 +142,7 @@ test(
     const hookBody = await hook.clone().text();
     assert.match(hookBody, /"ok":true/, hookBody);
 
-    await page.goto(`${site.origin}/usage`, { waitUntil: "load" });
+    await page.goto(`${site.origin}/billing`, { waitUntil: "load" });
     await page.waitForSelector("#balance-body:not([hidden])");
     await page.waitForFunction(
       () => document.getElementById("balance-amount")?.textContent === "$10.00",
@@ -257,6 +258,53 @@ test("a deleted file shows in Recently deleted and one press puts it back", OPTI
   assert.match(listed ?? "", /keep\.txt/);
 });
 
+test(
+  "Ctrl+K opens the palette on every signed-in page and a keyboard alone gets around",
+  OPTIONS,
+  async (t) => {
+    const site = await startSite();
+    t.after(() => site.close());
+    const browser = await launchChrome(site.origin);
+    t.after(() => browser.close());
+    const page = await browserSignIn(browser, site, "keys@example.com");
+
+    for (const route of ["/home", "/files", "/usage", "/devices", "/webhooks"]) {
+      await page.goto(`${site.origin}${route}`, { waitUntil: "load" });
+      await page.keyboard.down("Control");
+      await page.keyboard.press("k");
+      await page.keyboard.up("Control");
+      await page.waitForFunction(
+        () => /** @type {HTMLDialogElement} */ (document.getElementById("palette")).open,
+      );
+      assert.equal(await page.evaluate(() => document.activeElement?.id), "palette-input", route);
+      await page.keyboard.press("Escape");
+    }
+
+    await page.goto(`${site.origin}/home`, { waitUntil: "load" });
+    await page.keyboard.down("Control");
+    await page.keyboard.press("k");
+    await page.keyboard.up("Control");
+    await page.type("#palette-input", "devi");
+    const violations = await page.evaluate(async (source) => {
+      const script = document.createElement("script");
+      script.textContent = source;
+      document.head.appendChild(script);
+      const run = await /** @type {any} */ (globalThis).axe.run(document, {
+        resultTypes: ["violations"],
+      });
+      return run.violations.map((/** @type {{id: string}} */ item) => item.id);
+    }, axeSource);
+    assert.deepEqual(violations, []);
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => location.pathname === "/devices");
+
+    await page.keyboard.press("?");
+    await page.waitForFunction(
+      () => /** @type {HTMLDialogElement} */ (document.getElementById("shortcuts")).open,
+    );
+  },
+);
+
 test("dropping files on the Files page uploads them, with a bar for each", OPTIONS, async (t) => {
   const site = await startSite();
   t.after(() => site.close());
@@ -345,7 +393,7 @@ test(
     const page = await browserSignIn(browser, site, "calm@example.com");
     await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
 
-    for (const route of ["/home", "/files", "/usage", "/devices", "/webhooks"]) {
+    for (const route of ["/home", "/files", "/usage", "/billing", "/devices", "/webhooks"]) {
       await page.goto(`${site.origin}${route}`, { waitUntil: "load" });
       await page.evaluate(() => {
         document.dispatchEvent(new CustomEvent("toast", { detail: { text: "Saved" } }));

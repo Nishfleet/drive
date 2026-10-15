@@ -513,6 +513,22 @@ export function isDodoCheckoutUrl(value) {
 }
 
 /**
+ * @param {import("./ledger.js").LedgerLine} line
+ */
+function summaryLine(line) {
+  return {
+    kind: line.kind,
+    receipt_url: line.kind === "topup" ? `/api/receipts/${line.id}` : null,
+    receipt_pdf_url: line.kind === "topup" ? `/api/receipts/${line.id}.pdf` : null,
+    amount_cents: line.amountCents,
+    amount: formatCents(line.amountCents),
+    window_start: line.windowStart,
+    reason: line.reason,
+    at: new Date(line.createdAt).toISOString(),
+  };
+}
+
+/**
  * The balance as the account page and `drive status` read it.
  * @param {D1Database} db
  * @param {string} accountId
@@ -522,6 +538,7 @@ export async function balanceSummary(db, accountId, options = {}) {
   const pauseOn = options.pauseOn !== false;
   const balance = await balanceCents(db, accountId);
   const recent = await recentLedger(db, accountId, 10);
+  const topups = await recentLedger(db, accountId, 12, "topup");
   const settings = /** @type {{auto_topup_cents?: unknown}|null} */ (
     await db.prepare("SELECT auto_topup_cents FROM accounts WHERE id = ?1").bind(accountId).first()
   );
@@ -537,15 +554,8 @@ export async function balanceSummary(db, accountId, options = {}) {
     paused: pauseOn && balance <= 0,
     min_top_up_usd: PREPAID.minTopUpUsd,
     top_up_presets_usd: [...PREPAID.topUpPresetsUsd],
-    recent: recent.map((line) => ({
-      kind: line.kind,
-      receipt_url: line.kind === "topup" ? `/api/receipts/${line.id}` : null,
-      amount_cents: line.amountCents,
-      amount: formatCents(line.amountCents),
-      window_start: line.windowStart,
-      reason: line.reason,
-      at: new Date(line.createdAt).toISOString(),
-    })),
+    recent: recent.map(summaryLine),
+    topups: topups.map(summaryLine),
   };
 }
 

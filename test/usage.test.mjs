@@ -39,6 +39,8 @@ const workerFetch =
   );
 
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+const billingPage = readFileSync(new URL("../public/billing.html", import.meta.url), "utf8");
+const MOVED_TO_BILLING = new Set(["size30", "size30Reached", "size30DropsOut", "cost"]);
 // The signed-in account the handler tests run as, until the sign-in flow lands
 // (build step 4, #5). The gate itself is pinned in test/account-gate.test.mjs.
 const account = Object.freeze({ id: "1", name: "Your drive" });
@@ -615,12 +617,13 @@ test("the shipped page carries every label from src/usage.js verbatim", () => {
   // Drifting copy fails here instead of shipping a page that disagrees with the
   // module, its tests and the CLI.
   for (const [name, value] of Object.entries(USAGE_LABELS)) {
+    const shipped = MOVED_TO_BILLING.has(name) ? billingPage : page;
     if (typeof value === "string") {
-      assert.ok(page.includes(value), `the page must carry ${name}: "${value}"`);
+      assert.ok(shipped.includes(value), `the page must carry ${name}: "${value}"`);
       continue;
     }
     for (const line of Object.values(value)) {
-      assert.ok(page.includes(line), `the page must carry ${name}: "${line}"`);
+      assert.ok(shipped.includes(line), `the page must carry ${name}: "${line}"`);
     }
   }
   for (const sentence of Object.values(SAVED_COPY)) {
@@ -636,7 +639,7 @@ test("the page's poll interval and its hidden saved line are the module's", () =
   // The saved line has no copy of its own: the endpoint sends the sentence.
   assert.match(page, /savedEl\.textContent = summary\.saved\.copy;/);
   assert.match(page, /savedEl\.hidden = true;/);
-  assert.match(page, /summary\.billCents\.lines/);
+  assert.match(billingPage, /summary\.billCents\.lines/);
 });
 
 test("no money and no size is worked out on the page", () => {
@@ -738,12 +741,7 @@ const PAGE_IDS = Object.freeze([
   "chart-figure",
   "storage-empty",
   "stored-now",
-  "size30",
-  "size30-reached",
-  "size30-drops-out",
   "today-draw",
-  "cost",
-  "bill-lines",
   "downloads-line",
   "open-public-links",
   "upload-line",
@@ -1033,8 +1031,8 @@ test("no month is painted before a read has landed", () => {
   // same hidden wrapper.
   assert.match(page, /<div id="usage-body" hidden>/);
   assert.match(page, /<dd id="stored-now" data-count><\/dd>/);
-  assert.match(page, /<dd id="size30"><\/dd>/);
-  assert.match(page, /<dd id="cost"><\/dd>/);
+  assert.match(billingPage, /<dd id="size30"><\/dd>/);
+  assert.match(billingPage, /<dd id="cost"><\/dd>/);
   assert.match(page, /<dd id="downloads-line"><\/dd>/);
   assert.match(page, /<dd id="open-public-links"><\/dd>/);
   assert.match(page, /<p class="cap-value" id="cap-value"><\/p>/);
@@ -1049,29 +1047,6 @@ test("no month is painted before a read has landed", () => {
   assert.match(page, /LABEL_KEYS\.some\(\(key\) => typeof labels\[key\] !== "string"\)/);
   assert.match(page, /!Number\.isFinite\(cap\.capUsd\)/);
   assert.match(page, /typeof summary\.saved\.copy !== "string"/);
-});
-
-test("no bill is shown as if charged while no card is on file", async () => {
-  // drive#417: until a card is really on file the page hides the invoice rows
-  // rather than presenting a bill nobody was charged, and the cost line it does
-  // show is the no-charge sentence the endpoint sends. The regex is the source
-  // gate; the run is the page's own script against a real summary.
-  assert.match(page, /billLinesEl\.hidden = !summary\.cardOnFile/);
-  const cardless = runPage({
-    ...emptyMonth({ cardOnFile: false }),
-    uploadLine: null,
-  });
-  await settle();
-  assert.equal(elementOf(cardless.elements, "cost").textContent, PRICE.noChargeYet);
-  assert.equal(elementOf(cardless.elements, "bill-lines").hidden, true);
-
-  const charged = runPage({
-    ...emptyMonth({ cardOnFile: true }),
-    uploadLine: null,
-  });
-  await settle();
-  assert.equal(elementOf(charged.elements, "cost").textContent, "$0.00");
-  assert.equal(elementOf(charged.elements, "bill-lines").hidden, false);
 });
 
 test("the usage page shows the count of open public links", async () => {
@@ -1315,6 +1290,11 @@ test("the pages' mastheads read as one navigation", () => {
   // The posts live in each page's own script. get-started.html is a Vite
   // entry, so its script is src/get-started.js rather than an inline block.
   const getStartedJs = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  assert.match(
+    billingPage,
+    /<body data-signout="shared">/,
+    "billing.html uses the shared sign-out",
+  );
   for (const [name, source] of [
     ["usage.html", page],
     ["files.html", filesPage],

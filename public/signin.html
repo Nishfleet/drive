@@ -9,6 +9,19 @@
   <link rel="manifest" href="/site.webmanifest">
   <meta name="description" content="Sign in to your drive: one link by email. There is no free tier.">
   <meta name="robots" content="noindex">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://storagebun.com/signin">
+  <meta property="og:site_name" content="Storagebun">
+  <meta property="og:title" content="Sign in to Storagebun">
+  <meta property="og:description" content="One link by email. A Finder drive for people and their agents.">
+  <meta property="og:image" content="https://storagebun.com/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Storagebun — Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Sign in to Storagebun">
+  <meta name="twitter:description" content="One link by email. A Finder drive for people and their agents.">
+  <meta name="twitter:image" content="https://storagebun.com/og.png">
   <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
@@ -51,7 +64,7 @@ h1 {
   line-height: 0.9;
   letter-spacing: -0.02em;
   text-transform: uppercase;
-  margin: 32px 0 8px;
+  margin: 20px 0 8px;
 }
 
 .lede {
@@ -87,6 +100,20 @@ label {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.field-row .btn {
+  flex: 1 1 100%;
+}
+
+main a {
+  color: var(--accent);
+}
+
+.fine summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 14px;
 }
 
 .field-row .field {
@@ -178,14 +205,8 @@ a:focus-visible {
                  placeholder="you@example.com" autocomplete="email" spellcheck="false" class="field">
           <button class="btn btn-primary" id="email-button" type="submit">Email me a link</button>
         </div>
-        <p class="hint" id="age-sentence">You must be 18 or older to open an account.</p>
-        <label class="hint" for="age">
-          <input id="age" name="age" type="checkbox" value="on" aria-describedby="age-sentence" class="check">
-          I am 18 or older
-        </label>
-        <p class="hint">We email a link that signs you in. No password to remember.</p>
-        <p class="hint">We use this address to send that sign-in link. Read the <a href="/privacy">privacy policy</a>.</p>
-        <p class="hint">Signing up means you agree to the <a href="/terms">terms</a> and the <a href="/privacy">privacy policy</a>.</p>
+        <p class="hint">We use this address to send that sign-in link. No password to remember.</p>
+        <p class="hint consent">By continuing you confirm you are 18 or older and accept the <a href="/terms">terms</a> and the <a href="/privacy">privacy policy</a>.</p>
       </form>
 
       <div class="sent" id="sent" hidden>
@@ -207,12 +228,13 @@ a:focus-visible {
       <p class="status" id="signin-status" role="status" aria-live="polite"></p>
     </div>
 
-    <div class="fine" id="signin-fine">
+    <details class="fine" id="signin-fine">
+      <summary>Not open yet? What it costs</summary>
     <p class="free">The drive is not open yet. Sign-ups on the pricing page go to a waitlist.</p>
     <p class="hint">This screen is for an invited account. Without an invite, join the waitlist on the pricing page.</p>
     <p class="free">No plans. Your balance never expires.</p>
     <p class="free">There is no free tier. Your first $10 top-up opens storage and puts a card on file. 20 GB draws about 40 cents a month from your balance.</p>
-    </div>
+    </details>
   </main>
 
   <!-- shell:footer -->
@@ -237,7 +259,6 @@ const METHODS = ["email"];
 
 const form = document.getElementById("signin-form");
 const emailInput = document.getElementById("email");
-const ageInput = document.getElementById("age");
 const emailButton = document.getElementById("email-button");
 const status = document.getElementById("signin-status");
 const sent = document.getElementById("sent");
@@ -249,6 +270,7 @@ let resendTimer = null;
 let lastEmail = "";
 let counting = false;
 
+const NEED_AGE_MESSAGE = "You must be 18 or older to open an account.";
 const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
 const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
 const CLOSED_MESSAGE = "Signing in is not open yet. Join the waitlist, and your first email will carry a sign-in link.";
@@ -261,7 +283,7 @@ if (errorParam === "invalid-link" || errorParam === "no-token") {
 } else if (errorParam === "sign-in-closed") {
   say(CLOSED_MESSAGE, "error");
 } else if (errorParam === "need-age") {
-  say(document.getElementById("age-sentence")?.textContent ?? UNEXPECTED_MESSAGE, "error");
+  say(NEED_AGE_MESSAGE, "error");
 } else if (errorParam !== null) {
   say(UNEXPECTED_MESSAGE, "error");
 }
@@ -291,7 +313,7 @@ async function start(method, email) {
           : {
               method,
               email,
-              age: ageInput?.checked ?? false,
+              age: true,
               next: nextParam === "" ? undefined : nextParam,
             },
       ),

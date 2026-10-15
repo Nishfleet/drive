@@ -152,7 +152,8 @@ form.add fieldset {
     <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
     <a href="/home">Home</a>
     <a href="/files">Files</a>
-    <a href="/usage">Usage and billing</a>
+    <a href="/usage">Usage</a>
+    <a href="/billing">Billing</a>
     <a href="/devices">Devices</a>
     <a href="/webhooks" aria-current="page">Webhooks</a>
     <span class="app-side-end">
@@ -162,8 +163,9 @@ form.add fieldset {
   </nav>
   <header class="app-top">
     <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
-    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
-    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <a class="balance-chip" id="balance-chip" href="/billing" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <button class="btn btn-ghost palette-open" id="palette-open" type="button" aria-haspopup="dialog">Search <kbd>Ctrl K</kbd></button>
+    <a class="top-up" href="/billing#topup-form">Top up</a>
     <details class="account-menu" id="account-menu">
       <summary>Account</summary>
       <div class="account-panel">
@@ -189,9 +191,26 @@ form.add fieldset {
     <a href="/home">Home</a>
     <a href="/files">Files</a>
     <a href="/usage">Usage</a>
+    <a href="/billing">Billing</a>
     <a href="/devices">Devices</a>
     <a href="/webhooks" aria-current="page">Hooks</a>
   </nav>
+  <dialog class="palette" id="palette" aria-label="Search and commands">
+    <input class="field" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" aria-label="Search pages, files and commands" placeholder="Jump to a page, a file or a command" autocomplete="off" spellcheck="false">
+    <div id="palette-list" role="listbox" aria-label="Results"></div>
+  </dialog>
+  <dialog class="palette" id="shortcuts" aria-labelledby="shortcuts-title">
+    <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+    <dl>
+      <dt><kbd>Ctrl</kbd> <kbd>K</kbd></dt><dd>Search and commands</dd>
+      <dt><kbd>?</kbd></dt><dd>This list</dd>
+      <dt><kbd>/</kbd></dt><dd>Filter the files in this folder</dd>
+      <dt><kbd>U</kbd></dt><dd>Upload files</dd>
+      <dt><kbd>Delete</kbd></dt><dd>Delete the picked files</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close, or clear the pick</dd>
+    </dl>
+    <button class="btn" type="button" id="shortcuts-close">Close</button>
+  </dialog>
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
   <!-- /shell:app-header -->
 
@@ -231,6 +250,7 @@ form.add fieldset {
       <div class="status" id="hooks-status" role="status" aria-live="polite" hidden>
         <p class="what"></p>
         <p class="next"></p>
+        <p><button type="button" id="hooks-retry" hidden class="btn">Try again</button></p>
       </div>
       <div class="empty" id="hooks-empty" hidden>
         <p class="what">No endpoints yet.</p>
@@ -265,6 +285,7 @@ form.add fieldset {
       </table>
     </section>
   </main>
+  <!-- shell:footer -->
   <footer class="footer">
     <nav class="legal-links" aria-label="Legal">
       <a href="/terms">Terms</a>
@@ -275,14 +296,18 @@ form.add fieldset {
       <a href="/accessibility">Accessibility</a>
       <a href="/status">Status</a>
     </nav>
+    <p>A Finder drive for people and their agents.</p>
+    <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
   </footer>
+  <!-- /shell:footer -->
   <script>
 const ENDPOINT = "/api/webhooks";
 const SIGNIN_ENDPOINT = "/api/signin";
-const UNREACHABLE = "Could not reach the webhooks list just now. Reload the page to try again.";
+const UNREACHABLE = "Could not reach the webhooks list just now. Check your connection and try again.";
 const REMOVE_CONFIRM = "Remove this endpoint and its log?";
 
 const statusEl = document.getElementById("hooks-status");
+const retryEl = document.getElementById("hooks-retry");
 const emptyEl = document.getElementById("hooks-empty");
 const tableEl = document.getElementById("hooks");
 const bodyEl = document.getElementById("hooks-body");
@@ -308,8 +333,13 @@ function sayStatus(text) {
   const parts = String(text).split(". ");
   statusEl.querySelector(".what").textContent = parts[0] ? `${parts[0]}.` : text;
   statusEl.querySelector(".next").textContent = parts.slice(1).join(". ");
+  retryEl.hidden = false;
   statusEl.hidden = false;
 }
+
+retryEl.addEventListener("click", () => {
+  readEndpoints();
+});
 
 function errorText(payload) {
   return payload && typeof payload.error === "string" ? payload.error : UNREACHABLE;

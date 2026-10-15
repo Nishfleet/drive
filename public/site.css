@@ -500,7 +500,9 @@ body:has(.app-side) .balance-chip[hidden] {
 }
 
 body:has(.app-side) .top-up {
+  min-width: 88px;
   padding: 4px 14px;
+  text-align: center;
   border-radius: 999px;
   background: var(--accent);
   color: var(--paper-raised);
@@ -515,7 +517,9 @@ body:has(.app-side) .account-menu {
 }
 
 body:has(.app-side) .account-menu summary {
+  min-width: 96px;
   padding: 4px 12px;
+  text-align: center;
   border: 1px solid var(--rule);
   border-radius: 999px;
   color: var(--ink);
@@ -628,6 +632,7 @@ body:has(.app-side) main {
 
   body:has(.app-side) .top-up,
   body:has(.app-side) .account-menu summary {
+    min-width: 0;
     padding: 4px 10px;
     font-size: 14px;
   }
@@ -818,6 +823,79 @@ body:has(.app-side) .wordmark {
   font-size: 22px;
 }
 
+.palette-open {
+  flex: none;
+  width: 132px;
+  white-space: nowrap;
+}
+
+.palette-open kbd,
+.palette kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+dialog.palette {
+  width: min(560px, calc(100vw - 32px));
+  margin: 12vh auto auto;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+  color: var(--ink);
+}
+
+dialog.palette::backdrop {
+  background: rgba(20, 20, 18, 0.55);
+}
+
+.palette [role="listbox"] {
+  margin: 8px 0 0;
+  max-height: 50vh;
+  overflow: auto;
+}
+
+.palette [role="option"] {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.palette [role="option"][aria-selected="true"] {
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.palette [role="option"] small {
+  color: var(--ink-soft);
+}
+
+.palette dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  margin: 0 0 12px;
+}
+
+.palette dd {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .palette-open {
+    width: 88px;
+  }
+
+  .palette-open kbd {
+    display: none;
+  }
+}
 @keyframes page-in {
   from {
     opacity: 0;

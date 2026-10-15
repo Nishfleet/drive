@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DODO_TEST_BASE_URL } from "../core/dodo.js";
+import { creditTopUp } from "../core/ledger.js";
 import { failureMessage } from "../core/messages.js";
 import {
   balanceLine,
@@ -84,7 +85,7 @@ test("a top-up opens one Dodo checkout for the amount, tagged with the account",
   assert.deepEqual(sent, {
     product_cart: [{ product_id: "pdt_topup", quantity: 1, amount: 2500 }],
     customer: { email: ACCOUNT.email },
-    return_url: `${ORIGIN}/usage?topup=done`,
+    return_url: `${ORIGIN}/billing?topup=done`,
     metadata: { purpose: TOPUP_PURPOSE, account_id: ACCOUNT.id },
   });
 });
@@ -205,6 +206,24 @@ test("the balance answers the signed-in account only", async () => {
   assert.equal(body.balance_cents, 0);
   assert.equal(body.paused, true);
   assert.deepEqual(body.top_up_presets_usd, [10, 25, 50]);
+});
+
+test("every top-up line carries the HTML receipt and the PDF receipt, and other lines carry none", async () => {
+  const db = await dbWithAccount();
+  const credit = await creditTopUp(db, {
+    accountId: ACCOUNT.id,
+    paymentId: "pay_receipt",
+    amountCents: 1000,
+    grossCents: 1200,
+  });
+  assert.equal(credit.credited, true);
+  const body = await (
+    await handleBalanceRequest(new Request(`${ORIGIN}/api/balance`), ACCOUNT, db)
+  ).json();
+  const [line] = body.recent;
+  assert.equal(line.kind, "topup");
+  assert.match(line.receipt_url, /^\/api\/receipts\/[1-9][0-9]*$/);
+  assert.equal(line.receipt_pdf_url, `${line.receipt_url}.pdf`);
 });
 
 test("the balance line names the pause and the top-up prompt only when they are true", () => {

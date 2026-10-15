@@ -87,6 +87,9 @@ function dataFor(kind) {
       replyTo: REPLY_TO,
     };
   }
+  if (kind === "share-opened") {
+    return { fileName: "report.pdf", opens: 3, replyTo: REPLY_TO };
+  }
   if (kind === "monthly-story") {
     return {
       monthIso: "2026-09-01T00:00:00.000Z",

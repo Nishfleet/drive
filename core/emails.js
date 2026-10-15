@@ -592,6 +592,16 @@ function securityEventTemplate(data = {}) {
 }
 
 /**
+ * @param {Record<string, unknown>} data
+ * @returns {string|null}
+ */
+function unsubscribeLinkOf(data) {
+  return typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+    ? data.unsubscribeUrl
+    : null;
+}
+
+/**
  * @param {Record<string, unknown>} [data] `hours` (24 or 72) and the shared footer data
  */
 function firstFileNudgeTemplate(data = {}) {
@@ -617,10 +627,7 @@ function firstFileNudgeTemplate(data = {}) {
     "<p>No computer handy? Open Files in the browser and press Upload.</p>",
     "<p>You pay only for what you store, so an empty drive costs nothing.</p>",
   ];
-  const unsubscribe =
-    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
-      ? data.unsubscribeUrl
-      : null;
+  const unsubscribe = unsubscribeLinkOf(data);
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
@@ -639,10 +646,7 @@ function runwayNoticeTemplate(data = {}) {
     `<p>${escapeHtml(runwayLine)}</p>`,
     "<p>Add to your balance when it suits you. If it runs out, uploads pause, downloads keep working and nothing is deleted.</p>",
   ];
-  const unsubscribe =
-    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
-      ? data.unsubscribeUrl
-      : null;
+  const unsubscribe = unsubscribeLinkOf(data);
   return finish({
     subject,
     lines,
@@ -669,10 +673,31 @@ function billDroppedTemplate(data = {}) {
     `<p>The biggest size your drive reached in the last 30 days has aged out, so your monthly bill went from ${escapeHtml(fromLine)} to ${escapeHtml(toLine)}.</p>`,
     "<p>Nothing to do. You pay for the biggest size in the last 30 days, so a big delete shows up in the bill once that peak is 30 days old.</p>",
   ];
-  const unsubscribe =
-    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
-      ? data.unsubscribeUrl
-      : null;
+  const unsubscribe = unsubscribeLinkOf(data);
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
+}
+
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function shareOpenedTemplate(data = {}) {
+  const fileName = requireText(data.fileName, "fileName");
+  const opens = Number(data.opens);
+  if (!Number.isInteger(opens) || opens < 1) {
+    throw new TypeError(`opens must be a whole number of 1 or more, got ${String(data.opens)}`);
+  }
+  const times = opens === 1 ? "once" : `${opens} times`;
+  const subject = "Your shared link was opened";
+  const lines = [
+    `Your link to ${fileName} was opened ${times} since the last time we wrote.`,
+    "",
+    "You can turn a link off any time from the Files page or with drive share --revoke.",
+  ];
+  const html_lines = [
+    `<p>Your link to ${escapeHtml(fileName)} was opened ${times} since the last time we wrote.</p>`,
+    "<p>You can turn a link off any time from the Files page or with <code>drive share --revoke</code>.</p>",
+  ];
+  const unsubscribe = unsubscribeLinkOf(data);
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
@@ -692,6 +717,7 @@ export const EMAIL_KINDS = Object.freeze([
   "upload-arrivals",
   "security-event",
   "first-file-nudge",
+  "share-opened",
   "monthly-story",
   "runway-notice",
   "bill-dropped",
@@ -718,10 +744,7 @@ function monthlyStoryTemplate(data = {}) {
     `<p>Here is your drive for ${escapeHtml(month)}.</p>`,
     `<p>${escapeHtml(peak)}<br>${addedLine}<br>${escapeHtml(spent)}</p>`,
   ];
-  const unsubscribe =
-    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
-      ? data.unsubscribeUrl
-      : null;
+  const unsubscribe = unsubscribeLinkOf(data);
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
@@ -744,6 +767,7 @@ const TEMPLATES = Object.freeze({
   "upload-arrivals": uploadArrivalsTemplate,
   "security-event": securityEventTemplate,
   "first-file-nudge": firstFileNudgeTemplate,
+  "share-opened": shareOpenedTemplate,
   "monthly-story": monthlyStoryTemplate,
   "runway-notice": runwayNoticeTemplate,
   "bill-dropped": billDroppedTemplate,
