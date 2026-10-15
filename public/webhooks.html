@@ -233,6 +233,7 @@ form.add fieldset {
       <div class="status" id="hooks-status" role="status" aria-live="polite" hidden>
         <p class="what"></p>
         <p class="next"></p>
+        <p><button type="button" id="hooks-retry" hidden class="btn">Try again</button></p>
       </div>
       <div class="empty" id="hooks-empty" hidden>
         <p class="what">No endpoints yet.</p>
@@ -281,10 +282,11 @@ form.add fieldset {
   <script>
 const ENDPOINT = "/api/webhooks";
 const SIGNIN_ENDPOINT = "/api/signin";
-const UNREACHABLE = "Could not reach the webhooks list just now. Reload the page to try again.";
+const UNREACHABLE = "Could not reach the webhooks list just now. Check your connection and try again.";
 const REMOVE_CONFIRM = "Remove this endpoint and its log?";
 
 const statusEl = document.getElementById("hooks-status");
+const retryEl = document.getElementById("hooks-retry");
 const emptyEl = document.getElementById("hooks-empty");
 const tableEl = document.getElementById("hooks");
 const bodyEl = document.getElementById("hooks-body");
@@ -310,8 +312,13 @@ function sayStatus(text) {
   const parts = String(text).split(". ");
   statusEl.querySelector(".what").textContent = parts[0] ? `${parts[0]}.` : text;
   statusEl.querySelector(".next").textContent = parts.slice(1).join(". ");
+  retryEl.hidden = false;
   statusEl.hidden = false;
 }
+
+retryEl.addEventListener("click", () => {
+  readEndpoints();
+});
 
 function errorText(payload) {
   return payload && typeof payload.error === "string" ? payload.error : UNREACHABLE;

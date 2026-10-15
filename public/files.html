@@ -1450,7 +1450,7 @@ function openViewer(row) {
     fetch(src)
       .then((response) => {
         if (!response.ok) {
-          throw new Error("Could not read that file.");
+          throw new Error("Could not read that file. Pick it again.");
         }
         return response.text();
       })
