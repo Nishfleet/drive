@@ -1,2 +1,2 @@
-inspect-ai==0.3.276
+inspect-ai==0.3.277
 pyyaml==6.0.3
