@@ -48,6 +48,7 @@ export const PAGES = Object.freeze([
   Object.freeze({ path: "/home.html", indexable: false }),
   Object.freeze({ path: "/files.html", indexable: false }),
   Object.freeze({ path: "/usage.html", indexable: false }),
+  Object.freeze({ path: "/billing.html", indexable: false }),
   Object.freeze({ path: "/devices.html", indexable: false }),
   Object.freeze({ path: "/webhooks.html", indexable: false }),
   Object.freeze({ path: "/upload.html", indexable: false }),

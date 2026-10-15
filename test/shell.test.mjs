@@ -21,6 +21,7 @@ const APP_PAGES = /** @type {Record<string, string>} */ ({
   home: "/home",
   files: "/files",
   usage: "/usage",
+  billing: "/billing",
   devices: "/devices",
   webhooks: "/webhooks",
 });

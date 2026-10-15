@@ -1,6 +1,7 @@
 import { escapeHtml } from "./escape-html.js";
 import { json } from "./http.js";
 import { failureMessage } from "./messages.js";
+import { renderReceiptPdf } from "./receipt-pdf.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents } from "./topup.js";
 
@@ -69,6 +70,36 @@ tr.total td { font-weight: 700; border-bottom: 0; }
 @media print { :root { --paper: #fff; --ink: #000; --faint: #444; --rule: #bbb; --accent: #000; } main { padding: 0; } }
 `;
 
+const PDF_ID = /^([1-9][0-9]{0,12})\.pdf$/;
+const SECURITY_HEADERS = Object.freeze({
+  "cache-control": "private, no-store",
+  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'",
+  "x-content-type-options": "nosniff",
+});
+
+/**
+ * The numbers a receipt shows, one place for the page and the PDF.
+ * @param {Receipt} receipt
+ * @param {{email: string|null}} account
+ * @returns {import("./receipt-pdf.js").ReceiptFacts}
+ */
+function receiptFacts(receipt, account) {
+  const taxCents =
+    receipt.paidCents !== null && receipt.paidCents > receipt.creditCents
+      ? receipt.paidCents - receipt.creditCents
+      : 0;
+  return {
+    number: receiptNumber(receipt.id),
+    date: new Date(receipt.createdAt).toISOString().slice(0, 10),
+    email: account.email,
+    creditText: formatCents(receipt.creditCents),
+    taxText: taxCents > 0 ? formatCents(taxCents) : null,
+    totalText: formatCents(receipt.paidCents ?? receipt.creditCents),
+    paymentId: receipt.paymentId,
+    note: "The balance never expires and pays for storage by the month. Issued by Storagebun; the seller's legal name and postal address are on the support page.",
+  };
+}
+
 /**
  * The receipt page.
  * @param {Receipt} receipt
@@ -76,17 +107,12 @@ tr.total td { font-weight: 700; border-bottom: 0; }
  * @returns {string}
  */
 export function renderReceipt(receipt, account) {
-  const date = new Date(receipt.createdAt).toISOString().slice(0, 10);
-  const taxCents =
-    receipt.paidCents !== null && receipt.paidCents > receipt.creditCents
-      ? receipt.paidCents - receipt.creditCents
-      : 0;
-  const totalCents = receipt.paidCents ?? receipt.creditCents;
-  const number = receiptNumber(receipt.id);
+  const facts = receiptFacts(receipt, account);
+  const number = facts.number;
   const taxRow =
-    taxCents > 0
-      ? `<tr><td>Tax added at checkout</td><td>${escapeHtml(formatCents(taxCents))}</td></tr>`
-      : "";
+    facts.taxText === null
+      ? ""
+      : `<tr><td>Tax added at checkout</td><td>${escapeHtml(facts.taxText)}</td></tr>`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -100,13 +126,13 @@ export function renderReceipt(receipt, account) {
 <main>
 <p class="brand">storagebun</p>
 <h1>Receipt ${escapeHtml(number)}</h1>
-<p class="meta">${escapeHtml(date)}${account.email ? ` &middot; ${escapeHtml(account.email)}` : ""}</p>
+<p class="meta">${escapeHtml(facts.date)}${facts.email ? ` &middot; ${escapeHtml(facts.email)}` : ""}</p>
 <table>
 <thead><tr><th scope="col">Item</th><th scope="col">Amount</th></tr></thead>
 <tbody>
-<tr><td>Balance top-up</td><td>${escapeHtml(formatCents(receipt.creditCents))}</td></tr>
+<tr><td>Balance top-up</td><td>${escapeHtml(facts.creditText)}</td></tr>
 ${taxRow}
-<tr class="total"><td>Total paid</td><td>${escapeHtml(formatCents(totalCents))}</td></tr>
+<tr class="total"><td>Total paid</td><td>${escapeHtml(facts.totalText)}</td></tr>
 </tbody>
 </table>
 ${receipt.paymentId ? `<p class="note">Payment reference: ${escapeHtml(receipt.paymentId)}</p>` : ""}
@@ -122,7 +148,7 @@ ${receipt.paymentId ? `<p class="note">Payment reference: ${escapeHtml(receipt.p
  * @param {Request} request
  * @param {{id: string, email: string|null}|null} account
  * @param {D1Database|undefined} db
- * @param {string} idText the path segment
+ * @param {string} idText the path segment: the ledger id, with .pdf for the PDF copy
  * @returns {Promise<Response>}
  */
 export async function handleReceiptRequest(request, account, db, idText) {
@@ -133,17 +159,24 @@ export async function handleReceiptRequest(request, account, db, idText) {
   if (!db) {
     return json({ error: failureMessage("drive-not-configured") }, 503);
   }
-  const id = /^[1-9][0-9]{0,12}$/.test(idText) ? Number(idText) : 0;
+  const pdf = PDF_ID.exec(idText);
+  const idPart = pdf ? pdf[1] : idText;
+  const id = /^[1-9][0-9]{0,12}$/.test(idPart) ? Number(idPart) : 0;
   const receipt = id > 0 ? await receiptFor(db, account.id, id) : null;
   if (!receipt) {
     return json({ error: "No receipt with that number on this account." }, 404);
   }
+  if (pdf) {
+    const facts = receiptFacts(receipt, account);
+    return new Response(renderReceiptPdf(facts), {
+      headers: {
+        ...SECURITY_HEADERS,
+        "content-type": "application/pdf",
+        "content-disposition": `inline; filename="${facts.number}.pdf"`,
+      },
+    });
+  }
   return new Response(renderReceipt(receipt, account), {
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "private, no-store",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'",
-      "x-content-type-options": "nosniff",
-    },
+    headers: { ...SECURITY_HEADERS, "content-type": "text/html; charset=utf-8" },
   });
 }

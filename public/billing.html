@@ -1,0 +1,797 @@
+<!doctype html>
+<html lang="en" class="drive">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storagebun — billing</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="description" content="Your balance, top-ups and receipts, and the biggest size your drive reached in the last 30 days, which is what the bill follows.">
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="/site.css">
+  <style>
+body {
+  padding: 0 clamp(20px, 5vw, 72px) 72px;
+}
+
+.skip-link:focus {
+  z-index: 10;
+}
+
+main {
+  max-width: 940px;
+}
+
+h1 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(34px, 5.4vw, 52px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.lede {
+  max-width: 60ch;
+  color: var(--ink-soft);
+}
+
+section {
+  padding: clamp(28px, 5vh, 48px) 0 0;
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-family: var(--serif);
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.status {
+  margin: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.chart {
+  margin: 0;
+  padding: 18px 18px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.chart figcaption {
+  padding-top: 10px;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+.readout {
+  margin: 18px 0 0;
+  border-top: 1px solid var(--rule);
+}
+
+.pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 18px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.pair dt {
+  color: var(--ink-soft);
+}
+
+.pair dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: clamp(18px, 2.6vw, 22px);
+}
+
+.hint {
+  margin: 10px 0 0;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+.balance-slot {
+  display: grid;
+}
+
+.balance-slot > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.balance-slot > [hidden] {
+  display: block;
+  visibility: hidden;
+}
+
+.balance-slot > .status {
+  align-self: start;
+}
+
+.balance-amount {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: clamp(34px, 5vw, 48px);
+  line-height: 1.1;
+  min-height: 1.1em;
+}
+
+.balance-line {
+  margin: 6px 0 0;
+  min-height: 2lh;
+  padding-left: 12px;
+  border-left: 4px solid var(--rule);
+  color: var(--ink-soft);
+}
+
+.balance-line[data-state="low"],
+.balance-line[data-state="paused"] {
+  border-left-color: var(--bad);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.topup {
+  margin: 18px 0 0;
+  padding: 16px 18px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.topup-presets {
+  min-height: calc(1lh + 16px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.topup-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 10px;
+  margin: 14px 0 0;
+}
+
+.topup-form label {
+  display: grid;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.topup input[type="number"] {
+  width: 8rem;
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+
+.topup .error {
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.auto-topup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 14px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+.ledger-box {
+  height: 16rem;
+  margin: 18px 0 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.ledger {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+}
+
+.ledger li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 18px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.ledger .amount {
+  font-family: var(--mono);
+}
+
+.ledger .when {
+  flex-basis: 100%;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+#peak-chart {
+  display: block;
+  width: 100%;
+  height: 160px;
+  overflow: visible;
+}
+
+#peak-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+#peak-billed {
+  fill: var(--accent);
+  fill-opacity: 0.12;
+}
+
+#peak-mark,
+#peak-cap-mark {
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+
+#peak-mark {
+  stroke: var(--ink-soft);
+}
+
+#peak-cap-mark {
+  stroke: var(--bad);
+}
+
+.footer {
+  max-width: 940px;
+  margin: 48px auto 0;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+.footer a {
+  color: var(--ink-soft);
+}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#balance-heading">Skip to your balance</a>
+  <!-- shell:app-header current="/billing" -->
+  <nav class="app-side" aria-label="Main">
+    <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a href="/home">Home</a>
+    <a href="/files">Files</a>
+    <a href="/usage">Usage</a>
+    <a href="/billing" aria-current="page">Billing</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Webhooks</a>
+    <span class="app-side-end">
+      <a href="/get-started">Get started</a>
+      <a href="/docs/">Docs</a>
+    </span>
+  </nav>
+  <header class="app-top">
+    <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a class="balance-chip" id="balance-chip" href="/billing" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <a class="top-up" href="/billing#topup-form">Top up</a>
+    <details class="account-menu" id="account-menu">
+      <summary>Account</summary>
+      <div class="account-panel">
+        <a href="/signin" id="nav-signin">Sign in</a>
+        <noscript>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout">
+            <button class="btn btn-ghost" type="submit">Sign out</button>
+          </form>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout-all">
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
+          </form>
+        </noscript>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      </div>
+    </details>
+  </header>
+  <nav class="app-tabs" aria-label="Tab bar">
+    <a href="/home">Home</a>
+    <a href="/files">Files</a>
+    <a href="/usage">Usage</a>
+    <a href="/billing" aria-current="page">Billing</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Hooks</a>
+  </nav>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+  <!-- /shell:app-header -->
+
+  <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
+    <p id="close-banner-what"></p>
+    <a id="close-banner-cancel" href="/usage">Cancel closing</a>
+  </div>
+  <main>
+    <section aria-labelledby="billing-heading">
+      <h1 id="billing-heading">Billing</h1>
+      <p class="lede">
+        Your balance, what to top up, a receipt for every top-up, and how the
+        bill is worked out.
+      </p>
+    </section>
+
+    <section aria-labelledby="balance-heading">
+      <h2 id="balance-heading">Balance</h2>
+      <div class="balance-slot">
+        <p class="status" id="balance-status" role="status" aria-live="polite" hidden></p>
+        <div id="balance-body" hidden>
+          <p class="balance-amount" id="balance-amount" data-count></p>
+          <p class="balance-line" id="balance-line" data-state="ok"></p>
+          <p class="hint" id="topup-pending" role="status" hidden>Thanks. Your balance goes up here as soon as the payment is confirmed.</p>
+          <div class="topup">
+            <div class="topup-presets" id="topup-presets"></div>
+            <form class="topup-form" id="topup-form">
+              <label for="topup-amount">Another amount, in dollars
+                <input type="number" id="topup-amount" name="amount" min="10" max="1000" step="1" inputmode="decimal" required class="field">
+              </label>
+              <button type="submit" class="btn btn-primary">Add</button>
+            </form>
+            <p class="error" id="topup-error" role="alert" hidden></p>
+            <div class="auto-topup">
+              <input type="checkbox" id="auto-topup" aria-describedby="auto-topup-note" class="check">
+              <label for="auto-topup">Auto top-up: add</label>
+              <input type="number" id="auto-topup-amount" min="10" max="1000" step="1" value="10" aria-label="Auto top-up amount, in dollars" class="field">
+              <span>when the balance drops under $2</span>
+            </div>
+            <p class="hint" id="auto-topup-note" role="status">Off until you turn it on. It uses your saved card and emails a receipt each time.</p>
+          </div>
+          <h3 class="hint" id="ledger-heading">Top-ups and receipts</h3>
+          <section class="ledger-box" aria-labelledby="ledger-heading">
+            <ul class="ledger" id="ledger-list"></ul>
+            <p class="hint" id="ledger-empty" hidden>No top-ups yet. Your first one shows here with its receipt.</p>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="peak-heading">
+      <h2 id="peak-heading">What you pay for</h2>
+      <p class="lede" id="peak-explain">You pay for the biggest size your drive reached in the last 30 days. That size stays billed until the date it was reached drops out of the 30 days.</p>
+      <p class="hint" id="peak-cap-line"></p>
+      <div class="status" id="peak-status" role="status" aria-live="polite" hidden></div>
+      <div id="peak-body" hidden>
+        <figure class="chart" id="peak-figure">
+          <svg id="peak-chart" viewBox="0 0 30 100" preserveAspectRatio="none" role="img" aria-label="Stored size over the last 30 days" hidden>
+            <rect id="peak-billed" x="0" y="0" width="0" height="100"></rect>
+            <polyline id="peak-line"></polyline>
+            <line id="peak-mark" x1="0" y1="0" x2="30" y2="0"></line>
+            <line id="peak-cap-mark" x1="0" y1="0" x2="30" y2="0" hidden></line>
+          </svg>
+          <figcaption id="peak-caption">Stored GB, last 30 days. The shaded days are the days the peak stays billed; the dashed line is the peak.</figcaption>
+        </figure>
+        <dl class="readout">
+          <div class="pair">
+            <dt>Biggest size in the last 30 days</dt>
+            <dd id="size30"></dd>
+          </div>
+          <div class="pair">
+            <dt>Date that size was reached</dt>
+            <dd id="size30-reached"></dd>
+          </div>
+          <div class="pair">
+            <dt>Date that size drops out</dt>
+            <dd id="size30-drops-out"></dd>
+          </div>
+          <div class="pair">
+            <dt>Cost so far</dt>
+            <dd id="cost"></dd>
+          </div>
+        </dl>
+        <dl class="readout" id="bill-lines" hidden></dl>
+      </div>
+    </section>
+    <noscript>
+      <p class="hint">This page reads your balance and usage from the drive service, so it needs JavaScript. <a href="/get-started">Get started</a> instead.</p>
+    </noscript>
+  </main>
+
+  <footer class="footer">
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
+    <p>Pay from your balance for the biggest size your drive reached in the last 30 days. <a href="/">See the price</a>.</p>
+  </footer>
+
+  <script data-part="balance">
+(() => {
+  const BALANCE_ENDPOINT = "/api/balance";
+  const TOPUP_ENDPOINT = "/api/topup";
+  const AUTO_TOPUP_ENDPOINT = "/api/topup/auto";
+  const UNREACHABLE = "Could not reach the balance just now. Reload the page to try again.";
+  const LABELS = {
+    topup: "Top-up",
+    usage: "Storage and downloads",
+    refund: "Refund",
+    adjustment: "Adjustment",
+  };
+
+  const statusEl = document.getElementById("balance-status");
+  const bodyEl = document.getElementById("balance-body");
+  const amountEl = document.getElementById("balance-amount");
+  const lineEl = document.getElementById("balance-line");
+  const presetsEl = document.getElementById("topup-presets");
+  const formEl = document.getElementById("topup-form");
+  const customEl = document.getElementById("topup-amount");
+  const errorEl = document.getElementById("topup-error");
+  const pendingEl = document.getElementById("topup-pending");
+  const autoEl = document.getElementById("auto-topup");
+  const autoAmountEl = document.getElementById("auto-topup-amount");
+  const autoNoteEl = document.getElementById("auto-topup-note");
+  const ledgerEl = document.getElementById("ledger-list");
+  const ledgerEmptyEl = document.getElementById("ledger-empty");
+
+  let minTopUpUsd = 10;
+
+  function sayStatus(message) {
+    statusEl.textContent = message;
+    statusEl.hidden = false;
+    bodyEl.hidden = true;
+  }
+
+  function sayError(message) {
+    errorEl.textContent = message;
+    errorEl.hidden = false;
+  }
+
+  async function postJson(url, body) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => null);
+    return { response, payload };
+  }
+
+  async function topUp(amount) {
+    errorEl.hidden = true;
+    const dollars = Number(amount);
+    if (!Number.isFinite(dollars) || dollars < minTopUpUsd) {
+      sayError(`Add $${minTopUpUsd} or more.`);
+      return;
+    }
+    let answer;
+    try {
+      answer = await postJson(TOPUP_ENDPOINT, { amount_usd: String(amount) });
+    } catch (_error) {
+      sayError(UNREACHABLE);
+      return;
+    }
+    const { response, payload } = answer;
+    const url = payload && typeof payload.checkout_url === "string" ? payload.checkout_url : "";
+    if (!response.ok || !url.startsWith("https://")) {
+      sayError(payload && typeof payload.error === "string" ? payload.error : UNREACHABLE);
+      return;
+    }
+    window.location.assign(url);
+  }
+
+  async function saveAuto() {
+    const turningOn = autoEl.checked;
+    autoEl.disabled = true;
+    let answer;
+    try {
+      answer = await postJson(AUTO_TOPUP_ENDPOINT, {
+        amount_usd: turningOn ? String(autoAmountEl.value) : null,
+      });
+    } catch (_error) {
+      answer = null;
+    }
+    autoEl.disabled = false;
+    if (!answer || !answer.response.ok) {
+      autoEl.checked = !turningOn;
+      const payload = answer ? answer.payload : null;
+      autoNoteEl.textContent =
+        payload && typeof payload.error === "string" ? payload.error : UNREACHABLE;
+      return;
+    }
+    autoNoteEl.textContent = turningOn
+      ? "On. It uses your saved card and emails a receipt each time."
+      : "Off. Top up by hand when you need to.";
+  }
+
+  function ledgerLine(line) {
+    const item = document.createElement("li");
+    const what = document.createElement("span");
+    what.textContent = line.reason ? `${LABELS[line.kind] || line.kind}: ${line.reason}` : LABELS[line.kind] || line.kind;
+    const amount = document.createElement("span");
+    amount.className = "amount";
+    amount.textContent = line.amount_cents > 0 ? `+${line.amount}` : line.amount;
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = typeof line.at === "string" ? line.at.slice(0, 10) : "";
+    item.append(what, amount, when);
+    if (typeof line.receipt_url === "string" && /^\/api\/receipts\/[0-9]+$/.test(line.receipt_url)) {
+      const receipt = document.createElement("a");
+      receipt.href = line.receipt_url;
+      receipt.target = "_blank";
+      receipt.rel = "noopener";
+      receipt.textContent = "Receipt";
+      item.append(receipt);
+    }
+    if (
+      typeof line.receipt_pdf_url === "string" &&
+      /^\/api\/receipts\/[0-9]+\.pdf$/.test(line.receipt_pdf_url)
+    ) {
+      const pdf = document.createElement("a");
+      pdf.href = line.receipt_pdf_url;
+      pdf.target = "_blank";
+      pdf.rel = "noopener";
+      pdf.textContent = "View receipt (PDF)";
+      item.append(pdf);
+    }
+    return item;
+  }
+
+  function render(summary) {
+    minTopUpUsd = summary.min_top_up_usd;
+    amountEl.textContent = summary.balance;
+    lineEl.textContent = summary.runway_line
+      ? `${summary.balance_line} ${summary.runway_line}`
+      : summary.balance_line;
+    lineEl.dataset.state = summary.paused ? "paused" : summary.low_balance ? "low" : "ok";
+    presetsEl.replaceChildren(
+      ...summary.top_up_presets_usd.map((dollars) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "btn btn-primary";
+        button.textContent = `Add $${dollars}`;
+        button.addEventListener("click", () => topUp(dollars));
+        return button;
+      }),
+    );
+    customEl.min = String(summary.min_top_up_usd);
+    autoEl.checked = summary.auto_topup_usd !== null;
+    autoAmountEl.min = String(summary.min_top_up_usd);
+    autoAmountEl.value = String(
+      summary.auto_topup_usd === null ? summary.min_top_up_usd : summary.auto_topup_usd,
+    );
+    ledgerEl.replaceChildren(...summary.topups.map(ledgerLine));
+    ledgerEmptyEl.hidden = summary.topups.length > 0;
+    statusEl.hidden = true;
+    bodyEl.hidden = false;
+  }
+
+  async function read() {
+    let response;
+    try {
+      response = await fetch(BALANCE_ENDPOINT, { headers: { accept: "application/json" } });
+    } catch (_error) {
+      sayStatus(UNREACHABLE);
+      return;
+    }
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || typeof payload.balance !== "string") {
+      sayStatus(payload && typeof payload.error === "string" ? payload.error : UNREACHABLE);
+      return;
+    }
+    render(payload);
+  }
+
+  formEl.addEventListener("submit", (event) => {
+    event.preventDefault();
+    return topUp(customEl.value);
+  });
+  autoEl.addEventListener("change", () => saveAuto());
+  pendingEl.hidden = new URLSearchParams(window.location.search).get("topup") !== "done";
+  read();
+})();
+  </script>
+  <script data-part="peak">
+(() => {
+  const USAGE_ENDPOINT = "/api/usage";
+  const DAY_MS = 86400000;
+  const LABEL_KEYS = ["size30", "size30Reached", "size30DropsOut", "cost", "accountCap"];
+  const UNREACHABLE = "Could not reach the usage service just now. Reload the page to try again.";
+
+  const statusEl = document.getElementById("peak-status");
+  const bodyEl = document.getElementById("peak-body");
+  const capLineEl = document.getElementById("peak-cap-line");
+  const chartEl = document.getElementById("peak-chart");
+  const figureEl = document.getElementById("peak-figure");
+  const lineEl = document.getElementById("peak-line");
+  const billedEl = document.getElementById("peak-billed");
+  const markEl = document.getElementById("peak-mark");
+  const capMarkEl = document.getElementById("peak-cap-mark");
+  const size30El = document.getElementById("size30");
+  const reachedEl = document.getElementById("size30-reached");
+  const dropsOutEl = document.getElementById("size30-drops-out");
+  const costEl = document.getElementById("cost");
+  const billLinesEl = document.getElementById("bill-lines");
+  const SIGNIN_ENDPOINT = "/api/signin";
+  const navSignin = document.getElementById("nav-signin");
+  const navSignout = document.getElementById("nav-signout");
+  const navSignoutAll = document.getElementById("nav-signout-all");
+
+  function showSessionNav(signedIn) {
+    navSignin.hidden = signedIn;
+    navSignout.hidden = !signedIn;
+    navSignoutAll.hidden = !signedIn;
+  }
+
+  async function postSignout(step) {
+    const response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ step }),
+    }).catch(() => null);
+    if (response && response.ok) location.reload();
+    else sayStatus(UNREACHABLE);
+  }
+
+  navSignout.addEventListener("click", () => postSignout("signout"));
+  navSignoutAll.addEventListener("click", () => postSignout("signout-all"));
+
+  function sayStatus(message) {
+    statusEl.textContent = message;
+    statusEl.hidden = false;
+  }
+
+  function dayIndex(day, firstDay) {
+    const at = Date.parse(`${day}T00:00:00.000Z`);
+    const from = Date.parse(`${firstDay}T00:00:00.000Z`);
+    return Number.isFinite(at) && Number.isFinite(from) ? Math.round((at - from) / DAY_MS) : null;
+  }
+
+  function capGb(summary) {
+    const cap = summary.cap.capUsd;
+    if (!(summary.size30Gb > 0) || !(summary.meteredUsd > 0) || cap >= summary.maximumUsd) return null;
+    return (cap / summary.meteredUsd) * summary.size30Gb;
+  }
+
+  function y(gb, top) {
+    return top === 0 ? 100 : 100 - (gb / top) * 100;
+  }
+
+  function level(line, gb, top, width) {
+    line.setAttribute("x2", String(width));
+    line.setAttribute("y1", y(gb, top).toFixed(2));
+    line.setAttribute("y2", y(gb, top).toFixed(2));
+  }
+
+  function drawChart(summary) {
+    const series = summary.storedDaily;
+    if (series.length === 0) {
+      chartEl.hidden = true;
+      figureEl.hidden = true;
+      return;
+    }
+    const first = series[0];
+    const reached = summary.size30ReachedDay ? dayIndex(summary.size30ReachedDay, first.day) : null;
+    const dropsOut = summary.size30DropsOutDay ? dayIndex(summary.size30DropsOutDay, first.day) : null;
+    const width = Math.max(series.length - 1, dropsOut === null ? 0 : dropsOut, 1);
+    const cap = capGb(summary);
+    const top = Math.max(summary.size30Gb, cap === null ? 0 : cap, ...series.map((day) => day.gb));
+    lineEl.setAttribute(
+      "points",
+      series.map((day, index) => `${index},${y(day.gb, top).toFixed(2)}`).join(" "),
+    );
+    chartEl.setAttribute("viewBox", `0 0 ${width} 100`);
+    const from = reached === null ? null : Math.max(0, reached);
+    const to = dropsOut === null ? null : Math.min(width, dropsOut);
+    const shaded = from !== null && to !== null && to > from;
+    billedEl.setAttribute("x", String(shaded ? from : 0));
+    billedEl.setAttribute("width", String(shaded ? to - from : 0));
+    level(markEl, summary.size30Gb, top, width);
+    capMarkEl.hidden = cap === null;
+    if (cap !== null) level(capMarkEl, cap, top, width);
+    chartEl.setAttribute(
+      "aria-label",
+      `Stored size over the last 30 days. The peak is ${summary.labels.size30}, reached ${summary.labels.size30Reached || "in this window"}, billed until ${summary.labels.size30DropsOut || "it drops out"}.${cap === null ? "" : ` Your cap is reached at about ${Math.round(cap)} GB.`}`,
+    );
+    chartEl.hidden = false;
+    figureEl.hidden = false;
+  }
+
+  const isDay = (entry) =>
+    typeof entry === "object" && entry !== null && typeof entry.day === "string" && Number.isFinite(entry.gb);
+  const isLine = (line) => typeof line?.label === "string" && typeof line?.usd === "string";
+
+  function valid(summary) {
+    const labels = summary?.labels;
+    return (
+      typeof labels === "object" &&
+      labels !== null &&
+      LABEL_KEYS.every((key) => typeof labels[key] === "string") &&
+      Number.isFinite(summary.cap?.capUsd) &&
+      [summary.size30Gb, summary.meteredUsd, summary.maximumUsd].every(Number.isFinite) &&
+      Array.isArray(summary.storedDaily) &&
+      summary.storedDaily.every(isDay) &&
+      Array.isArray(summary.billCents?.lines) &&
+      summary.billCents.lines.every(isLine) &&
+      typeof summary.cardOnFile === "boolean"
+    );
+  }
+
+  function render(summary) {
+    if (!valid(summary)) {
+      sayStatus(UNREACHABLE);
+      return;
+    }
+    const labels = summary.labels;
+    statusEl.hidden = true;
+    bodyEl.hidden = false;
+    size30El.textContent = labels.size30;
+    reachedEl.textContent = labels.size30Reached;
+    dropsOutEl.textContent = labels.size30DropsOut;
+    costEl.textContent = labels.cost;
+    billLinesEl.replaceChildren(
+      ...summary.billCents.lines.map((line) => {
+        const row = document.createElement("div");
+        row.className = "pair";
+        const dt = document.createElement("dt");
+        dt.textContent = line.label;
+        const dd = document.createElement("dd");
+        dd.textContent = line.usd;
+        row.append(dt, dd);
+        return row;
+      }),
+    );
+    billLinesEl.hidden = !summary.cardOnFile || summary.billCents.lines.length === 0;
+    capLineEl.textContent =
+      capGb(summary) === null
+        ? `Your cap is ${labels.accountCap} a month.`
+        : `Your cap is ${labels.accountCap} a month. The dashed red line is the size where the bill reaches it.`;
+    drawChart(summary);
+  }
+
+  async function read() {
+    let response;
+    try {
+      response = await fetch(USAGE_ENDPOINT, { headers: { accept: "application/json" } });
+    } catch (_error) {
+      sayStatus(UNREACHABLE);
+      return;
+    }
+    const payload = await response.json().catch(() => null);
+    showSessionNav(response.status !== 401);
+    if (!response.ok) {
+      sayStatus(payload && typeof payload.error === "string" ? payload.error : UNREACHABLE);
+      return;
+    }
+    render(payload);
+  }
+
+  read();
+})();
+  </script>
+  <script type="module" src="/close-banner.js"></script>
+</body>
+</html>
