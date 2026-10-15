@@ -756,9 +756,6 @@ export const EMAIL_KINDS = Object.freeze([
 ]);
 
 /**
- * @type {Readonly<Record<string, (data: Record<string, unknown>) => {subject: string, text: string, html: string, saved: string|null}>>}
- */
-/**
  * @param {Record<string, unknown>} [data]
  */
 function monthlyStoryTemplate(data = {}) {
@@ -786,6 +783,9 @@ function monthlyStoryTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
+/**
+ * @type {Readonly<Record<string, (data: Record<string, unknown>) => {subject: string, text: string, html: string, saved: string|null}>>}
+ */
 const TEMPLATES = Object.freeze({
   welcome: welcomeTemplate,
   "cap-warning": capWarningTemplate,

@@ -86,11 +86,19 @@ export async function runMonthlyStories(input) {
           .bind(row.id, month.label)
           .run();
         failed += 1;
-        console.error("monthly-story: the email for account %s failed", row.id, String(error));
+        console.error(
+          "monthly-story: the email for account %s failed (%s)",
+          row.id,
+          error instanceof Error ? error.name : "error",
+        );
       }
     } catch (error) {
       failed += 1;
-      console.error("monthly-story: account %s was skipped", row.id, String(error));
+      console.error(
+        "monthly-story: account %s was skipped (%s)",
+        row.id,
+        error instanceof Error ? error.name : "error",
+      );
     }
   }
   return { sent, failed };
