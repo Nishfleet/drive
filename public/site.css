@@ -672,3 +672,102 @@ body:has(.app-side) main h1 {
     display: none;
   }
 }
+
+:where(button, input[type="button"], input[type="submit"]),
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    transform 0.06s ease;
+}
+
+:where(button:hover, input[type="button"]:hover, input[type="submit"]:hover),
+.btn:hover {
+  background: var(--accent-soft);
+}
+
+:where(button:active, input[type="button"]:active, input[type="submit"]:active),
+.btn:active {
+  transform: translateY(1px);
+}
+
+:where(button:disabled, input[type="button"]:disabled, input[type="submit"]:disabled),
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+  transform: none;
+}
+
+.btn-primary,
+.btn-primary:hover {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--paper-raised);
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+}
+
+.btn-danger {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent);
+}
+
+.btn-sm {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+:where(input:not([type]), input[type="text"], input[type="email"], input[type="url"], input[type="number"], input[type="search"], input[type="password"], select, textarea),
+.field {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+
+:where(textarea) {
+  padding: 10px 14px;
+}
+
+:where(input[type="checkbox"], input[type="radio"]),
+.check {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+
+:where(input[type="range"]),
+.slider {
+  width: 100%;
+  accent-color: var(--accent);
+}

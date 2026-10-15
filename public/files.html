@@ -499,16 +499,16 @@ dialog.viewer::backdrop {
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout">
-            <button type="submit">Sign out</button>
+            <button class="btn btn-ghost" type="submit">Sign out</button>
           </form>
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout-all">
-            <button type="submit">Sign out everywhere</button>
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
           </form>
         </noscript>
-        <button type="button" id="nav-signout" hidden>Sign out</button>
-        <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
       </div>
     </details>
   </header>
@@ -529,13 +529,13 @@ dialog.viewer::backdrop {
   <main>
     <h1 id="file-list-heading">Your files</h1>
     <nav class="tabs" aria-label="Views">
-      <button type="button" id="tab-files" aria-pressed="true">Files</button>
-      <button type="button" id="tab-deleted" aria-pressed="false">Recently deleted</button>
-      <button type="button" id="tab-rewind" aria-pressed="false">Rewind</button>
+      <button type="button" id="tab-files" aria-pressed="true" class="btn">Files</button>
+      <button type="button" id="tab-deleted" aria-pressed="false" class="btn">Recently deleted</button>
+      <button type="button" id="tab-rewind" aria-pressed="false" class="btn">Rewind</button>
     </nav>
     <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
     <p class="page-line" id="page-line">Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.</p>
-    <input class="filter" type="search" id="file-filter" aria-label="Filter this folder by name" placeholder="Filter this folder" autocomplete="off">
+    <input class="field filter" type="search" id="file-filter" aria-label="Filter this folder by name" placeholder="Filter this folder" autocomplete="off">
     <p class="filter-none" id="filter-none" hidden>No file here matches that. Clear the box to see them all.</p>
     <p class="status" id="status" role="status" aria-live="polite"></p>
 
@@ -546,7 +546,7 @@ dialog.viewer::backdrop {
         <div class="actions"><span></span></div>
       </li>
     </ul>
-    <button type="button" id="more" hidden>More</button>
+    <button type="button" id="more" hidden class="btn">More</button>
     <div class="empty" id="empty" hidden>
       <p class="what" id="empty-what"></p>
       <p class="next" id="empty-next"></p>
@@ -558,14 +558,14 @@ dialog.viewer::backdrop {
 
   <div class="upload">
     <input type="file" id="file-input" multiple hidden>
-    <button type="button" id="upload-button">Upload</button>
+    <button type="button" id="upload-button" class="btn">Upload</button>
   </div>
 
   <dialog class="viewer" id="viewer" aria-labelledby="viewer-title">
     <div class="viewer-head">
       <h2 class="title" id="viewer-title">File</h2>
       <a id="viewer-download" href="/api/files/download" download>Download</a>
-      <button type="button" id="viewer-close">Close</button>
+      <button type="button" id="viewer-close" class="btn">Close</button>
     </div>
     <div class="viewer-body" id="viewer-body"></div>
   </dialog>
@@ -741,6 +741,7 @@ function crumbsForParts(parts) {
   crumbs.textContent = "";
   const root = document.createElement("button");
   root.type = "button";
+  root.className = "btn btn-ghost btn-sm";
   root.textContent = "Your drive";
   root.addEventListener("click", () => {
     path = "/";
@@ -762,6 +763,7 @@ function crumbsForParts(parts) {
     } else {
       const link = document.createElement("button");
       link.type = "button";
+      link.className = "btn btn-ghost btn-sm";
       link.textContent = part;
       const target = walked;
       link.addEventListener("click", () => {
@@ -832,6 +834,7 @@ function rowFor(row) {
   if (row.kind === "folder") {
     const open = document.createElement("button");
     open.type = "button";
+    open.className = "btn btn-sm";
     open.textContent = "Open";
     open.addEventListener("click", () => {
       path = row.path;
@@ -849,13 +852,14 @@ function rowFor(row) {
 
     const earlier = document.createElement("button");
     earlier.type = "button";
+    earlier.className = "btn btn-sm";
     earlier.textContent = "Earlier copies";
     earlier.addEventListener("click", () => showEarlierCopies(row, li));
     actions.append(earlier);
 
     const del = document.createElement("button");
     del.type = "button";
-    del.className = "danger";
+    del.className = "btn btn-sm btn-danger danger";
     del.textContent = "Delete";
     del.addEventListener("click", () => removeFile(row));
     actions.append(del);
@@ -915,6 +919,7 @@ async function showEarlierCopies(row, li) {
     label.textContent = `Saved ${whenLabel(copy.savedAt)} · replaced ${whenLabel(copy.replacedAt)} · permanently removed ${whenLabel(copy.restorableUntil)}`;
     const put = document.createElement("button");
     put.type = "button";
+    put.className = "btn btn-sm";
     put.textContent = EARLIER_COPY.restore;
     put.addEventListener("click", async () => {
       put.disabled = true;
@@ -951,7 +956,7 @@ function trashRowFor(row) {
   meta.className = "meta";
   const name = document.createElement("button");
   name.type = "button";
-  name.className = "name";
+  name.className = "btn btn-ghost name";
   name.textContent = row.name;
   name.addEventListener("click", () => {
     viewerTitle.textContent = row.name;
@@ -982,6 +987,7 @@ function trashRowFor(row) {
   if (row.restorable) {
     const restore = document.createElement("button");
     restore.type = "button";
+    restore.className = "btn btn-sm";
     restore.textContent = row.restoreLabel;
     restore.addEventListener("click", () => restoreFile(row));
     actions.append(restore);
@@ -1097,6 +1103,7 @@ function rewindRowFor(preview) {
   if (preview.canRewind) {
     const rewind = document.createElement("button");
     rewind.type = "button";
+    rewind.className = "btn btn-sm";
     rewind.textContent = "Rewind";
     rewind.addEventListener("click", () => rewindThis(preview));
     actions.append(rewind);
@@ -1338,7 +1345,7 @@ async function removeFile(row) {
 function offerUndo(row) {
   const undo = document.createElement("button");
   undo.type = "button";
-  undo.className = "undo";
+  undo.className = "btn btn-sm undo";
   undo.textContent = "Undo";
   undo.addEventListener("click", () => {
     undo.disabled = true;

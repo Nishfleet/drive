@@ -22,16 +22,16 @@
         <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
         <form method="POST" action="/api/signin">
           <input type="hidden" name="step" value="signout">
-          <button type="submit">Sign out</button>
+          <button class="btn btn-ghost" type="submit">Sign out</button>
         </form>
         <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
         <form method="POST" action="/api/signin">
           <input type="hidden" name="step" value="signout-all">
-          <button type="submit">Sign out everywhere</button>
+          <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
         </form>
       </noscript>
-      <button type="button" id="nav-signout" hidden>Sign out</button>
-      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+      <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
     </div>
   </details>
 </header>

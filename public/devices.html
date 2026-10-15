@@ -179,16 +179,16 @@ th {
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout">
-            <button type="submit">Sign out</button>
+            <button class="btn btn-ghost" type="submit">Sign out</button>
           </form>
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout-all">
-            <button type="submit">Sign out everywhere</button>
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
           </form>
         </noscript>
-        <button type="button" id="nav-signout" hidden>Sign out</button>
-        <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
       </div>
     </details>
   </header>
@@ -221,15 +221,15 @@ th {
           <h3 id="add-computer">A computer</h3>
           <ol>
             <li>Install the command. <a href="/docs/quickstart#1-install-the-command">One line for your system</a>.</li>
-            <li>Run <code>drive login</code> <button type="button" class="copy" data-copy="drive login">Copy</button>. It opens this site; press Approve.</li>
-            <li>Run <code>drive init</code> <button type="button" class="copy" data-copy="drive init">Copy</button>. Your drive appears as a folder.</li>
+            <li>Run <code>drive login</code> <button type="button" class="btn btn-sm copy" data-copy="drive login">Copy</button>. It opens this site; press Approve.</li>
+            <li>Run <code>drive init</code> <button type="button" class="btn btn-sm copy" data-copy="drive init">Copy</button>. Your drive appears as a folder.</li>
           </ol>
         </section>
         <section aria-labelledby="add-agent">
           <h3 id="add-agent">An agent</h3>
           <ol>
-            <li>On a computer that is already added, run <code>drive init</code> <button type="button" class="copy" data-copy="drive init">Copy</button>. It finds your agent tools.</li>
-            <li>Or pick one yourself: <code>drive agents connect claude</code> <button type="button" class="copy" data-copy="drive agents connect claude">Copy</button>.</li>
+            <li>On a computer that is already added, run <code>drive init</code> <button type="button" class="btn btn-sm copy" data-copy="drive init">Copy</button>. It finds your agent tools.</li>
+            <li>Or pick one yourself: <code>drive agents connect claude</code> <button type="button" class="btn btn-sm copy" data-copy="drive agents connect claude">Copy</button>.</li>
             <li>The agent gets its own folder and its own key. It shows in the list below, and Turn off stops it at once. <a href="/docs/agents">What an agent key can do</a>.</li>
           </ol>
         </section>
@@ -241,7 +241,7 @@ th {
       <div class="status" id="devices-status" role="status" aria-live="polite" hidden>
         <p class="what"></p>
         <p class="next"></p>
-        <p><button type="button" id="devices-retry" hidden>Try again</button></p>
+        <p><button type="button" id="devices-retry" hidden class="btn">Try again</button></p>
       </div>
       <div class="empty" id="devices-empty" hidden>
         <p class="what">No devices or agents yet.</p>
@@ -322,6 +322,7 @@ function keyRow(key) {
   const action = document.createElement("td");
   const button = document.createElement("button");
   button.type = "button";
+  button.className = "btn btn-sm btn-danger";
   button.textContent = REVOKE_LABEL;
   button.addEventListener("click", () => revokeKey(key.keyId, button));
   action.appendChild(button);

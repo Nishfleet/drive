@@ -174,16 +174,16 @@ code {
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout">
-            <button type="submit">Sign out</button>
+            <button class="btn btn-ghost" type="submit">Sign out</button>
           </form>
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout-all">
-            <button type="submit">Sign out everywhere</button>
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
           </form>
         </noscript>
-        <button type="button" id="nav-signout" hidden>Sign out</button>
-        <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
       </div>
     </details>
   </header>
@@ -204,7 +204,7 @@ code {
     <div class="status" id="home-status" role="status" aria-live="polite" hidden>
       <p class="what"></p>
       <p class="next"></p>
-      <p><button type="button" id="home-retry" hidden>Try again</button></p>
+      <p><button type="button" id="home-retry" hidden class="btn">Try again</button></p>
     </div>
 
     <div class="grid" id="home-grid" aria-busy="true">

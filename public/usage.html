@@ -204,23 +204,6 @@ h2 {
   font-size: clamp(18px, 2.6vw, 22px);
 }
 
-.cap button {
-  margin: 6px 0 0;
-  font: inherit;
-  font-weight: 600;
-  padding: 8px 14px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--ink);
-  color: var(--paper);
-  cursor: pointer;
-}
-
-.cap button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
 .close-form {
   display: grid;
   gap: 10px;
@@ -237,18 +220,6 @@ h2 {
   padding: 8px 10px;
   border: 1px solid var(--rule);
   border-radius: 8px;
-}
-
-.close-form button {
-  justify-self: start;
-  font: inherit;
-  font-weight: 600;
-  padding: 8px 14px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--ink);
-  color: var(--paper);
-  cursor: pointer;
 }
 
 .close-form .error {
@@ -329,23 +300,6 @@ h2 {
   gap: 8px;
 }
 
-.topup button,
-.topup-form button {
-  font: inherit;
-  font-weight: 600;
-  padding: 8px 14px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--ink);
-  color: var(--paper);
-  cursor: pointer;
-}
-
-.topup button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
 .topup-form {
   display: flex;
   flex-wrap: wrap;
@@ -382,12 +336,6 @@ h2 {
   margin: 14px 0 0;
   padding-top: 14px;
   border-top: 1px solid var(--rule);
-}
-
-.auto-topup input[type="checkbox"] {
-  width: 20px;
-  height: 20px;
-  accent-color: var(--accent);
 }
 
 .ledger-box {
@@ -462,16 +410,16 @@ h2 {
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout">
-            <button type="submit">Sign out</button>
+            <button class="btn btn-ghost" type="submit">Sign out</button>
           </form>
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout-all">
-            <button type="submit">Sign out everywhere</button>
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
           </form>
         </noscript>
-        <button type="button" id="nav-signout" hidden>Sign out</button>
-        <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
       </div>
     </details>
   </header>
@@ -505,7 +453,7 @@ h2 {
         <div class="status" id="usage-status" data-state="unreachable" role="status" aria-live="polite" hidden>
           <p class="what"></p>
           <p class="next"></p>
-          <p><button type="button" id="usage-retry" hidden>Try again</button></p>
+          <p><button type="button" id="usage-retry" hidden class="btn">Try again</button></p>
         </div>
       </div>
     </section>
@@ -523,15 +471,15 @@ h2 {
               <div class="topup-presets" id="topup-presets"></div>
               <form class="topup-form" id="topup-form">
                 <label for="topup-amount">Another amount, in dollars
-                  <input type="number" id="topup-amount" name="amount" min="10" max="1000" step="1" inputmode="decimal" required>
+                  <input type="number" id="topup-amount" name="amount" min="10" max="1000" step="1" inputmode="decimal" required class="field">
                 </label>
-                <button type="submit">Add</button>
+                <button type="submit" class="btn btn-primary">Add</button>
               </form>
               <p class="error" id="topup-error" role="alert" hidden></p>
               <div class="auto-topup">
-                <input type="checkbox" id="auto-topup" aria-describedby="auto-topup-note">
+                <input type="checkbox" id="auto-topup" aria-describedby="auto-topup-note" class="check">
                 <label for="auto-topup">Auto top-up: add</label>
-                <input type="number" id="auto-topup-amount" min="10" max="1000" step="1" value="10" aria-label="Auto top-up amount, in dollars">
+                <input type="number" id="auto-topup-amount" min="10" max="1000" step="1" value="10" aria-label="Auto top-up amount, in dollars" class="field">
                 <span>when the balance drops under $2</span>
               </div>
               <p class="hint" id="auto-topup-note" role="status">Off until you turn it on. It uses your saved card and emails a receipt each time.</p>
@@ -619,11 +567,11 @@ h2 {
         <h2 id="cap-heading">Your cap</h2>
         <div class="cap">
           <label for="cap-amount">Monthly cap, in whole dollars</label>
-          <input type="number" id="cap-amount" min="0" step="1" value="12" inputmode="numeric" aria-describedby="cap-note">
+          <input type="number" id="cap-amount" min="0" step="1" value="12" inputmode="numeric" aria-describedby="cap-note" class="field">
           <label for="cap-slider">Or move the slider</label>
-          <input type="range" id="cap-slider" min="0" max="12" step="1" value="12" aria-describedby="cap-note">
+          <input type="range" id="cap-slider" min="0" max="12" step="1" value="12" aria-describedby="cap-note" class="slider">
           <p class="cap-value" id="cap-value"></p>
-          <button type="button" id="cap-save" hidden>Save cap</button>
+          <button type="button" id="cap-save" hidden class="btn">Save cap</button>
         </div>
         <div class="empty" id="cap-note">
           <p class="what" id="cap-note-what">At the cap the drive goes read-only; nothing is ever deleted.</p>
@@ -639,7 +587,7 @@ h2 {
         <p class="lede" id="history-now"></p>
         <div id="history-options" role="radiogroup" aria-label="How long to keep deleted and replaced files"></div>
         <p class="hint" id="history-line"></p>
-        <button type="button" id="history-save" hidden>Change history</button>
+        <button type="button" id="history-save" hidden class="btn">Change history</button>
         <p class="hint" id="history-status" role="status" hidden></p>
       </section>
 
@@ -661,9 +609,9 @@ h2 {
         <p class="hint" id="close-purged-next" hidden>Your files were deleted. This account stays closed.</p>
         <form class="close-form" id="close-form">
           <label for="close-email" id="close-email-label">Type your email to confirm</label>
-          <input type="email" id="close-email" name="email" autocomplete="email" required>
+          <input type="email" id="close-email" name="email" autocomplete="email" required class="field">
           <p class="error" id="close-error" hidden></p>
-          <button type="submit" id="close-submit">Close account</button>
+          <button type="submit" id="close-submit" class="btn btn-primary">Close account</button>
         </form>
       </section>
     </div>
@@ -1309,6 +1257,7 @@ navSignoutAll.addEventListener("click", () => {
       ...summary.top_up_presets_usd.map((dollars) => {
         const button = document.createElement("button");
         button.type = "button";
+        button.className = "btn btn-primary";
         button.textContent = `Add $${dollars}`;
         button.addEventListener("click", () => topUp(dollars));
         return button;
@@ -1379,6 +1328,7 @@ navSignoutAll.addEventListener("click", () => {
         const label = document.createElement("label");
         const input = document.createElement("input");
         input.type = "radio";
+        input.className = "check";
         input.name = "history-days";
         input.value = String(option.days);
         input.checked = option.days === chosen;

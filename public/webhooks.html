@@ -172,16 +172,16 @@ form.add fieldset {
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout">
-            <button type="submit">Sign out</button>
+            <button class="btn btn-ghost" type="submit">Sign out</button>
           </form>
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout-all">
-            <button type="submit">Sign out everywhere</button>
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
           </form>
         </noscript>
-        <button type="button" id="nav-signout" hidden>Sign out</button>
-        <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
       </div>
     </details>
   </header>
@@ -212,12 +212,12 @@ form.add fieldset {
       <h2 id="add-heading">Add an endpoint</h2>
       <form class="add" id="add-form">
         <label for="add-url">Address (https only)</label>
-        <input id="add-url" name="url" type="url" required placeholder="https://example.com/storagebun" autocomplete="off">
+        <input id="add-url" name="url" type="url" required placeholder="https://example.com/storagebun" autocomplete="off" class="field">
         <fieldset>
           <legend>Events (none ticked means all of them)</legend>
           <div id="add-events"></div>
         </fieldset>
-        <div><button type="submit">Add endpoint</button></div>
+        <div><button type="submit" class="btn btn-primary">Add endpoint</button></div>
       </form>
       <div class="secret" id="secret" role="status" hidden>
         <p>Signing secret. Copy it now: it is shown once.</p>
@@ -336,6 +336,7 @@ async function call(path, init) {
 function button(label, onClick) {
   const b = document.createElement("button");
   b.type = "button";
+  b.className = "btn btn-sm";
   b.textContent = label;
   b.addEventListener("click", () => onClick(b));
   return b;
@@ -428,6 +429,7 @@ function renderEvents(names) {
         const label = document.createElement("label");
         const box = document.createElement("input");
         box.type = "checkbox";
+        box.className = "check";
         box.value = name;
         label.append(box, ` ${name}`);
         const row = document.createElement("div");
