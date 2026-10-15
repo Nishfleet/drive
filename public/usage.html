@@ -1357,13 +1357,13 @@ navSignoutAll.addEventListener("click", () => {
         });
         const answer = await response.json().catch(() => null);
         if (!response.ok) {
-          statusEl.textContent = answer && answer.error ? answer.error : "That did not save. Nothing was billed.";
+          statusEl.textContent = answer && answer.error ? answer.error : "That did not save. Nothing was billed. Press Save to try again.";
         } else {
           payload.days = chosen;
           statusEl.textContent = "Saved.";
         }
       } catch (_error) {
-        statusEl.textContent = "Could not reach the server. Nothing was billed.";
+        statusEl.textContent = "Could not reach the server. Nothing was billed. Press Save to try again.";
       }
       statusEl.hidden = false;
       saveEl.disabled = false;
