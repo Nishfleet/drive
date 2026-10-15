@@ -78,11 +78,12 @@ days the file is removed for good.
 
 Deleted or replaced files stay restorable for 3 days, free. A file you save over keeps its earlier copy for the same 3 days: press **Earlier copies** on the file in the Files page to put it back. Those copies do not count toward your bill.
 
-A delete made anywhere else — `rm` in the mounted folder, an rclone command,
-or an S3 client with a storage key — does not pass through Recently deleted.
-The storage keeps the deleted copy for 3 days, free, and removes it after. To
-get such a file back, leave your email in the form on the [landing page](/)
-within those 3 days; we reply and put it back. {{AGENT_DELETE}} See
+A delete made anywhere else, such as `rm` in the mounted folder, an rclone
+command or an S3 client with a storage key, does not pass through Recently
+deleted, but it shows up there shortly after. The storage keeps the deleted
+copy for 3 days, free, so press **Restore** on it in the same tab. If it does
+not show, leave your email in the form on the [landing page](/) within those 3
+days and we put it back. {{AGENT_DELETE}} See
 [Agents](/agents) for what a key can and cannot do.
 
 ## How the bill is counted

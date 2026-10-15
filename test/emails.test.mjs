@@ -114,6 +114,8 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "upload-arrivals",
     "security-event",
     "first-file-nudge",
+    "runway-notice",
+    "bill-dropped",
   ]);
 });
 
@@ -421,6 +423,10 @@ function dataFor(kind) {
       };
     case "first-file-nudge":
       return { ...base, hours: 24 };
+    case "bill-dropped":
+      return { ...base, fromLine: "$10.00", toLine: "$2.00" };
+    case "runway-notice":
+      return { ...base, runwayLine: "Your $14 lasts about 1 month at your current size." };
     default:
       throw new Error(`no test data for ${kind}`);
   }
@@ -1146,4 +1152,15 @@ test("the fair-use pause email uses the same sentence the usage page prints", ()
   assert.match(mail.text, /No upload room left/);
   assert.match(mail.text, /nothing extra is charged/);
   assert.match(mail.html, /No upload room left/);
+});
+
+test("the account-closed email says the files can be copied from the drive folder and that keys are made again", () => {
+  const { text } = renderEmail("account-closed", {
+    replyTo: "help@storagebun.com",
+    graceDays: 30,
+    reminderDays: 25,
+    purgeOn: "3 Nov (UTC)",
+  });
+  assert.match(text, /already in your drive folder on your computer/);
+  assert.match(text, /you make new keys for your computers/);
 });

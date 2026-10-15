@@ -16,6 +16,7 @@ import { errorResponse, json, readJsonObject } from "./http.js";
 import { failureMessage } from "./messages.js";
 import { HIDDEN_VERSION_DAYS } from "./s3.js";
 import { unauthorizedResponse } from "./status.js";
+import { formatCents } from "./topup.js";
 
 /** Where the account's history window is read and changed. */
 export const HISTORY_ENDPOINT = "/api/history";
@@ -29,6 +30,29 @@ const LABELS = new Map([
   [30, "Keep history 30 days"],
   [365, "Keep history 1 year"],
 ]);
+const WORDS = new Map([
+  [HIDDEN_VERSION_DAYS, `${HIDDEN_VERSION_DAYS} days`],
+  [30, "30 days"],
+  [365, "1 year"],
+]);
+
+/**
+ * The sentence shown beside a window before it is turned on: what is kept, and
+ * the price, in the account's own numbers.
+ * @param {number} days
+ * @param {number} extraCents what the window adds to the monthly bill now
+ */
+function priceLine(days, extraCents) {
+  if (days <= HIDDEN_VERSION_DAYS) {
+    return `Deleted and replaced files stay restorable for ${WORDS.get(days)}, free.`;
+  }
+  const per100 = formatCents(monthBillCents({ size30Bytes: 100_000_000_000 }).totalCents);
+  const now =
+    extraCents > 0
+      ? `At your current rate of change that adds about ${formatCents(extraCents)} a month${days > 30 ? " (an estimate)" : ""}.`
+      : "At your current rate of change that adds nothing yet.";
+  return `Deleted and replaced files stay restorable for ${WORDS.get(days)}. Old copies count toward your size, so ${now.charAt(0).toLowerCase()}${now.slice(1)} Each 100 GB of old copies adds ${per100} a month, never more than $15 per TB.`;
+}
 
 /**
  * The days this account keeps old copies.
@@ -103,13 +127,17 @@ export async function handleHistoryRequest(request, account, db, options = {}) {
     const size30Bytes = options.size30Bytes ?? 0;
     return json({
       days,
-      options: HISTORY_WINDOWS.map((window) => ({
-        days: window,
-        label: LABELS.get(window),
-        free: window === HIDDEN_VERSION_DAYS,
-        ...priceImpact(window, size30Bytes, oldBytes30),
-        estimate: window > 30,
-      })),
+      options: HISTORY_WINDOWS.map((window) => {
+        const impact = priceImpact(window, size30Bytes, oldBytes30);
+        return {
+          days: window,
+          label: LABELS.get(window),
+          free: window === HIDDEN_VERSION_DAYS,
+          ...impact,
+          estimate: window > 30,
+          line: priceLine(window, impact.extraCents),
+        };
+      }),
     });
   }
   if (request.method === "POST") {

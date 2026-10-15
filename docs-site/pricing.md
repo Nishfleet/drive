@@ -17,6 +17,14 @@ description: The rate, the maximum, downloads, and the bill worked out for four 
 deleted, where it stays 3 days and you can restore it yourself.
 [See how deletes and restores work](/how-it-works).
 
+## Keeping history longer
+
+Deleted and replaced files stay restorable for 3 days, free. If you want more
+time, switch on 30 days or 1 year on the Usage page. While it is on, those old
+copies count toward your size at the same rate as your files, and the page
+shows the price before you turn it on. Switch it off and the window goes back
+to 3 days.
+
 {{VERSION_MINIMUM}}
 
 ## The maximum

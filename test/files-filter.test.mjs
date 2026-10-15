@@ -7,7 +7,7 @@ const page = readFileSync(new URL("../public/files.html", import.meta.url), "utf
 test("the files page carries a labelled filter box and its empty sentence", () => {
   assert.match(
     page,
-    /<input class="filter" type="search" id="file-filter" aria-label="Filter this folder by name"/,
+    /<input class="field filter" type="search" id="file-filter" aria-label="Filter this folder by name"/,
   );
   assert.match(page, /id="filter-none" hidden>No file here matches that\./);
 });

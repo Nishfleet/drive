@@ -14,6 +14,11 @@ function stub(id) {
     textContent: "",
     href: "",
     disabled: false,
+    dataset: /** @type {Record<string, string>} */ ({}),
+    appended: /** @type {any[]} */ ([]),
+    append(/** @type {any[]} */ ...nodes) {
+      this.appended.push(...nodes);
+    },
     setAttribute() {},
     addEventListener: (/** @type {string} */ type, /** @type {() => void} */ fn) =>
       listeners.set(type, fn),
@@ -28,7 +33,10 @@ async function run(answers) {
   const ids = [...page.matchAll(/id="([a-z-]+)"/g)].map((m) => m[1]);
   for (const id of ids) els.set(id, stub(id));
   const sandbox = {
-    document: { getElementById: (/** @type {string} */ id) => els.get(id) ?? stub(id) },
+    document: {
+      getElementById: (/** @type {string} */ id) => els.get(id) ?? stub(id),
+      createElement: (/** @type {string} */ tag) => stub(tag),
+    },
     location: { reload() {} },
     fetch: async (/** @type {string} */ url) => {
       const answer = answers[url];
@@ -131,6 +139,63 @@ test("no agent sessions, or a failed read, leaves the agents tile out", async ()
   assert.equal(down.get("home-status").hidden, true);
 });
 
+test("the Get started checklist ticks itself from devices and files, and leaves when all is done", async () => {
+  const base = {
+    "/api/balance": { body: BALANCE },
+    "/api/usage": { body: USAGE },
+  };
+  const fresh = await run({
+    ...base,
+    "/api/devices": { body: { keys: [] } },
+    "/api/files": { body: { rows: [] } },
+  });
+  assert.equal(fresh.get("checklist").hidden, false);
+  assert.equal(fresh.get("checklist-items").appended.length, 3);
+  assert.ok(
+    fresh
+      .get("checklist-items")
+      .appended.every((/** @type {any} */ li) => li.dataset.done === "false"),
+  );
+
+  const partway = await run({
+    ...base,
+    "/api/devices": { body: { keys: [{ kind: "device" }] } },
+    "/api/files": { body: { rows: [{ name: "a" }] } },
+  });
+  const done = partway
+    .get("checklist-items")
+    .appended.map((/** @type {any} */ li) => li.dataset.done);
+  assert.deepEqual(done, ["true", "true", "false"]);
+  assert.equal(partway.get("checklist").hidden, false);
+
+  const finished = await run({
+    ...base,
+    "/api/devices": { body: { keys: [{ kind: "device" }, { kind: "agent" }] } },
+    "/api/files": { body: { rows: [{ name: "a" }] } },
+  });
+  assert.equal(finished.get("checklist").hidden, true);
+
+  const failed = await run({ ...base, "/api/devices": { body: { keys: [] } } });
+  assert.equal(failed.get("checklist").hidden, true);
+  assert.equal(failed.get("home-status").hidden, true);
+});
+
 test("the grid honours the hidden attribute, so an error replaces it instead of pushing it down", () => {
   assert.match(page, /\.grid\[hidden\]\s*\{\s*display:\s*none;/);
+});
+
+test("What's new shows the newest changelog line, and a missing file leaves it out", async () => {
+  const base = {
+    "/api/balance": { body: BALANCE },
+    "/api/usage": { body: USAGE },
+    "/api/devices": { body: KEYS },
+  };
+  const shown = await run({
+    ...base,
+    "/whats-new.json": { body: { date: "2026-10-09", text: "Sign-in is bounded" } },
+  });
+  assert.equal(shown.get("whats-new-text").textContent, "Sign-in is bounded");
+  assert.equal(shown.get("whats-new").hidden, false);
+  const missing = await run(base);
+  assert.equal(missing.get("whats-new").hidden, true);
 });

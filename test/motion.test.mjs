@@ -27,3 +27,18 @@ test("no shared transition runs 250 ms or longer", () => {
     assert.ok(ms < 250, `site.css has a ${value}${unit} duration`);
   }
 });
+
+test("the home page's hero demo stops by itself, can be paused, and uses opacity only", () => {
+  const html = readFileSync(new URL("index.html", PUBLIC_DIR), "utf8");
+  assert.match(
+    html,
+    /\.stage\.demo \.term p:nth-child\(2\) \{\s*animation: demo-in-4 14s linear 3;/,
+  );
+  assert.match(html, /id="demo-toggle"[^>]*aria-pressed="false"/);
+  assert.match(html, /\.stage\.demo\.is-paused \* \{\s*animation-play-state: paused;/);
+  const frames = [...html.matchAll(/@keyframes demo-in-\d+ \{([\s\S]*?)\n\}\n/g)].map((m) => m[1]);
+  assert.ok(frames.length >= 9, "one keyframe set per revealed line and row");
+  for (const body of frames) {
+    assert.doesNotMatch(body, /transform|width|height|margin|top|left/);
+  }
+});
