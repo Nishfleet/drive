@@ -50,6 +50,32 @@ html.drive {
 }
 
 @media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --drive-orange-ink: #ff8e63;
+    --drive-orange-wash: #3b2214;
+    --drive-ink: #f3ecdf;
+    --drive-ink-soft: #cdc3b1;
+    --drive-paper: #171410;
+    --drive-paper-deep: #1d1913;
+    --drive-card: #211d17;
+    --drive-line: #3b342a;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .tag,
+  .ticker,
+  .dark,
+  .site-foot {
+    --drive-ink: #1b1712;
+    --drive-ink-soft: #d8cdb9;
+    --drive-paper: #f5efe4;
+    --drive-orange-ink: #ff4f12;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
   html.drive {
     color-scheme: dark;
     --paper: #171410;
