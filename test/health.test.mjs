@@ -859,6 +859,7 @@ test("the required bindings are the ones cloudflare.config.ts declares", () => {
   const NOT_CHECKED = new Set([
     "EMAIL",
     "METER_EVENT_TOKEN",
+    "STORAGE_EVENTS_WEBHOOK_SECRET",
     "HEALTH_RATE_LIMITER",
     "REINDEX_QUEUE",
     "METER_JOBS",

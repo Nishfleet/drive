@@ -243,6 +243,7 @@ export default defineConfig({
       // secret survives a deploy because cf 1.0.0-beta.7 and later inherit
       // secret bindings from the previous Worker version.)
       METER_EVENT_TOKEN: bindings.secret(),
+      STORAGE_EVENTS_WEBHOOK_SECRET: bindings.secret(),
       // The api Worker (drive#342), reached only through this binding: drive-api
       // has no workers.dev address of its own (workers/api/cloudflare.config.ts),
       // so every /v1/* request passes this Worker's Cloudflare Access gate
