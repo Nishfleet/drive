@@ -42,6 +42,20 @@ const PAGES = Object.freeze([
     file: "billing.html",
     ready: "main:has(#balance-body:not([hidden])):has(#peak-body:not([hidden]))",
   },
+  { name: "home-dark", file: "home.html", ready: "#next-step:not([hidden])", scheme: "dark" },
+  {
+    name: "files-dark",
+    file: "files.html",
+    ready: "#file-list li:not(.is-shell)",
+    scheme: "dark",
+  },
+  { name: "usage-dark", file: "usage.html", ready: "#usage-body:not([hidden])", scheme: "dark" },
+  {
+    name: "billing-dark",
+    file: "billing.html",
+    ready: "main:has(#balance-body:not([hidden])):has(#peak-body:not([hidden]))",
+    scheme: "dark",
+  },
   { name: "index", file: "index.html", ready: ".hero .chips" },
   { name: "index-dark", file: "index.html", ready: ".hero .chips", scheme: "dark" },
 ]);

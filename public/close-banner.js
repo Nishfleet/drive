@@ -154,12 +154,13 @@
   const COMMANDS = [
     { label: "Home", hint: "Page", run: go("/home") },
     { label: "Files", hint: "Page", run: go("/files") },
-    { label: "Usage and billing", hint: "Page", run: go("/usage") },
+    { label: "Usage", hint: "Page", run: go("/usage") },
+    { label: "Billing", hint: "Page", run: go("/billing") },
     { label: "Devices", hint: "Page", run: go("/devices") },
     { label: "Webhooks", hint: "Page", run: go("/webhooks") },
     { label: "Get started", hint: "Page", run: go("/get-started") },
     { label: "Docs", hint: "Page", run: go("/docs/") },
-    { label: "Top up", hint: "Command", run: go("/usage#topup-form") },
+    { label: "Top up", hint: "Command", run: go("/billing#topup-form") },
     { label: "Add a device", hint: "Command", run: go("/devices") },
     {
       label: "Keyboard shortcuts",
