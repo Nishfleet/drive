@@ -18,7 +18,6 @@ async function browserSignIn(
   page.setDefaultTimeout(60_000);
   const before = site.mail.length;
   await page.goto(`${site.origin}/signin`, { waitUntil: "load" });
-  await page.click("#age");
   await page.type('input[type="email"]', email);
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => /check your email|sent/i.test(document.body.innerText));
