@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-const SIGNED_IN = ["home", "files", "usage", "devices", "webhooks"];
+const SIGNED_IN = ["home", "files", "usage", "billing", "devices", "webhooks"];
 const page = (/** @type {string} */ name) =>
   readFileSync(new URL(`../public/${name}.html`, import.meta.url), "utf8");
 

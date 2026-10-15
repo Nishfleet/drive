@@ -18,6 +18,7 @@ function balanceScript() {
 
 const IDS = Object.freeze([
   "balance-status",
+  "balance-retry",
   "balance-body",
   "balance-amount",
   "balance-line",
