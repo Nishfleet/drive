@@ -610,6 +610,7 @@ body:has(.app-side) .close-banner {
 }
 
 body:has(.app-side) main {
+  min-height: calc(100dvh - 56px);
   padding-top: 28px;
   padding-right: 0;
   padding-left: 0;
