@@ -80,9 +80,37 @@
   const chipEl = chip;
   const amountEl = amount;
 
+  const sharedSession = document.body.dataset.signout === "shared";
+  const navSignin = document.getElementById("nav-signin");
+  const navSignout = document.getElementById("nav-signout");
+  const navSignoutAll = document.getElementById("nav-signout-all");
+
+  /** @param {boolean} signedIn */
+  function showSessionNav(signedIn) {
+    if (navSignin !== null) navSignin.hidden = signedIn;
+    if (navSignout !== null) navSignout.hidden = !signedIn;
+    if (navSignoutAll !== null) navSignoutAll.hidden = !signedIn;
+  }
+
+  /** @param {string} step */
+  async function postSignout(step) {
+    const response = await fetch("/api/signin", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ step }),
+    }).catch(() => null);
+    if (response?.ok) location.reload();
+  }
+
+  if (sharedSession) {
+    navSignout?.addEventListener("click", () => void postSignout("signout"));
+    navSignoutAll?.addEventListener("click", () => void postSignout("signout-all"));
+  }
+
   async function readBalance() {
     try {
       const response = await fetch("/api/balance", { headers: { accept: "application/json" } });
+      if (sharedSession) showSessionNav(response.status !== 401);
       if (!response.ok) return;
       const payload = await response.json();
       if (typeof payload.balance !== "string") return;

@@ -88,3 +88,34 @@ test("only GET reads a receipt", async () => {
   const post = new Request("https://storagebun.com/api/receipts/7", { method: "POST" });
   assert.equal((await handleReceiptRequest(post, ME, dbWith([ROW]), "7")).status, 405);
 });
+
+test("the .pdf copy of a top-up is a PDF with the same numbers and the same headers", async () => {
+  const response = await handleReceiptRequest(get(), ME, dbWith([ROW]), "7.pdf");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/pdf");
+  assert.equal(response.headers.get("content-disposition"), 'inline; filename="SB-000007.pdf"');
+  assert.equal(response.headers.get("cache-control"), "private, no-store");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(
+    response.headers.get("content-security-policy"),
+    (await handleReceiptRequest(get(), ME, dbWith([ROW]), "7")).headers.get(
+      "content-security-policy",
+    ),
+  );
+  const text = Buffer.from(await response.arrayBuffer()).toString("latin1");
+  assert.ok(text.startsWith("%PDF-1.4"));
+  for (const shown of ["Receipt SB-000007", "$15.00", "$3.00", "$18.00", "pay_123", "2026-10-04"]) {
+    assert.ok(text.includes(shown), shown);
+  }
+});
+
+test("the .pdf copy answers 401, 404 and 405 the way the page does", async () => {
+  assert.equal((await handleReceiptRequest(get(), null, dbWith([ROW]), "7.pdf")).status, 401);
+  const other = { id: "a2", email: null };
+  assert.equal((await handleReceiptRequest(get(), other, dbWith([ROW]), "7.pdf")).status, 404);
+  for (const bad of ["9.pdf", "0.pdf", "00007.pdf", "7.pdfx", "7.PDF", ".pdf", "7.pdf.pdf"]) {
+    assert.equal((await handleReceiptRequest(get(), ME, dbWith([ROW]), bad)).status, 404, bad);
+  }
+  const post = new Request("https://storagebun.com/api/receipts/7.pdf", { method: "POST" });
+  assert.equal((await handleReceiptRequest(post, ME, dbWith([ROW]), "7.pdf")).status, 405);
+});

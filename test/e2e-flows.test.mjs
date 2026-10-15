@@ -93,7 +93,7 @@ test(
       }
     });
 
-    await page.goto(`${site.origin}/usage`, { waitUntil: "load" });
+    await page.goto(`${site.origin}/billing`, { waitUntil: "load" });
     await page.waitForSelector("#balance-body:not([hidden])");
     const [add10] = await page.$$("#topup-presets button");
     await add10.click();
@@ -142,7 +142,7 @@ test(
     const hookBody = await hook.clone().text();
     assert.match(hookBody, /"ok":true/, hookBody);
 
-    await page.goto(`${site.origin}/usage`, { waitUntil: "load" });
+    await page.goto(`${site.origin}/billing`, { waitUntil: "load" });
     await page.waitForSelector("#balance-body:not([hidden])");
     await page.waitForFunction(
       () => document.getElementById("balance-amount")?.textContent === "$10.00",
@@ -393,7 +393,7 @@ test(
     const page = await browserSignIn(browser, site, "calm@example.com");
     await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
 
-    for (const route of ["/home", "/files", "/usage", "/devices", "/webhooks"]) {
+    for (const route of ["/home", "/files", "/usage", "/billing", "/devices", "/webhooks"]) {
       await page.goto(`${site.origin}${route}`, { waitUntil: "load" });
       await page.evaluate(() => {
         document.dispatchEvent(new CustomEvent("toast", { detail: { text: "Saved" } }));

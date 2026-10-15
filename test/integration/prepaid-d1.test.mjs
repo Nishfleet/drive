@@ -321,7 +321,7 @@ test("uploads pause at $0 and start again once a signed top-up lands", async () 
   assert.equal(paused.status, 402);
   assert.deepEqual(await paused.json(), {
     error: failureMessage("balance-empty"),
-    top_up: "/usage",
+    top_up: "/billing",
   });
   assert.equal(
     (await upload("switch-off.txt", false)).status,
@@ -780,7 +780,7 @@ test("an upload that would raise size30 with too little balance is 402", async (
   assert.equal(refused.status, 402);
   assert.deepEqual(await refused.json(), {
     error: failureMessage("size30-unpaid"),
-    top_up: "/usage",
+    top_up: "/billing",
   });
 });
 

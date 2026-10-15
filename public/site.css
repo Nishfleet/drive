@@ -500,7 +500,9 @@ body:has(.app-side) .balance-chip[hidden] {
 }
 
 body:has(.app-side) .top-up {
+  min-width: 88px;
   padding: 4px 14px;
+  text-align: center;
   border-radius: 999px;
   background: var(--accent);
   color: var(--paper-raised);
@@ -515,7 +517,9 @@ body:has(.app-side) .account-menu {
 }
 
 body:has(.app-side) .account-menu summary {
+  min-width: 96px;
   padding: 4px 12px;
+  text-align: center;
   border: 1px solid var(--rule);
   border-radius: 999px;
   color: var(--ink);
@@ -628,6 +632,7 @@ body:has(.app-side) main {
 
   body:has(.app-side) .top-up,
   body:has(.app-side) .account-menu summary {
+    min-width: 0;
     padding: 4px 10px;
     font-size: 14px;
   }
@@ -818,6 +823,12 @@ body:has(.app-side) .wordmark {
   font-size: 22px;
 }
 
+.palette-open {
+  flex: none;
+  width: 132px;
+  white-space: nowrap;
+}
+
 .palette-open kbd,
 .palette kbd {
   padding: 1px 6px;
@@ -877,6 +888,10 @@ dialog.palette::backdrop {
 }
 
 @media (max-width: 760px) {
+  .palette-open {
+    width: 88px;
+  }
+
   .palette-open kbd {
     display: none;
   }

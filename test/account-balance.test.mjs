@@ -7,17 +7,18 @@ import { AUTO_TOPUP_ENDPOINT } from "../core/prepaid.js";
 import { PREPAID } from "../core/pricing.js";
 import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../core/topup.js";
 
-const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+const page = readFileSync(new URL("../public/billing.html", import.meta.url), "utf8");
 const OPEN_TAG = '<script data-part="balance">';
 
 function balanceScript() {
   const start = page.indexOf(OPEN_TAG);
-  assert.ok(start >= 0, "usage.html must carry the balance block");
+  assert.ok(start >= 0, "billing.html must carry the balance block");
   return page.slice(start + OPEN_TAG.length, page.indexOf("</script>", start));
 }
 
 const IDS = Object.freeze([
   "balance-status",
+  "balance-retry",
   "balance-body",
   "balance-amount",
   "balance-line",
@@ -69,6 +70,26 @@ function stubElement(id) {
   return el;
 }
 
+const USAGE_LINE = {
+  kind: "usage",
+  amount_cents: -5,
+  amount: "-$0.05",
+  window_start: 1,
+  reason: null,
+  at: "2026-10-05T06:00:00.000Z",
+};
+
+const TOPUP_LINE = {
+  kind: "topup",
+  amount_cents: 1500,
+  amount: "$15.00",
+  window_start: null,
+  reason: null,
+  receipt_url: "/api/receipts/7",
+  receipt_pdf_url: "/api/receipts/7.pdf",
+  at: "2026-10-04T09:00:00.000Z",
+};
+
 /** One summary as GET /api/balance sends it (core/topup.js balanceSummary). */
 function summary(overrides = {}) {
   return {
@@ -80,25 +101,8 @@ function summary(overrides = {}) {
     paused: false,
     min_top_up_usd: PREPAID.minTopUpUsd,
     top_up_presets_usd: [...PREPAID.topUpPresetsUsd],
-    recent: [
-      {
-        kind: "usage",
-        amount_cents: -5,
-        amount: "-$0.05",
-        window_start: 1,
-        reason: null,
-        at: "2026-10-05T06:00:00.000Z",
-      },
-      {
-        kind: "topup",
-        amount_cents: 1500,
-        amount: "$15.00",
-        window_start: null,
-        reason: null,
-        receipt_url: "/api/receipts/7",
-        at: "2026-10-04T09:00:00.000Z",
-      },
-    ],
+    recent: [USAGE_LINE, TOPUP_LINE],
+    topups: [TOPUP_LINE],
     ...overrides,
   };
 }
@@ -114,7 +118,7 @@ function runBlock(routes, { search = "" } = {}) {
   for (const id of IDS) {
     const el = stubElement(id);
     const tag = page.match(new RegExp(`<[a-z]+[^>]*\\sid="${id}"[^>]*>`))?.[0] ?? "";
-    assert.ok(tag, `usage.html must carry #${id}`);
+    assert.ok(tag, `billing.html must carry #${id}`);
     el.hidden = /\shidden(\s|>|=)/.test(tag);
     el.checked = /\schecked(\s|>|=)/.test(tag);
     elements.set(id, el);
@@ -161,13 +165,13 @@ const okBalance = (/** @type {object} */ overrides = {}) => ({
 });
 
 test("the checkout returns to the page that carries the balance section", () => {
-  assert.equal(TOP_UP_PAGE, "/usage");
+  assert.equal(TOP_UP_PAGE, "/billing");
   assert.ok(page.includes(`const BALANCE_ENDPOINT = "${BALANCE_ENDPOINT}";`));
   assert.ok(page.includes(`const TOPUP_ENDPOINT = "${TOPUP_ENDPOINT}";`));
   assert.ok(page.includes(`const AUTO_TOPUP_ENDPOINT = "${AUTO_TOPUP_ENDPOINT}";`));
 });
 
-test("the page shows the balance, its line and the recent ledger lines", async () => {
+test("the page shows the balance, its line and the top-ups with their receipts", async () => {
   const { elements } = runBlock(okBalance());
   await settle();
   assert.equal(elements.get("balance-body").hidden, false);
@@ -176,19 +180,32 @@ test("the page shows the balance, its line and the recent ledger lines", async (
   assert.equal(elements.get("balance-line").textContent, "Balance $14.50.");
   assert.equal(elements.get("balance-line").dataset.state, "ok");
   const lines = elements.get("ledger-list").appended.map(textOf);
-  assert.equal(lines.length, 2);
-  assert.match(lines[0], /Storage and downloads/);
-  assert.match(lines[0], /-\$0\.05/);
-  assert.match(lines[0], /2026-10-05/);
-  assert.match(lines[1], /Top-up/);
-  assert.match(lines[1], /\+\$15\.00/);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /Top-up/);
+  assert.match(lines[0], /\+\$15\.00/);
+  assert.match(lines[0], /2026-10-04/);
   assert.equal(elements.get("ledger-empty").hidden, true);
-  // Only the top-up carries a receipt link, and it is the Worker's own path.
-  const [usage, topUp] = elements.get("ledger-list").appended;
-  assert.equal(usage.appended.length, 4 - 1);
-  const link = topUp.appended.at(-1);
-  assert.equal(link.href, "/api/receipts/7");
-  assert.equal(link.textContent, "Receipt");
+  const [topUp] = elements.get("ledger-list").appended;
+  const [html, pdf] = topUp.appended.slice(3);
+  assert.equal(html.href, "/api/receipts/7");
+  assert.equal(html.textContent, "Receipt");
+  assert.equal(pdf.href, "/api/receipts/7.pdf");
+  assert.equal(pdf.textContent, "View receipt (PDF)");
+});
+
+test("a pdf url that is not a receipt of this site is not linked", async () => {
+  const body = summary();
+  const lines = body.topups.map((/** @type {any} */ line) => ({
+    ...line,
+    receipt_pdf_url: "https://evil.test/7.pdf",
+  }));
+  const { elements } = runBlock(okBalance({ topups: lines }));
+  await settle();
+  const topUp = elements.get("ledger-list").appended[0];
+  assert.deepEqual(
+    topUp.appended.slice(3).map((/** @type {any} */ link) => link.textContent),
+    ["Receipt"],
+  );
 });
 
 test("the presets are $10, $25 and $50, and the custom amount starts at $10", async () => {
@@ -211,7 +228,7 @@ test("a low balance and an empty one are marked, with the API's own line", async
   assert.equal(low.elements.get("balance-line").textContent, "Balance $1.50. Top up.");
 
   const paused = runBlock(
-    okBalance({ balance: "$0.00", balance_line: "Uploads are paused.", paused: true, recent: [] }),
+    okBalance({ balance: "$0.00", balance_line: "Uploads are paused.", paused: true, topups: [] }),
   );
   await settle();
   assert.equal(paused.elements.get("balance-line").dataset.state, "paused");
