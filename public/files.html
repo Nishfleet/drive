@@ -156,6 +156,69 @@ main {
   display: none;
 }
 
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 12px;
+}
+
+.toolbar .filter {
+  flex: 1 1 200px;
+  margin: 0;
+}
+
+.bulk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.bulk[hidden] {
+  display: none;
+}
+
+.row .pick {
+  flex: 0 0 auto;
+}
+
+.row[data-picked="true"] {
+  background: var(--accent-soft);
+}
+
+.list.is-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+  border-top: 0;
+  padding-top: 4px;
+}
+
+.list.is-grid .row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+
+.list.is-grid .row .icon {
+  font-size: 28px;
+}
+
+.list.is-grid .row .actions {
+  flex-wrap: wrap;
+}
+
 .list {
   margin: 0;
   padding: 0;
@@ -297,6 +360,69 @@ main {
 .empty .next {
   margin: 6px 0 0;
   color: var(--ink-soft);
+}
+
+/* Drag and drop: the whole page takes a drop, and an outline says so while a
+   file is held over it. */
+.drop-hint {
+  position: fixed;
+  inset: 12px;
+  z-index: 30;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 3px dashed var(--accent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+body.is-dragging .drop-hint {
+  display: flex;
+}
+
+/* One row per file being sent, with its own bar. */
+.uploads {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.uploads li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.uploads .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploads .state {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.uploads li[data-state="failed"] .state {
+  color: var(--bad);
+}
+
+.uploads progress {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 8px;
+  accent-color: var(--accent);
 }
 
 .upload {
@@ -535,9 +661,24 @@ dialog.viewer::backdrop {
     </nav>
     <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
     <p class="page-line" id="page-line">Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.</p>
-    <input class="field filter" type="search" id="file-filter" aria-label="Filter this folder by name" placeholder="Filter this folder" autocomplete="off">
+    <div class="toolbar" id="toolbar">
+      <input class="field filter" type="search" id="file-filter" aria-label="Filter this folder by name" placeholder="Filter this folder" autocomplete="off">
+      <select class="field" id="sort" aria-label="Sort files">
+        <option value="name">Name</option>
+        <option value="newest">Newest first</option>
+        <option value="largest">Largest first</option>
+      </select>
+      <button type="button" class="btn" id="view-toggle" aria-pressed="false">Grid</button>
+    </div>
+    <div class="bulk" id="bulk" role="status" aria-live="polite" hidden>
+      <span id="bulk-count"></span>
+      <button type="button" class="btn btn-sm" id="bulk-download">Download</button>
+      <button type="button" class="btn btn-sm btn-danger" id="bulk-delete">Delete</button>
+      <button type="button" class="btn btn-sm btn-ghost" id="bulk-clear">Clear</button>
+    </div>
     <p class="filter-none" id="filter-none" hidden>No file here matches that. Clear the box to see them all.</p>
     <p class="status" id="status" role="status" aria-live="polite"></p>
+    <ul class="uploads" id="uploads" aria-label="Uploads" hidden></ul>
 
     <ul class="list" id="file-list" aria-labelledby="file-list-heading">
       <li class="row is-shell" id="file-list-shell" aria-hidden="true">
@@ -555,6 +696,8 @@ dialog.viewer::backdrop {
       <p class="what" id="signed-out-what"></p>
     </div>
   </main>
+
+  <div class="drop-hint" id="drop-hint" aria-hidden="true">Drop files to upload them here</div>
 
   <div class="upload">
     <input type="file" id="file-input" multiple hidden>
@@ -791,6 +934,20 @@ function rowFor(row) {
   const li = document.createElement("li");
   li.className = "row";
 
+  if (row.kind !== "folder") {
+    const pick = document.createElement("input");
+    pick.type = "checkbox";
+    pick.className = "check pick";
+    pick.setAttribute("aria-label", `Select ${row.name}`);
+    pick.checked = picked.has(row.path);
+    li.dataset.picked = String(pick.checked);
+    pick.addEventListener("change", () => {
+      setPicked(row.path, pick.checked);
+      li.dataset.picked = String(pick.checked);
+    });
+    li.append(pick);
+  }
+
   const icon = document.createElement("span");
   icon.className = "icon";
   icon.setAttribute("aria-hidden", "true");
@@ -996,11 +1153,59 @@ function trashRowFor(row) {
   return li;
 }
 
-function appendRows(rows) {
+let loaded = [];
+const picked = new Set();
+const SORTS = {
+  name: (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }),
+  newest: (a, b) => String(b.modifiedIso).localeCompare(String(a.modifiedIso)),
+  largest: (a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0),
+};
+
+function sortedRows(rows) {
+  const compare = SORTS[sortEl?.value] || SORTS.name;
+  const folders = rows.filter((row) => row.kind === "folder").sort(SORTS.name);
+  const files = rows.filter((row) => row.kind !== "folder").sort(compare);
+  return [...folders, ...files];
+}
+
+function drawRows() {
+  list.textContent = "";
+  const rows = view === "deleted" ? loaded : sortedRows(loaded);
   for (const row of rows) {
     list.append(view === "deleted" ? trashRowFor(row) : rowFor(row));
   }
   applyFilter();
+}
+
+const bulkEl = document.getElementById("bulk");
+const bulkCount = document.getElementById("bulk-count");
+function setPicked(rowPath, on) {
+  if (on) {
+    picked.add(rowPath);
+  } else {
+    picked.delete(rowPath);
+  }
+  updateBulk();
+}
+
+function updateBulk() {
+  if (!bulkEl || !bulkCount) {
+    return;
+  }
+  bulkEl.hidden = picked.size === 0;
+  bulkCount.textContent = `${picked.size} selected`;
+}
+
+function clearPicked() {
+  picked.clear();
+  for (const item of list.querySelectorAll(".row")) {
+    item.dataset.picked = "false";
+    const box = item.querySelector(".pick");
+    if (box) {
+      box.checked = false;
+    }
+  }
+  updateBulk();
 }
 
 const filterEl = document.getElementById("file-filter");
@@ -1141,6 +1346,9 @@ async function rewindThis(preview) {
 
 function renderRows(rows) {
   list.textContent = "";
+  picked.clear();
+  updateBulk();
+  loaded = [...rows];
   if (rows.length === 0) {
     const state = view === "deleted" ? EMPTY_STATES.trash : path === "/" ? EMPTY_STATES.root : EMPTY_STATES.folder;
     emptyWhat.textContent = state.what;
@@ -1149,7 +1357,7 @@ function renderRows(rows) {
     return;
   }
   empty.hidden = true;
-  appendRows(rows);
+  drawRows();
 }
 
 async function listPage(cursor) {
@@ -1173,7 +1381,8 @@ async function loadMore() {
   try {
     const payload = await listPage(nextCursor);
     nextCursor = payload.nextCursor ?? null;
-    appendRows(payload.rows || []);
+    loaded = loaded.concat(payload.rows || []);
+    drawRows();
     showMore(nextCursor);
   } catch (error) {
     reportFailure(error);
@@ -1280,32 +1489,102 @@ async function refresh(keepStatus) {
   }
 }
 
+// One file, sent with XMLHttpRequest because fetch cannot report how many bytes
+// have gone up. It answers the same {status, payload} the fetch path read.
+function sendFile(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", url);
+    request.setRequestHeader("content-type", file.type || "application/octet-stream");
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress(event.loaded / event.total);
+    });
+    request.addEventListener("load", () => {
+      let payload = {};
+      try {
+        payload = JSON.parse(request.responseText);
+      } catch (_error) {
+        payload = {};
+      }
+      resolve({ status: request.status, payload });
+    });
+    request.addEventListener("error", () => reject(new Error("The upload did not finish. Try again.")));
+    request.addEventListener("abort", () => reject(new Error("The upload did not finish. Try again.")));
+    request.send(file);
+  });
+}
+
+const uploadList = document.getElementById("uploads");
+
+// A row with a native <progress>, so a screen reader announces the percentage.
+function uploadRow(file) {
+  const item = document.createElement("li");
+  item.dataset.state = "waiting";
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = file.name;
+  const state = document.createElement("span");
+  state.className = "state";
+  state.textContent = "Waiting";
+  const bar = document.createElement("progress");
+  bar.max = 100;
+  bar.value = 0;
+  bar.setAttribute("aria-label", `Uploading ${file.name}`);
+  item.append(name, state, bar);
+  uploadList.append(item);
+  uploadList.hidden = false;
+  return {
+    progress(fraction) {
+      item.dataset.state = "sending";
+      bar.value = Math.round(fraction * 100);
+      state.textContent = `${bar.value}%`;
+    },
+    done() {
+      item.dataset.state = "done";
+      bar.value = 100;
+      state.textContent = "Done";
+    },
+    fail(message) {
+      item.dataset.state = "failed";
+      state.textContent = message;
+      bar.hidden = true;
+    },
+  };
+}
+
 async function uploadFiles(files) {
   if (files.length === 0) {
     say(UPLOAD_COPY.empty, "error");
     return;
   }
   uploadButton.disabled = true;
+  uploadList.replaceChildren();
   say("Uploading…");
   let uploaded = 0;
   try {
     for (const file of files) {
+      const row = uploadRow(file);
       const url = `${UPLOAD_ENDPOINT}?path=${encodeURIComponent(path)}&name=${encodeURIComponent(
         file.name,
       )}`;
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": file.type || "application/octet-stream" },
-        body: file,
-      });
+      let response;
+      try {
+        response = await sendFile(url, file, row.progress);
+      } catch (error) {
+        row.fail("Failed");
+        throw error;
+      }
+      const payload = response.payload;
       if (response.status === 401) {
-        showSignedOut((await response.json().catch(() => ({}))).error);
+        row.fail("Sign in first");
+        showSignedOut(payload.error);
         throw signedOutError();
       }
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
+      if (response.status < 200 || response.status >= 300) {
+        row.fail("Failed");
         throw new Error(payload.error || "The upload did not finish. Try again.");
       }
+      row.done();
       uploaded += 1;
     }
     say(UPLOAD_COPY.done, "done");
@@ -1376,6 +1655,95 @@ function setTab() {
     view === "rewind" ? REWIND_PAGE_LINE : PAGE_LINE;
 }
 
+const sortEl = document.getElementById("sort");
+if (sortEl) {
+  sortEl.addEventListener("change", () => drawRows());
+}
+
+const viewToggle = document.getElementById("view-toggle");
+function setGrid(on) {
+  list.classList.toggle("is-grid", on);
+  if (viewToggle) {
+    viewToggle.setAttribute("aria-pressed", String(on));
+    viewToggle.textContent = on ? "List" : "Grid";
+  }
+  try {
+    localStorage.setItem("files-grid", on ? "1" : "0");
+  } catch (_error) {}
+}
+if (viewToggle) {
+  viewToggle.addEventListener("click", () => setGrid(!list.classList.contains("is-grid")));
+}
+try {
+  setGrid(localStorage.getItem("files-grid") === "1");
+} catch (_error) {}
+
+async function deleteSelected() {
+  const rows = loaded.filter((row) => picked.has(row.path));
+  if (rows.length === 0) {
+    return;
+  }
+  const gone = [];
+  try {
+    for (const row of rows) {
+      await api(DELETE_ENDPOINT, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: row.path }),
+      });
+      gone.push(row);
+    }
+  } catch (error) {
+    reportFailure(error);
+  }
+  if (gone.length > 0) {
+    say(gone.length === 1 ? DELETE_COPY.done : `Deleted ${gone.length} files. They stay in Recently deleted.`, "done");
+    const undo = document.createElement("button");
+    undo.type = "button";
+    undo.className = "btn btn-sm undo";
+    undo.textContent = "Undo";
+    undo.addEventListener("click", async () => {
+      undo.disabled = true;
+      for (const row of gone) {
+        await restoreFile(row);
+      }
+    });
+    statusLine.append(" ", undo);
+  }
+  picked.clear();
+  refresh(true);
+}
+
+document.getElementById("bulk-delete")?.addEventListener("click", deleteSelected);
+document.getElementById("bulk-clear")?.addEventListener("click", clearPicked);
+document.getElementById("bulk-download")?.addEventListener("click", () => {
+  for (const row of loaded.filter((item) => picked.has(item.path))) {
+    const link = document.createElement("a");
+    link.href = `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
+    link.download = row.name;
+    link.click();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  const target = event.target;
+  const typing = target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) && target.type !== "checkbox";
+  if (typing || event.metaKey || event.ctrlKey || event.altKey || viewer.open) {
+    return;
+  }
+  if (event.key === "/") {
+    event.preventDefault();
+    filterEl?.focus();
+  } else if (event.key === "u" || event.key === "U") {
+    fileInput.click();
+  } else if (event.key === "Delete" && picked.size > 0) {
+    event.preventDefault();
+    deleteSelected();
+  } else if (event.key === "Escape") {
+    clearPicked();
+  }
+});
+
 tabFiles.addEventListener("click", () => {
   view = "folder";
   setTab();
@@ -1395,6 +1763,35 @@ tabRewind.addEventListener("click", () => {
 });
 
 uploadButton.addEventListener("click", () => fileInput.click());
+
+// Drop anywhere on the page. A drag counter, because dragenter and dragleave
+// fire for every child the pointer crosses; only a drag that carries files
+// counts, so dragging text around the page does nothing.
+let dragDepth = 0;
+function carriesFiles(event) {
+  return event.dataTransfer && [...event.dataTransfer.types].includes("Files");
+}
+document.addEventListener("dragenter", (event) => {
+  if (!carriesFiles(event)) return;
+  event.preventDefault();
+  dragDepth += 1;
+  document.body.classList.add("is-dragging");
+});
+document.addEventListener("dragover", (event) => {
+  if (carriesFiles(event)) event.preventDefault();
+});
+document.addEventListener("dragleave", (event) => {
+  if (!carriesFiles(event)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) document.body.classList.remove("is-dragging");
+});
+document.addEventListener("drop", (event) => {
+  if (!carriesFiles(event)) return;
+  event.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove("is-dragging");
+  if (!uploadButton.disabled) uploadFiles([...event.dataTransfer.files]);
+});
 fileInput.addEventListener("change", () => uploadFiles([...fileInput.files]));
 
 const SIGNIN_ENDPOINT = "/api/signin";
