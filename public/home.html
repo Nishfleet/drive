@@ -81,8 +81,26 @@ h1 {
   margin: 6px 0 0;
 }
 
+.tile a {
+  color: var(--accent);
+}
+
 .tile .more {
   color: var(--ink-soft);
+}
+
+.checklist {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.checklist li {
+  margin: 6px 0;
+}
+
+.checklist li[data-done="true"] {
+  color: var(--ink-muted, inherit);
 }
 
 .next-step {
@@ -132,30 +150,50 @@ code {
 <body>
   <a class="skip-link" href="#home-heading">Skip to your drive</a>
   <!-- shell:app-header current="/home" -->
-  <header class="masthead">
-    <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
+  <nav class="app-side" aria-label="Main">
+    <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
     <a href="/home" aria-current="page">Home</a>
-    <a href="/files">Your files</a>
-    <a href="/">Pricing</a>
-    <a href="/get-started">Get started</a>
+    <a href="/files">Files</a>
+    <a href="/usage">Usage and billing</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Webhooks</a>
+    <span class="app-side-end">
+      <a href="/get-started">Get started</a>
+      <a href="/docs/">Docs</a>
+    </span>
+  </nav>
+  <header class="app-top">
+    <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <details class="account-menu" id="account-menu">
+      <summary>Account</summary>
+      <div class="account-panel">
+        <a href="/signin" id="nav-signin">Sign in</a>
+        <noscript>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout">
+            <button class="btn btn-ghost" type="submit">Sign out</button>
+          </form>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout-all">
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
+          </form>
+        </noscript>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      </div>
+    </details>
+  </header>
+  <nav class="app-tabs" aria-label="Tab bar">
+    <a href="/home" aria-current="page">Home</a>
+    <a href="/files">Files</a>
     <a href="/usage">Usage</a>
     <a href="/devices">Devices</a>
-    <a href="/signin" id="nav-signin">Sign in</a>
-      <noscript>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout">
-          <button type="submit">Sign out</button>
-        </form>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout-all">
-          <button type="submit">Sign out everywhere</button>
-        </form>
-      </noscript>
-      <button type="button" id="nav-signout" hidden>Sign out</button>
-      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
-  </header>
+    <a href="/webhooks">Hooks</a>
+  </nav>
   <!-- /shell:app-header -->
 
   <main>
@@ -166,7 +204,7 @@ code {
     <div class="status" id="home-status" role="status" aria-live="polite" hidden>
       <p class="what"></p>
       <p class="next"></p>
-      <p><button type="button" id="home-retry" hidden>Try again</button></p>
+      <p><button type="button" id="home-retry" hidden class="btn">Try again</button></p>
     </div>
 
     <div class="grid" id="home-grid" aria-busy="true">
@@ -191,6 +229,11 @@ code {
     </div>
     </div>
 
+    <section class="tile" id="checklist" aria-labelledby="checklist-title" hidden>
+      <h2 id="checklist-title">Get started</h2>
+      <ol class="checklist" id="checklist-items"></ol>
+    </section>
+
     <section class="tile" id="agents" aria-labelledby="agents-title" hidden>
       <h2 id="agents-title">What your agents did</h2>
       <p class="big" id="agents-what"></p>
@@ -204,6 +247,7 @@ code {
       <p class="more" id="next-line"></p>
       <p><a id="next-link" href="/files">Your files</a></p>
     </section>
+    <p class="more" id="whats-new" hidden>What's new: <span id="whats-new-text"></span> <a href="/docs/changelog">Changelog</a></p>
   </main>
   <!-- shell:footer -->
   <footer class="footer">
@@ -225,6 +269,8 @@ const BALANCE_ENDPOINT = "/api/balance";
 const USAGE_ENDPOINT = "/api/usage";
 const DEVICES_ENDPOINT = "/api/devices";
 const REWIND_ENDPOINT = "/api/rewind";
+const FILES_ENDPOINT = "/api/files";
+const WHATS_NEW_URL = "/whats-new.json";
 const SIGNIN_ENDPOINT = "/api/signin";
 const LOAD_FAILED = "We could not load your drive. Check your connection and try again.";
 const SIGNED_OUT = "Sign in to see your drive.";
@@ -324,12 +370,55 @@ async function read() {
   link.textContent = step.label;
   nextEl.hidden = false;
   gridEl.setAttribute("aria-busy", "false");
+  readChecklist(devices.payload.keys);
   readAgents();
+  readWhatsNew();
+}
+
+async function readWhatsNew() {
+  try {
+    const answer = await getJson(WHATS_NEW_URL);
+    if (!answer.ok || typeof answer.payload?.text !== "string") return;
+    setText("whats-new-text", answer.payload.text);
+    document.getElementById("whats-new").hidden = false;
+  } catch (_error) {}
 }
 
 // The newest agent session, in one line: who, how many files, and whether
 // Rewind can still put them back. The tile is left out when there is none or
 // the read fails, because it is a bonus on this page and never its error.
+async function readChecklist(keys) {
+  let hasFile = false;
+  try {
+    const answer = await getJson(FILES_ENDPOINT);
+    if (answer.ok) hasFile = (answer.payload?.rows ?? []).length > 0;
+    else if (answer.status !== 404) return;
+  } catch (_error) {
+    return;
+  }
+  const steps = [
+    { text: "Add a computer", href: "/get-started", done: keys.some((key) => key.kind === "device") },
+    { text: "Add your first file", href: "/files", done: hasFile },
+    { text: "Connect an agent", href: "/get-started#agents", done: keys.some((key) => key.kind === "agent") },
+  ];
+  const list = document.getElementById("checklist-items");
+  list.textContent = "";
+  for (const step of steps) {
+    const item = document.createElement("li");
+    item.dataset.done = String(step.done);
+    if (step.done) {
+      item.textContent = `Done: ${step.text}`;
+    } else {
+      const link = document.createElement("a");
+      link.href = step.href;
+      link.textContent = step.text;
+      item.append(link);
+    }
+    list.append(item);
+  }
+  document.getElementById("checklist").hidden = steps.every((step) => step.done);
+}
+
 async function readAgents() {
   let rewinds;
   try {

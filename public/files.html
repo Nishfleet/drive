@@ -23,38 +23,6 @@ body {
   z-index: 30;
 }
 
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: var(--paper);
-  border-bottom: 1px solid var(--rule);
-  display: flex;
-  flex-direction: column;
-}
-
-@media (max-width: 719px) {
-  .topbar {
-    position: static;
-  }
-}
-
-.topbar,
-.tabs {
-  padding-left: calc(max(0px, (100% - 900px) / 2) + clamp(14px, 4vw, 40px));
-  padding-right: calc(max(0px, (100% - 900px) / 2) + clamp(14px, 4vw, 40px));
-}
-
-.masthead {
-  margin: 0;
-  padding: 14px 0 12px;
-  border-bottom: 0;
-}
-
-.wordmark {
-  font-size: 24px;
-}
-
 .crumbs {
   display: flex;
   flex-wrap: wrap;
@@ -118,8 +86,7 @@ body {
 }
 
 main {
-  padding: 0 clamp(14px, 4vw, 40px) 96px;
-  max-width: 900px;
+  padding-bottom: 96px;
 }
 
 .page-line {
@@ -187,6 +154,69 @@ main {
 
 .status:empty {
   display: none;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 12px;
+}
+
+.toolbar .filter {
+  flex: 1 1 200px;
+  margin: 0;
+}
+
+.bulk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.bulk[hidden] {
+  display: none;
+}
+
+.row .pick {
+  flex: 0 0 auto;
+}
+
+.row[data-picked="true"] {
+  background: var(--accent-soft);
+}
+
+.list.is-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+  border-top: 0;
+  padding-top: 4px;
+}
+
+.list.is-grid .row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+
+.list.is-grid .row .icon {
+  font-size: 28px;
+}
+
+.list.is-grid .row .actions {
+  flex-wrap: wrap;
 }
 
 .list {
@@ -267,6 +297,10 @@ main {
   white-space: nowrap;
 }
 
+.row .meta a {
+  color: var(--ink);
+}
+
 .row .name:hover,
 .row .name:focus-visible {
   color: var(--accent);
@@ -326,6 +360,69 @@ main {
 .empty .next {
   margin: 6px 0 0;
   color: var(--ink-soft);
+}
+
+/* Drag and drop: the whole page takes a drop, and an outline says so while a
+   file is held over it. */
+.drop-hint {
+  position: fixed;
+  inset: 12px;
+  z-index: 30;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 3px dashed var(--accent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+body.is-dragging .drop-hint {
+  display: flex;
+}
+
+/* One row per file being sent, with its own bar. */
+.uploads {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.uploads li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.uploads .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploads .state {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.uploads li[data-state="failed"] .state {
+  color: var(--bad);
+}
+
+.uploads progress {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 8px;
+  accent-color: var(--accent);
 }
 
 .upload {
@@ -451,6 +548,21 @@ dialog.viewer::backdrop {
   color: var(--ink-soft);
 }
 
+@media (max-width: 559px) {
+  .row {
+    flex-wrap: wrap;
+  }
+
+  .row .meta {
+    flex: 1 1 calc(100% - 44px);
+  }
+
+  .row .actions {
+    flex: 1 0 100%;
+    padding-left: 40px;
+  }
+}
+
 @media (min-width: 720px) {
   dialog.viewer {
     width: min(880px, 92vw);
@@ -488,52 +600,85 @@ dialog.viewer::backdrop {
 </head>
 <body>
   <a class="skip-link" href="#file-list-heading">Skip to your files</a>
-  <div class="topbar">
-    <!-- shell:app-header current="/files" -->
-    <header class="masthead">
-      <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
-      <a href="/home">Home</a>
-      <a href="/files" aria-current="page">Your files</a>
-      <a href="/">Pricing</a>
+  <!-- shell:app-header current="/files" -->
+  <nav class="app-side" aria-label="Main">
+    <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a href="/home">Home</a>
+    <a href="/files" aria-current="page">Files</a>
+    <a href="/usage">Usage and billing</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Webhooks</a>
+    <span class="app-side-end">
       <a href="/get-started">Get started</a>
-      <a href="/usage">Usage</a>
-      <a href="/devices">Devices</a>
-      <a href="/signin" id="nav-signin">Sign in</a>
+      <a href="/docs/">Docs</a>
+    </span>
+  </nav>
+  <header class="app-top">
+    <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <details class="account-menu" id="account-menu">
+      <summary>Account</summary>
+      <div class="account-panel">
+        <a href="/signin" id="nav-signin">Sign in</a>
         <noscript>
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout">
-            <button type="submit">Sign out</button>
+            <button class="btn btn-ghost" type="submit">Sign out</button>
           </form>
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
             <input type="hidden" name="step" value="signout-all">
-            <button type="submit">Sign out everywhere</button>
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
           </form>
         </noscript>
-        <button type="button" id="nav-signout" hidden>Sign out</button>
-        <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
-    </header>
-    <!-- /shell:app-header -->
-    <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
-  </div>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      </div>
+    </details>
+  </header>
+  <nav class="app-tabs" aria-label="Tab bar">
+    <a href="/home">Home</a>
+    <a href="/files" aria-current="page">Files</a>
+    <a href="/usage">Usage</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Hooks</a>
+  </nav>
+  <!-- /shell:app-header -->
+
 
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
     <a id="close-banner-cancel" href="/usage">Cancel closing</a>
   </div>
-  <nav class="tabs" aria-label="Views">
-    <button type="button" id="tab-files" aria-pressed="true">Files</button>
-    <button type="button" id="tab-deleted" aria-pressed="false">Recently deleted</button>
-    <button type="button" id="tab-rewind" aria-pressed="false">Rewind</button>
-  </nav>
-
   <main>
     <h1 id="file-list-heading">Your files</h1>
+    <nav class="tabs" aria-label="Views">
+      <button type="button" id="tab-files" aria-pressed="true" class="btn">Files</button>
+      <button type="button" id="tab-deleted" aria-pressed="false" class="btn">Recently deleted</button>
+      <button type="button" id="tab-rewind" aria-pressed="false" class="btn">Rewind</button>
+    </nav>
+    <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
     <p class="page-line" id="page-line">Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.</p>
-    <input class="filter" type="search" id="file-filter" aria-label="Filter this folder by name" placeholder="Filter this folder" autocomplete="off">
+    <div class="toolbar" id="toolbar">
+      <input class="field filter" type="search" id="file-filter" aria-label="Filter this folder by name" placeholder="Filter this folder" autocomplete="off">
+      <select class="field" id="sort" aria-label="Sort files">
+        <option value="name">Name</option>
+        <option value="newest">Newest first</option>
+        <option value="largest">Largest first</option>
+      </select>
+      <button type="button" class="btn" id="view-toggle" aria-pressed="false">Grid</button>
+    </div>
+    <div class="bulk" id="bulk" role="status" aria-live="polite" hidden>
+      <span id="bulk-count"></span>
+      <button type="button" class="btn btn-sm" id="bulk-download">Download</button>
+      <button type="button" class="btn btn-sm btn-danger" id="bulk-delete">Delete</button>
+      <button type="button" class="btn btn-sm btn-ghost" id="bulk-clear">Clear</button>
+    </div>
     <p class="filter-none" id="filter-none" hidden>No file here matches that. Clear the box to see them all.</p>
     <p class="status" id="status" role="status" aria-live="polite"></p>
+    <ul class="uploads" id="uploads" aria-label="Uploads" hidden></ul>
 
     <ul class="list" id="file-list" aria-labelledby="file-list-heading">
       <li class="row is-shell" id="file-list-shell" aria-hidden="true">
@@ -542,7 +687,7 @@ dialog.viewer::backdrop {
         <div class="actions"><span></span></div>
       </li>
     </ul>
-    <button type="button" id="more" hidden>More</button>
+    <button type="button" id="more" hidden class="btn">More</button>
     <div class="empty" id="empty" hidden>
       <p class="what" id="empty-what"></p>
       <p class="next" id="empty-next"></p>
@@ -552,16 +697,18 @@ dialog.viewer::backdrop {
     </div>
   </main>
 
+  <div class="drop-hint" id="drop-hint" aria-hidden="true">Drop files to upload them here</div>
+
   <div class="upload">
     <input type="file" id="file-input" multiple hidden>
-    <button type="button" id="upload-button">Upload</button>
+    <button type="button" id="upload-button" class="btn">Upload</button>
   </div>
 
   <dialog class="viewer" id="viewer" aria-labelledby="viewer-title">
     <div class="viewer-head">
       <h2 class="title" id="viewer-title">File</h2>
       <a id="viewer-download" href="/api/files/download" download>Download</a>
-      <button type="button" id="viewer-close">Close</button>
+      <button type="button" id="viewer-close" class="btn">Close</button>
     </div>
     <div class="viewer-body" id="viewer-body"></div>
   </dialog>
@@ -577,7 +724,11 @@ const RESTORE_ENDPOINT = "/api/files/restore";
 const VERSIONS_ENDPOINT = "/api/files/versions";
 const RESTORE_VERSION_ENDPOINT = "/api/files/restore-version";
 const REWIND_ENDPOINT = "/api/rewind";
-const _RECENTLY_DELETED_DAYS = 30;
+// The window is src/files.js's number and nothing in this script reads it:
+// test/files.test.mjs reads it out of this line so the page cannot drift
+// from the module. The underscore says the reader is the test, not the
+// script, so a linter leaves the line alone (drive#92).
+const _RECENTLY_DELETED_DAYS = 3;
 const PAGE_LINE = "Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.";
 const REWIND_PAGE_LINE =
   "Every branch an agent worked in, with the files it changed. Rewind puts your files back exactly as they were.";
@@ -605,7 +756,7 @@ const EMPTY_STATES = {
   },
   trash: {
     what: "Nothing has been deleted.",
-    next: "Files you delete land here for 30 days, ready to put back.",
+    next: "Files you delete land here for 3 days, ready to put back.",
   },
 };
 
@@ -614,7 +765,7 @@ const UPLOAD_COPY = {
   done: "Uploaded.",
 };
 const DELETE_COPY = {
-  confirm: "Delete this file? You can restore it from Recently deleted for 30 days.",
+  confirm: "Delete this file? You can restore it from Recently deleted for 3 days.",
   done: "Moved to Recently deleted.",
 };
 const RESTORE_COPY = { done: "Put back." };
@@ -645,6 +796,8 @@ function whenLabel(iso) {
   return at.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
+// The day a parked file leaves Recently deleted: always a day in the next 3,
+// so it reads as a day and a month in the reader's own calendar.
 function dayLabel(iso) {
   if (!iso) return "";
   const at = new Date(iso);
@@ -731,6 +884,7 @@ function crumbsForParts(parts) {
   crumbs.textContent = "";
   const root = document.createElement("button");
   root.type = "button";
+  root.className = "btn btn-ghost btn-sm";
   root.textContent = "Your drive";
   root.addEventListener("click", () => {
     path = "/";
@@ -752,6 +906,7 @@ function crumbsForParts(parts) {
     } else {
       const link = document.createElement("button");
       link.type = "button";
+      link.className = "btn btn-ghost btn-sm";
       link.textContent = part;
       const target = walked;
       link.addEventListener("click", () => {
@@ -778,6 +933,20 @@ function typeLabel(kind) {
 function rowFor(row) {
   const li = document.createElement("li");
   li.className = "row";
+
+  if (row.kind !== "folder") {
+    const pick = document.createElement("input");
+    pick.type = "checkbox";
+    pick.className = "check pick";
+    pick.setAttribute("aria-label", `Select ${row.name}`);
+    pick.checked = picked.has(row.path);
+    li.dataset.picked = String(pick.checked);
+    pick.addEventListener("change", () => {
+      setPicked(row.path, pick.checked);
+      li.dataset.picked = String(pick.checked);
+    });
+    li.append(pick);
+  }
 
   const icon = document.createElement("span");
   icon.className = "icon";
@@ -822,6 +991,7 @@ function rowFor(row) {
   if (row.kind === "folder") {
     const open = document.createElement("button");
     open.type = "button";
+    open.className = "btn btn-sm";
     open.textContent = "Open";
     open.addEventListener("click", () => {
       path = row.path;
@@ -839,13 +1009,14 @@ function rowFor(row) {
 
     const earlier = document.createElement("button");
     earlier.type = "button";
+    earlier.className = "btn btn-sm";
     earlier.textContent = "Earlier copies";
     earlier.addEventListener("click", () => showEarlierCopies(row, li));
     actions.append(earlier);
 
     const del = document.createElement("button");
     del.type = "button";
-    del.className = "danger";
+    del.className = "btn btn-sm btn-danger danger";
     del.textContent = "Delete";
     del.addEventListener("click", () => removeFile(row));
     actions.append(del);
@@ -860,6 +1031,20 @@ const EARLIER_COPY = {
   restore: "Put this one back",
   restored: "Put back. The copy it replaced is under Earlier copies if you want it again.",
 };
+
+// An account on the 30-day or 1-year history add-on keeps copies longer, and
+// the page's promises say so. The Worker sends the window with every listing;
+// 3 days is the free default the copy above is written for.
+function applyHistoryWindow(days) {
+  if (days !== 30 && days !== 365) {
+    return;
+  }
+  const words = days === 365 ? "1 year" : `${days} days`;
+  const swap = (text) => text.replace("3 days", words);
+  DELETE_COPY.confirm = swap(DELETE_COPY.confirm);
+  EMPTY_STATES.trash.next = swap(EMPTY_STATES.trash.next);
+  EARLIER_COPY.note = EARLIER_COPY.note.replace("for 3 days, free", `for ${words}`);
+}
 
 async function showEarlierCopies(row, li) {
   const open = li.querySelector(".earlier");
@@ -891,6 +1076,7 @@ async function showEarlierCopies(row, li) {
     label.textContent = `Saved ${whenLabel(copy.savedAt)} · replaced ${whenLabel(copy.replacedAt)} · permanently removed ${whenLabel(copy.restorableUntil)}`;
     const put = document.createElement("button");
     put.type = "button";
+    put.className = "btn btn-sm";
     put.textContent = EARLIER_COPY.restore;
     put.addEventListener("click", async () => {
       put.disabled = true;
@@ -927,7 +1113,7 @@ function trashRowFor(row) {
   meta.className = "meta";
   const name = document.createElement("button");
   name.type = "button";
-  name.className = "name";
+  name.className = "btn btn-ghost name";
   name.textContent = row.name;
   name.addEventListener("click", () => {
     viewerTitle.textContent = row.name;
@@ -958,6 +1144,7 @@ function trashRowFor(row) {
   if (row.restorable) {
     const restore = document.createElement("button");
     restore.type = "button";
+    restore.className = "btn btn-sm";
     restore.textContent = row.restoreLabel;
     restore.addEventListener("click", () => restoreFile(row));
     actions.append(restore);
@@ -966,11 +1153,59 @@ function trashRowFor(row) {
   return li;
 }
 
-function appendRows(rows) {
+let loaded = [];
+const picked = new Set();
+const SORTS = {
+  name: (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }),
+  newest: (a, b) => String(b.modifiedIso).localeCompare(String(a.modifiedIso)),
+  largest: (a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0),
+};
+
+function sortedRows(rows) {
+  const compare = SORTS[sortEl?.value] || SORTS.name;
+  const folders = rows.filter((row) => row.kind === "folder").sort(SORTS.name);
+  const files = rows.filter((row) => row.kind !== "folder").sort(compare);
+  return [...folders, ...files];
+}
+
+function drawRows() {
+  list.textContent = "";
+  const rows = view === "deleted" ? loaded : sortedRows(loaded);
   for (const row of rows) {
     list.append(view === "deleted" ? trashRowFor(row) : rowFor(row));
   }
   applyFilter();
+}
+
+const bulkEl = document.getElementById("bulk");
+const bulkCount = document.getElementById("bulk-count");
+function setPicked(rowPath, on) {
+  if (on) {
+    picked.add(rowPath);
+  } else {
+    picked.delete(rowPath);
+  }
+  updateBulk();
+}
+
+function updateBulk() {
+  if (!bulkEl || !bulkCount) {
+    return;
+  }
+  bulkEl.hidden = picked.size === 0;
+  bulkCount.textContent = `${picked.size} selected`;
+}
+
+function clearPicked() {
+  picked.clear();
+  for (const item of list.querySelectorAll(".row")) {
+    item.dataset.picked = "false";
+    const box = item.querySelector(".pick");
+    if (box) {
+      box.checked = false;
+    }
+  }
+  updateBulk();
 }
 
 const filterEl = document.getElementById("file-filter");
@@ -1073,6 +1308,7 @@ function rewindRowFor(preview) {
   if (preview.canRewind) {
     const rewind = document.createElement("button");
     rewind.type = "button";
+    rewind.className = "btn btn-sm";
     rewind.textContent = "Rewind";
     rewind.addEventListener("click", () => rewindThis(preview));
     actions.append(rewind);
@@ -1110,6 +1346,9 @@ async function rewindThis(preview) {
 
 function renderRows(rows) {
   list.textContent = "";
+  picked.clear();
+  updateBulk();
+  loaded = [...rows];
   if (rows.length === 0) {
     const state = view === "deleted" ? EMPTY_STATES.trash : path === "/" ? EMPTY_STATES.root : EMPTY_STATES.folder;
     emptyWhat.textContent = state.what;
@@ -1118,7 +1357,7 @@ function renderRows(rows) {
     return;
   }
   empty.hidden = true;
-  appendRows(rows);
+  drawRows();
 }
 
 async function listPage(cursor) {
@@ -1142,7 +1381,8 @@ async function loadMore() {
   try {
     const payload = await listPage(nextCursor);
     nextCursor = payload.nextCursor ?? null;
-    appendRows(payload.rows || []);
+    loaded = loaded.concat(payload.rows || []);
+    drawRows();
     showMore(nextCursor);
   } catch (error) {
     reportFailure(error);
@@ -1235,6 +1475,7 @@ async function refresh(keepStatus) {
     }
     const payload = await listPage(null);
     showSignedIn();
+    applyHistoryWindow(payload.historyDays);
     nextCursor = view === "folder" ? (payload.nextCursor ?? null) : null;
     renderRows(payload.rows || []);
     showMore(nextCursor);
@@ -1248,32 +1489,102 @@ async function refresh(keepStatus) {
   }
 }
 
+// One file, sent with XMLHttpRequest because fetch cannot report how many bytes
+// have gone up. It answers the same {status, payload} the fetch path read.
+function sendFile(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", url);
+    request.setRequestHeader("content-type", file.type || "application/octet-stream");
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress(event.loaded / event.total);
+    });
+    request.addEventListener("load", () => {
+      let payload = {};
+      try {
+        payload = JSON.parse(request.responseText);
+      } catch (_error) {
+        payload = {};
+      }
+      resolve({ status: request.status, payload });
+    });
+    request.addEventListener("error", () => reject(new Error("The upload did not finish. Try again.")));
+    request.addEventListener("abort", () => reject(new Error("The upload did not finish. Try again.")));
+    request.send(file);
+  });
+}
+
+const uploadList = document.getElementById("uploads");
+
+// A row with a native <progress>, so a screen reader announces the percentage.
+function uploadRow(file) {
+  const item = document.createElement("li");
+  item.dataset.state = "waiting";
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = file.name;
+  const state = document.createElement("span");
+  state.className = "state";
+  state.textContent = "Waiting";
+  const bar = document.createElement("progress");
+  bar.max = 100;
+  bar.value = 0;
+  bar.setAttribute("aria-label", `Uploading ${file.name}`);
+  item.append(name, state, bar);
+  uploadList.append(item);
+  uploadList.hidden = false;
+  return {
+    progress(fraction) {
+      item.dataset.state = "sending";
+      bar.value = Math.round(fraction * 100);
+      state.textContent = `${bar.value}%`;
+    },
+    done() {
+      item.dataset.state = "done";
+      bar.value = 100;
+      state.textContent = "Done";
+    },
+    fail(message) {
+      item.dataset.state = "failed";
+      state.textContent = message;
+      bar.hidden = true;
+    },
+  };
+}
+
 async function uploadFiles(files) {
   if (files.length === 0) {
     say(UPLOAD_COPY.empty, "error");
     return;
   }
   uploadButton.disabled = true;
+  uploadList.replaceChildren();
   say("Uploading…");
   let uploaded = 0;
   try {
     for (const file of files) {
+      const row = uploadRow(file);
       const url = `${UPLOAD_ENDPOINT}?path=${encodeURIComponent(path)}&name=${encodeURIComponent(
         file.name,
       )}`;
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": file.type || "application/octet-stream" },
-        body: file,
-      });
+      let response;
+      try {
+        response = await sendFile(url, file, row.progress);
+      } catch (error) {
+        row.fail("Failed");
+        throw error;
+      }
+      const payload = response.payload;
       if (response.status === 401) {
-        showSignedOut((await response.json().catch(() => ({}))).error);
+        row.fail("Sign in first");
+        showSignedOut(payload.error);
         throw signedOutError();
       }
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
+      if (response.status < 200 || response.status >= 300) {
+        row.fail("Failed");
         throw new Error(payload.error || "The upload did not finish. Try again.");
       }
+      row.done();
       uploaded += 1;
     }
     say(UPLOAD_COPY.done, "done");
@@ -1301,18 +1612,33 @@ async function removeFile(row) {
       body: JSON.stringify({ path: row.path }),
     });
     say(DELETE_COPY.done, "done");
+    offerUndo(row);
     refresh(true);
   } catch (error) {
     reportFailure(error);
   }
 }
 
+// Delete is reversible, so the line that says it happened carries the way
+// back: one press puts the file where it was.
+function offerUndo(row) {
+  const undo = document.createElement("button");
+  undo.type = "button";
+  undo.className = "btn btn-sm undo";
+  undo.textContent = "Undo";
+  undo.addEventListener("click", () => {
+    undo.disabled = true;
+    restoreFile(row);
+  });
+  statusLine.append(" ", undo);
+}
+
 async function restoreFile(row) {
   try {
-    await api(RESTORE_ENDPOINT, {
+    await api(row.versionId ? RESTORE_VERSION_ENDPOINT : RESTORE_ENDPOINT, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: row.path }),
+      body: JSON.stringify(row.versionId ? { path: row.path, versionId: row.versionId } : { path: row.path }),
     });
     say(RESTORE_COPY.done, "done");
     refresh(true);
@@ -1328,6 +1654,95 @@ function setTab() {
   document.getElementById("page-line").textContent =
     view === "rewind" ? REWIND_PAGE_LINE : PAGE_LINE;
 }
+
+const sortEl = document.getElementById("sort");
+if (sortEl) {
+  sortEl.addEventListener("change", () => drawRows());
+}
+
+const viewToggle = document.getElementById("view-toggle");
+function setGrid(on) {
+  list.classList.toggle("is-grid", on);
+  if (viewToggle) {
+    viewToggle.setAttribute("aria-pressed", String(on));
+    viewToggle.textContent = on ? "List" : "Grid";
+  }
+  try {
+    localStorage.setItem("files-grid", on ? "1" : "0");
+  } catch (_error) {}
+}
+if (viewToggle) {
+  viewToggle.addEventListener("click", () => setGrid(!list.classList.contains("is-grid")));
+}
+try {
+  setGrid(localStorage.getItem("files-grid") === "1");
+} catch (_error) {}
+
+async function deleteSelected() {
+  const rows = loaded.filter((row) => picked.has(row.path));
+  if (rows.length === 0) {
+    return;
+  }
+  const gone = [];
+  try {
+    for (const row of rows) {
+      await api(DELETE_ENDPOINT, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: row.path }),
+      });
+      gone.push(row);
+    }
+  } catch (error) {
+    reportFailure(error);
+  }
+  if (gone.length > 0) {
+    say(gone.length === 1 ? DELETE_COPY.done : `Deleted ${gone.length} files. They stay in Recently deleted.`, "done");
+    const undo = document.createElement("button");
+    undo.type = "button";
+    undo.className = "btn btn-sm undo";
+    undo.textContent = "Undo";
+    undo.addEventListener("click", async () => {
+      undo.disabled = true;
+      for (const row of gone) {
+        await restoreFile(row);
+      }
+    });
+    statusLine.append(" ", undo);
+  }
+  picked.clear();
+  refresh(true);
+}
+
+document.getElementById("bulk-delete")?.addEventListener("click", deleteSelected);
+document.getElementById("bulk-clear")?.addEventListener("click", clearPicked);
+document.getElementById("bulk-download")?.addEventListener("click", () => {
+  for (const row of loaded.filter((item) => picked.has(item.path))) {
+    const link = document.createElement("a");
+    link.href = `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
+    link.download = row.name;
+    link.click();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  const target = event.target;
+  const typing = target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) && target.type !== "checkbox";
+  if (typing || event.metaKey || event.ctrlKey || event.altKey || viewer.open) {
+    return;
+  }
+  if (event.key === "/") {
+    event.preventDefault();
+    filterEl?.focus();
+  } else if (event.key === "u" || event.key === "U") {
+    fileInput.click();
+  } else if (event.key === "Delete" && picked.size > 0) {
+    event.preventDefault();
+    deleteSelected();
+  } else if (event.key === "Escape") {
+    clearPicked();
+  }
+});
 
 tabFiles.addEventListener("click", () => {
   view = "folder";
@@ -1348,6 +1763,35 @@ tabRewind.addEventListener("click", () => {
 });
 
 uploadButton.addEventListener("click", () => fileInput.click());
+
+// Drop anywhere on the page. A drag counter, because dragenter and dragleave
+// fire for every child the pointer crosses; only a drag that carries files
+// counts, so dragging text around the page does nothing.
+let dragDepth = 0;
+function carriesFiles(event) {
+  return event.dataTransfer && [...event.dataTransfer.types].includes("Files");
+}
+document.addEventListener("dragenter", (event) => {
+  if (!carriesFiles(event)) return;
+  event.preventDefault();
+  dragDepth += 1;
+  document.body.classList.add("is-dragging");
+});
+document.addEventListener("dragover", (event) => {
+  if (carriesFiles(event)) event.preventDefault();
+});
+document.addEventListener("dragleave", (event) => {
+  if (!carriesFiles(event)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) document.body.classList.remove("is-dragging");
+});
+document.addEventListener("drop", (event) => {
+  if (!carriesFiles(event)) return;
+  event.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove("is-dragging");
+  if (!uploadButton.disabled) uploadFiles([...event.dataTransfer.files]);
+});
 fileInput.addEventListener("change", () => uploadFiles([...fileInput.files]));
 
 const SIGNIN_ENDPOINT = "/api/signin";

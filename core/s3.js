@@ -158,7 +158,7 @@ export const HIDDEN_VERSION_DAYS = 3;
  * @returns {Promise<{versioning: S3Response, lifecycle: S3Response, notification: S3Response|null, encryption: S3Response|null}>}
  */
 export async function provisionBucket(client, config) {
-  const { bucket, notificationQueueArn, hiddenVersionDays = HIDDEN_VERSION_DAYS } = config;
+  const { bucket, notificationQueueArn } = config;
 
   const created = await client.send("PUT", { bucket });
   if (created.status !== 200 && tagValue(created.text, "Code") !== "BucketAlreadyOwnedByYou") {
@@ -174,6 +174,13 @@ export async function provisionBucket(client, config) {
       body: "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
     }),
   );
+
+  let hiddenVersionDays = config.hiddenVersionDays ?? HIDDEN_VERSION_DAYS;
+  if (config.hiddenVersionDays === undefined) {
+    const current = await client.send("GET", { bucket, query: { lifecycle: "" } });
+    const days = current.status === 200 ? Number(tagValue(current.text, "NoncurrentDays")) : 0;
+    if (Number.isFinite(days) && days > hiddenVersionDays) hiddenVersionDays = days;
+  }
 
   const lifecycleBody =
     `<LifecycleConfiguration><Rule><ID>hidden-versions</ID><Status>Enabled</Status>` +

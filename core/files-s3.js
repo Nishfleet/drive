@@ -576,6 +576,7 @@ export function fileRows(entries) {
       path: entry.path || "",
       kind: folder ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
       sizeLabel: folder ? "" : formatBytes(entry.size || 0),
+      sizeBytes: folder ? 0 : entry.size || 0,
       modifiedIso: entry.modified ? isoStamp(entry.modified, `the file ${entry.name}`) : "",
     };
   };
@@ -588,30 +589,28 @@ export function fileRows(entries) {
  * window closes are both UTC words if this Worker writes them (drive#559).
  * @param {FileEntry[]} entries
  * @param {number} [now]
+ * @param {number} [days] the account's window
  */
-export function trashRows(entries, now = Date.now()) {
+export function trashRows(entries, now = Date.now(), days = RECENTLY_DELETED_DAYS) {
   return entries
     .map((entry) => {
       const parsed = parseTrashName(entry.name);
       if (!parsed) {
         return null;
       }
-      const restorable = isRestorable(parsed.deletedAt, now);
+      const restorable = isRestorable(parsed.deletedAt, now, days);
       return {
         name: parsed.path.split("/").pop() || "",
         path: parsed.path,
         deletedAt: parsed.deletedAt,
         sizeLabel: formatBytes(entry.size || 0),
         deletedIso: isoStamp(parsed.deletedAt, `the file ${parsed.path}`),
-        untilIso: isoStamp(
-          parsed.deletedAt + RECENTLY_DELETED_DAYS * DAY_MS,
-          `the file ${parsed.path}`,
-        ),
+        untilIso: isoStamp(parsed.deletedAt + days * DAY_MS, `the file ${parsed.path}`),
         restorable,
-        restoreLabel: restorable ? "Restore" : "Past the 30 days",
+        restoreLabel: restorable ? "Restore" : `Past the ${days} days`,
         goneLabel: restorable
           ? ""
-          : "This one has been gone 30 days. Restoring it is not possible.",
+          : `This one has been gone ${days} days. Restoring it is not possible.`,
       };
     })
     .filter(Boolean)

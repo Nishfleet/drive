@@ -16,6 +16,8 @@ const USAGE_LINK = Object.freeze({
   url: USAGE_URL,
 });
 
+const TOP_UP_LINK = Object.freeze({ label: "Add to your balance", url: USAGE_URL });
+
 export const FROM_NAME = "Storagebun";
 
 export const REPLY_TO_LOCAL = "support";
@@ -306,13 +308,16 @@ function accountClosedTemplate(data = {}) {
     "",
     `They will be deleted in ${graceDays} days, on ${purgeOn}. We will email you again ${left} days before they go.`,
     "",
-    "You can cancel until then: open the usage page, type your email, and choose Cancel closing.",
+    "You can cancel until then: open the usage page, type your email, and choose Cancel closing. Your files stay; you make new keys for your computers.",
+    "",
+    "If you want the files, they are already in your drive folder on your computer. Copy that folder somewhere safe before the day above.",
   ];
   const html_lines = [
     "<p>Your Storagebun account is closed.</p>",
     "<p>Every key was revoked at once. Your files stay for now.</p>",
     `<p>They will be deleted in ${graceDays} days, on ${purgeOn}. We will email you again ${left} days before they go.</p>`,
-    "<p>You can cancel until then: open the usage page, type your email, and choose Cancel closing.</p>",
+    "<p>You can cancel until then: open the usage page, type your email, and choose Cancel closing. Your files stay; you make new keys for your computers.</p>",
+    "<p>If you want the files, they are already in your drive folder on your computer. Copy that folder somewhere safe before the day above.</p>",
   ];
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, link: USAGE_LINK });
 }
@@ -677,6 +682,58 @@ function firstFileNudgeTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function runwayNoticeTemplate(data = {}) {
+  const runwayLine = requireText(data.runwayLine, "runwayLine");
+  const subject = "About a month of storage left on your balance";
+  const lines = [
+    runwayLine,
+    "",
+    "Add to your balance when it suits you. If it runs out, uploads pause, downloads keep working and nothing is deleted.",
+  ];
+  const html_lines = [
+    `<p>${escapeHtml(runwayLine)}</p>`,
+    "<p>Add to your balance when it suits you. If it runs out, uploads pause, downloads keep working and nothing is deleted.</p>",
+  ];
+  const unsubscribe =
+    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+      ? data.unsubscribeUrl
+      : null;
+  return finish({
+    subject,
+    lines,
+    html_lines,
+    replyTo: data.replyTo,
+    link: TOP_UP_LINK,
+    unsubscribe,
+  });
+}
+
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function billDroppedTemplate(data = {}) {
+  const fromLine = requireText(data.fromLine, "fromLine");
+  const toLine = requireText(data.toLine, "toLine");
+  const subject = `Your monthly bill just dropped to ${toLine}`;
+  const lines = [
+    `The biggest size your drive reached in the last 30 days has aged out, so your monthly bill went from ${fromLine} to ${toLine}.`,
+    "",
+    "Nothing to do. You pay for the biggest size in the last 30 days, so a big delete shows up in the bill once that peak is 30 days old.",
+  ];
+  const html_lines = [
+    `<p>The biggest size your drive reached in the last 30 days has aged out, so your monthly bill went from ${escapeHtml(fromLine)} to ${escapeHtml(toLine)}.</p>`,
+    "<p>Nothing to do. You pay for the biggest size in the last 30 days, so a big delete shows up in the bill once that peak is 30 days old.</p>",
+  ];
+  const unsubscribe =
+    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+      ? data.unsubscribeUrl
+      : null;
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
+}
+
 export const EMAIL_KINDS = Object.freeze([
   "welcome",
   "cap-warning",
@@ -693,6 +750,8 @@ export const EMAIL_KINDS = Object.freeze([
   "upload-arrivals",
   "security-event",
   "first-file-nudge",
+  "runway-notice",
+  "bill-dropped",
 ]);
 
 /**
@@ -714,6 +773,8 @@ const TEMPLATES = Object.freeze({
   "upload-arrivals": uploadArrivalsTemplate,
   "security-event": securityEventTemplate,
   "first-file-nudge": firstFileNudgeTemplate,
+  "runway-notice": runwayNoticeTemplate,
+  "bill-dropped": billDroppedTemplate,
 });
 
 /**
