@@ -1,31 +1,3 @@
-// The third half of drive issue #831: the signed receiver route. A bucket that
-// can sign what it posts gets a second door into the same intake the token door
-// (`POST /api/storage-events`, core/meter.js handleStorageEventRequest) opens,
-// and that door is what makes the meter and the index current in minutes
-// instead of at the night's walk (out-of-band work, separately proven in
-// test/nightly-out-of-band.test.mjs).
-//
-// What the route must do, as the issue puts it:
-//
-//   - "Standard Webhooks style HMAC check (same pattern as core/topup.js)" -
-//     signed here with the same helper core/topup.js exports, so this test and
-//     the production sender compute the identical HMAC over the raw body.
-//   - "idempotent on the event id" - the same event delivered twice stores one
-//     version row and enqueues one index job; the second delivery is a repeat
-//     the dedup eats, which is what stops a bucket's retry from doubling a
-//     bill.
-//   - "enqueues a single-object reindex and meter touch" - one queue message
-//     per newly stored event, carrying the object's own drive path, checked by
-//     src/meter-jobs.js's validator the same way its consumer checks it.
-//   - "Off with 503 while its secret binding is unset" - and only then: a
-//     deployment with no STORAGE_EVENTS_WEBHOOK_SECRET has no live key to
-//     point a bucket rule at, so nothing is accepted until there is one.
-//
-// No live key and no bucket: the fixture below is a bare notification record
-// (the shape MinIO's own webhook bubbles, measured in #60's stand-in work), the
-// database is this repo's SQLite adapter with every real migration applied, and
-// the queue is an array.
-
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -129,15 +101,12 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
       deduped: 0,
       enqueued: 1,
     });
-    // The meter's own rows, written by the same code the token door uses.
     const versions = await versionRows();
     assert.equal(versions.length, 1);
     assert.equal(versions[0].account_id, ACCOUNT_ID);
     assert.equal(versions[0].path, `u/${ACCOUNT_ID}/notes.md`);
     assert.equal(versions[0].size_bytes, 4096);
     assert.equal((await seenRows()).length, 1);
-    // The index job: one message, the object's own drive path, checked by the
-    // consumer's own validator before it left this route.
     assert.equal(sent.length, 1);
     const message = /** @type {Record<string, any>} */ (sent[0].body);
     assert.equal(message.kind, METER_JOB_KINDS.object);
@@ -147,9 +116,6 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
   });
 
   await t.test("the same event again is a repeat that enqueues nothing", async () => {
-    // One event, delivered twice under two different delivery ids. The
-    // idempotency key is the event's own (core/meter.js validateEvent), so a
-    // bucket's retry is a repeat whatever id it reused.
     const same = fixture({ versionId: "version-repeat", eventTime: "2026-10-07T05:00:00.000Z" });
     const body = JSON.stringify(same);
     const before = await versionRows();
@@ -187,8 +153,6 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
       sent.slice(2).map((message) => /** @type {Record<string, any>} */ (message.body).path),
       ["/notes.md", "/notes.md"],
     );
-    // And a delete record, which names no size and must still be accepted: a
-    // row the object no longer holds is what the index job drops.
     const removed = fixture({ eventName: "s3:ObjectRemoved:Delete", size: undefined });
     const deleted = await handleSignedStorageEventRequest(
       await signedPost({
@@ -208,12 +172,6 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
   });
 
   await t.test("an event from another account's bucket is refused", async () => {
-    // The attack this closes: core/meter.js reads the account out of
-    // the key's folder, so an event over u/<someone-else>/... names
-    // that someone else and every key-side check passes. The bucket
-    // is the one field the attacker's store cannot fake - the rule
-    // that signs it runs on the account's own bucket (core/keyprovider.js
-    // bucketForAccount).
     const before = await versionRows();
     const sentBefore = sent.length;
     const stranger = fixture({ keyName: "u/someone-else/notes.md" });
@@ -232,8 +190,6 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
   });
 
   await t.test("an event that names no bucket is refused", async () => {
-    // Fails closed: a record with no bucket has not proven where it
-    // came from, and this door is the only index writer.
     const before = await versionRows();
     const bare = fixture({ bucket: undefined });
     const response = await handleSignedStorageEventRequest(
@@ -288,8 +244,6 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
     for (const one of cases) {
       let request = await one.request;
       if (one.body) {
-        // Sign one body, deliver another: the raw bytes no longer match the
-        // signature, which is the case the HMAC exists for.
         request = new Request(request, { body: one.body });
       }
       const response = await handleSignedStorageEventRequest(request, deps);
@@ -324,8 +278,6 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
         "the sentence names what was missing",
       );
 
-      // One good record and one that names no account folder: the good one is
-      // stored and its job is enqueued, and the answer names what was refused.
       const good = fixture();
       const bad = { eventName: "s3:ObjectCreated:Put", eventTime: good.eventTime, size: 8 };
       const before = await versionRows();
@@ -374,16 +326,12 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
       assert.equal(closed.status, 503, `secret ${JSON.stringify(secret)}`);
       assert.deepEqual(await readJson(closed), CLOSED);
     }
-    // A secret that is not a `whsec_` base64 value is the operator's mistake,
-    // and it is refused rather than treated as a caller's wrong signature.
     const malformed = await handleSignedStorageEventRequest(request, {
       ...deps,
       secret: "not-a-real-secret",
     });
     assert.equal(malformed.status, 503);
     assert.deepEqual(await readJson(malformed), CLOSED);
-    // And the two bindings a metered event needs: with no database or no queue
-    // there is nothing to meter into, so nothing is accepted.
     const noDb = await handleSignedStorageEventRequest(request, {
       ...deps,
       db: /** @type {any} */ (undefined),
@@ -414,8 +362,6 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
       stored: 1,
       deduped: 0,
     });
-    // The event is stored: a redelivery is a repeat that stores nothing, and
-    // the night's walk still corrects the row meanwhile.
     const rows = await versionRows();
     assert.equal(rows.length, before.length + 1, "the event is stored even so");
     const retry = await handleSignedStorageEventRequest(
@@ -426,19 +372,10 @@ test("a signed storage event is metered and indexed (drive#831)", async (t) => {
   });
 
   await t.test("the record normaliser this route shares is the token door's", async () => {
-    // The mapping from a provider's field names into the intake's is one
-    // function (core/meter.js notificationRecord) and this route reads a
-    // provider's own names through it: an S3 notification form-encodes its key,
-    // and `u%2F<acct>%2Freport.txt` is the account's own file, not a different
-    // file whose name has percent signs in it.
     const encoded = notificationRecord({
       eventName: "s3:ObjectCreated:Put",
       eventTime: "2026-10-07T04:20:00.000Z",
       key: `u%2F${ACCOUNT_ID}%2Freport.txt`,
-      // The bucket travels with the key in a real S3 notification
-      // (s3.bucket.name), and this route refuses a record that
-      // names no bucket: without one the event's account is a field
-      // the event itself wrote.
       s3: { bucket: { name: bucketForAccount(ACCOUNT_ID) } },
       versionId: "version-encoded",
       size: 99,

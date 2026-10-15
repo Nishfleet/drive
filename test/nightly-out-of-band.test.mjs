@@ -1,41 +1,3 @@
-// Drive issue #831's second bullet: a save made outside the web path is
-// invisible to search and to the meter until something walks the bucket, and
-// the answer is that the nightly walk is that something.
-//
-//   "Saving an object outside the web path (in stand-in storage) shows the
-//    nightly reindex/meter job picks it up."
-//
-// Outside the web path means one thing here: the bytes land in the bucket the
-// account owns, and nothing records them in D1. There is no `withIndex` wrapper
-// around the write (src/search.js), no Worker route, no session - the write is
-// what the mounted drive folder, the S3 API or an agent tool produces, and the
-// only way this deployment learns of it is the walk. The stand-in is the pinned
-// MinIO server (test/minio-standin.mjs), the one issue #60's proofs use: the
-// endpoint, region, bucket and credentials are the environment under the same
-// DRIVE_STANDIN_* names, so the provider this deployment really talks to is
-// this test with different values.
-//
-// Three things are proven on that out-of-band save, and each one is a place the
-// object is or is not:
-//
-//   1. search: the index the nightly reindex rebuilds (reconcileIndex) is empty
-//      until it runs, holds the object's row after, and the search route finds
-//      it. The single-object helper the signed receiver's queue job uses
-//      (reindexObject) writes that same row.
-//   2. the meter's object job: a message of the new `meter.object` kind
-//      (src/meter-jobs.js) corrects that one row - a second out-of-band save
-//      updates it, an out-of-band delete drops it - and no other object's row
-//      moves, which is the line drive issue #566 draws. The nightly
-//      delete-hidden-versions work is #566's and is not touched here.
-//   3. the meter: the same out-of-band save is invisible to usage until the
-//      nightly reconcile bills it, and after it a `usage_minutes` row with
-//      GB-minutes above zero is what the hourly rollup wrote for it.
-//
-// No live credentials are touched: the stand-in is a local container, the
-// database is this repo's SQLite adapter (test/d1-sqlite.mjs) with every real
-// migration applied, and the two event doors are driven in
-// test/storage-events-signed.test.mjs, which needs no storage at all.
-
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -60,9 +22,6 @@ const HOUR_MS = 60 * 60_000;
 const KILOBYTE = 1000;
 const MEGABYTE = 1000 * KILOBYTE;
 
-// One account for the whole proof, made here and never signed in: an account
-// signs in through the Worker in production, but what this proof needs is its
-// bucket, its prefix and its meter row, and none of those come from a session.
 const ACCOUNT = { id: `oob${randomBytes(3).toString("hex")}`, name: "Out of band" };
 const ACCOUNT_ID = ACCOUNT.id;
 
@@ -72,10 +31,6 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
     : await startMinioStandin(
         {
           name: `drive-oob-standin-${process.pid}`,
-          // No notification target is configured, which is the state #831's
-          // runbook section describes: the bucket's event rules are the
-          // orchestrator's step once the production keys exist, and until then
-          // the nightly walk is the only thing that sees a save like this one.
           environment: {
             MINIO_ROOT_USER: ROOT_ACCESS_KEY,
             MINIO_ROOT_PASSWORD: ROOT_SECRET_KEY,
@@ -95,10 +50,6 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
   };
   const root = createS3Client({ endpoint, region: REGION, credentials });
   const bucket = process.env.DRIVE_STANDIN_BUCKET ?? bucketForAccount(ACCOUNT_ID);
-  // The account's own bucket, made the way build step 1 makes every account's
-  // bucket: versioning on, the hidden-version lifecycle rule. Deleting the
-  // versions that rule ages out is #566's work and stays theirs; this proof
-  // provisions a bucket and never runs a purge.
   const provisioned = await provisionBucket(root, { bucket });
   t.diagnostic(
     `standin ${endpoint}, bucket ${bucket} (versioning ${provisioned.versioning.status}) for account ${ACCOUNT_ID}`,
@@ -110,9 +61,6 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
     .bind(ACCOUNT_ID, `oob-${ACCOUNT_ID}@drive.test`, Date.now())
     .run();
 
-  // The bucket's own store, unwrapped: an account's scoped view of it is what
-  // every walk takes, and the unscoped store is what a save outside this
-  // deployment goes through, because the prefix is the Worker's business.
   const raw = createS3Store({ endpoint, bucket, region: REGION, credentials });
   const mine = scopeStore(raw, ACCOUNT);
 
@@ -140,9 +88,6 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
    * @param {string|Uint8Array} bytes
    */
   const saveOutsideTheWeb = (path, bytes) => {
-    // A stream write through the S3 API carries its Content-Length or carries
-    // nothing: the store refuses a length-less stream, because a signed PUT
-    // with no size to send is one an endpoint answers 411 to (core/files.js).
     const body = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
     return mine.write(
       path,
@@ -163,9 +108,6 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
   });
 
   await t.test("the nightly reindex picks the save up, and the search route finds it", async () => {
-    // The nightly reindex's own work, run the way the scheduled handler runs it:
-    // one account, the account's own scoped store, nothing that tells it what
-    // the bucket holds.
     const walked = await reconcileIndex(db, mine, ACCOUNT);
     assert.equal(walked.indexed, 2, "the walk indexes every object under the account");
     assert.equal(walked.folders, 2, "the folders the saves made are counted too");
@@ -182,7 +124,6 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
       rows.some((row) => row.path === "/photos/beach.jpg"),
       "the second save is indexed in the same run",
     );
-    // And the route, not just the function: a search for the save finds it.
     const found = await handleSearchRequest(
       new Request("https://drive.test/api/search/?q=report"),
       db,
@@ -198,15 +139,11 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
   });
 
   await t.test("the signed receiver's single-object job writes that same row", async () => {
-    // The one-object path the signed intake enqueues (#831), on the same bucket
-    // and the same row the nightly walk above left behind.
     const row = await reindexObject(db, mine, ACCOUNT, "/report.txt");
     assert.ok(row.indexed, "a job for the stored object indexes it");
     assert.equal(row.sizeBytes, 120 * KILOBYTE);
     assert.ok(Number.isFinite(row.tookMs));
     assert.equal(await indexedRows().then((r) => r.length), 2, "no second row is written");
-    // A second out-of-band save, the overwrite the mount makes: the row is
-    // corrected, not duplicated.
     await saveOutsideTheWeb("/report.txt", "y".repeat(250 * KILOBYTE));
     assert.equal(
       (await indexedRows()).find((row) => row.path === "/report.txt")?.size_bytes,
@@ -235,18 +172,12 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
   });
 
   await t.test("a `meter.object` message corrects that one row, and no other", async () => {
-    // The message shape the signed intake sends, put through the same
-    // producer the route calls: `sendObjectJobs` runs every body through the
-    // validator the consumer uses, so a malformed message never reaches a
-    // queue and never gets retried five times for a shape that can never be
-    // right.
     /** @type {Array<{body: {kind: string, accountId: string, at: number, path?: string}}>} */
     const sent = [];
     const queue = {
       /** @param {Array<{body: {kind: string, accountId: string, at: number, path?: string}}>} messages */
       sendBatch: async (messages) => sent.push(...messages),
     };
-    // The same call the signed route makes: an account, a path and a time.
     await sendObjectJobs(queue, [
       { accountId: ACCOUNT_ID, at: Date.parse("2026-10-07T09:00:00.000Z"), path: "/report.txt" },
     ]);
@@ -264,8 +195,6 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
     const result = await handlers[METER_JOB_KINDS.object](job);
     assert.equal(result.indexed, true, "the handler reads the store the message names");
     assert.equal(result.sizeBytes, 250 * KILOBYTE, "and reads it through the account's prefix");
-    // A second object, its own job, its own row: then an out-of-band delete of
-    // that object and that object's job again. Only the named object moves.
     await saveOutsideTheWeb("/other.bin", "o".repeat(16 * KILOBYTE));
     const made = await handlers[METER_JOB_KINDS.object]({ ...job, path: "/other.bin" });
     assert.equal(made.indexed, true);
@@ -282,14 +211,8 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
   });
 
   await t.test("the nightly meter bills the out-of-band save", async () => {
-    // The wall clock, not a fixed date: the meter reads the provider's own
-    // version timestamps, so the hours this account's versions are live in are
-    // the hours the wall clock says they are.
     const savedAt = Date.now();
     await saveOutsideTheWeb("/saved-elsewhere.bin", "b".repeat(3 * MEGABYTE));
-    // The meter's nightly reconcile, the job the 04:00 trigger runs for one
-    // account: it reads the provider's own version listing, so a save this
-    // deployment never heard of is a version it bills.
     const reconciled = await reconcileAccount(db, raw, ACCOUNT_ID, savedAt);
     t.diagnostic(
       `reconciler versions=${reconciled.versions} inserted=${reconciled.inserted} hidden=${reconciled.hidden} skipped=${reconciled.skipped}`,
@@ -299,9 +222,6 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
       (await versionRows()).some((row) => row.path === `u/${ACCOUNT_ID}/saved-elsewhere.bin`),
       "the save the meter billed is a row the hourly rollup will turn into minutes",
     );
-    // The hourly rollup is what turns versions into minutes: run the hourly
-    // job's own function from the hour the saves landed in, which is closed
-    // only once the clock has moved past it.
     const rolled = await runMeterCron(db, savedAt + 2 * HOUR_MS);
     const rows = await usageRows();
     assert.ok(rows.length > 0, "the hourly rollup wrote a row for the account");
@@ -309,8 +229,6 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
       rows.every((row) => row.rolled_up_at),
       "every row was written by this rollup, not left pending",
     );
-    // `gb_minutes_live` is the live bytes the rollup charges for the hour:
-    // one object held through it, so a GB-minute figure above zero.
     const billed = rows.reduce((sum, row) => sum + Number(row.gb_minutes_live), 0);
     const held = rows.reduce((sum, row) => sum + Number(row.stored_bytes), 0);
     assert.ok(billed > 0, "the out-of-band save has GB-minutes against it");
@@ -318,9 +236,6 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
     t.diagnostic(
       `hourly run from ${rolled.from} through ${rolled.through}, ${rows.length} usage rows, ${billed} GB-minutes`,
     );
-    // The bill and the index row are two walks: the 03:00 reindex runs
-    // here, over a bucket that holds one more object than it did the first
-    // time, and the search finds what it wrote.
     const walkedAgain = await reconcileIndex(db, mine, ACCOUNT);
     assert.ok(walkedAgain.indexed >= 1, "the second walk indexes the newer save too");
     assert.equal(
@@ -331,9 +246,6 @@ test("a save made outside the web path is picked up by the nightly run (#831)", 
   });
 
   await t.test("the listing the meter reads is the provider's, not this repo's", async () => {
-    // The reconciler's authority: what the bucket lists is what the meter
-    // bills. Read it with the store's own version listing, so the two halves
-    // of the proof are one object at one endpoint.
     const listed = await mine.listVersions("/");
     const saves = listed.filter((version) => version.b2FileId !== "");
     assert.ok(
