@@ -447,6 +447,7 @@ h2 {
     </dl>
     <button class="btn" type="button" id="shortcuts-close">Close</button>
   </dialog>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
   <!-- /shell:app-header -->
 
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
@@ -475,13 +476,14 @@ h2 {
       </div>
     </section>
 
+    <div class="skeleton-block" aria-hidden="true"><p class="skeleton">Loading your usage and balance now, one moment.</p></div>
     <div id="usage-body" hidden>
       <section aria-labelledby="balance-heading">
         <h2 id="balance-heading">Balance</h2>
         <div class="balance-slot">
           <p class="status" id="balance-status" role="status" aria-live="polite" hidden></p>
           <div id="balance-body" hidden>
-            <p class="balance-amount" id="balance-amount"></p>
+            <p class="balance-amount" id="balance-amount" data-count></p>
             <p class="balance-line" id="balance-line" data-state="ok"></p>
             <p class="hint" id="topup-pending" role="status" hidden>Thanks. Your balance goes up here as soon as the payment is confirmed.</p>
             <div class="topup">
@@ -526,7 +528,7 @@ h2 {
         <dl class="readout">
           <div class="pair">
             <dt>Stored GB now</dt>
-            <dd id="stored-now"></dd>
+            <dd id="stored-now" data-count></dd>
           </div>
           <div class="pair">
             <dt>Biggest size in the last 30 days</dt>

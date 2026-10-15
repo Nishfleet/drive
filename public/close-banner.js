@@ -257,4 +257,62 @@
   });
 })();
 
+(() => {
+  if (typeof document === "undefined") return;
+  const host = document.getElementById("toasts");
+  if (host === null) return;
+  const stack = host;
+  const quiet = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  document.addEventListener("toast", (event) => {
+    const text = /** @type {CustomEvent<{text?: string}>} */ (event).detail?.text;
+    if (typeof text !== "string" || text === "") return;
+    const toast = document.createElement("div");
+    toast.className = "toast";
+    toast.textContent = text;
+    stack.appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
+  });
+
+  const DURATION = 240;
+  const NUMBER = /\d[\d,]*(?:\.\d+)?/;
+  /** @type {WeakMap<HTMLElement, string>} */
+  const written = new WeakMap();
+
+  /** @param {HTMLElement} el */
+  function countUp(el) {
+    const text = el.textContent ?? "";
+    const found = NUMBER.exec(text);
+    if (found === null || quiet()) return;
+    const target = Number(found[0].replaceAll(",", ""));
+    if (!(target > 0)) return;
+    const decimals = found[0].split(".")[1]?.length ?? 0;
+    const grouped = found[0].includes(",");
+    const start = performance.now();
+    /** @param {number} now */
+    const step = (now) => {
+      const done = Math.max(0, Math.min(1, (now - start) / DURATION));
+      const value = (target * done).toFixed(decimals);
+      const shown = grouped
+        ? Number(value).toLocaleString("en-US", { minimumFractionDigits: decimals })
+        : value;
+      const next = text.replace(found[0], shown);
+      written.set(el, next);
+      el.textContent = next;
+      if (done < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  const watcher = new MutationObserver((records) => {
+    for (const record of records) {
+      const el = record.target instanceof HTMLElement ? record.target : record.target.parentElement;
+      if (el?.dataset.count !== undefined && el.textContent !== written.get(el)) countUp(el);
+    }
+  });
+  for (const el of document.querySelectorAll("[data-count]")) {
+    watcher.observe(el, { childList: true, characterData: true, subtree: true });
+  }
+})();
+
 export {};

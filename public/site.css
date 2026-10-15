@@ -881,3 +881,64 @@ dialog.palette::backdrop {
     display: none;
   }
 }
+@keyframes page-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+body:has(.app-side) main {
+  animation: page-in 160ms ease-out;
+}
+
+.btn:active {
+  opacity: 0.85;
+}
+
+.skeleton {
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: transparent;
+  user-select: none;
+}
+
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 30;
+  display: grid;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 32px));
+}
+
+.toast {
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 14px;
+  font-weight: 600;
+  animation: page-in 160ms ease-out;
+}
+
+@media (max-width: 760px) {
+  .toasts {
+    bottom: 76px;
+  }
+}
+
+.skeleton-block:has(~ #usage-body:not([hidden])),
+.skeleton-block:has(~ .status:not([hidden])) {
+  display: none;
+}
+
+.skeleton-block .skeleton {
+  display: block;
+  height: 96px;
+  margin: 16px 0;
+}
