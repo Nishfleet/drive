@@ -9,6 +9,19 @@
   <link rel="manifest" href="/site.webmanifest">
   <meta name="description" content="Your balance, top-ups and receipts, and the biggest size your drive reached in the last 30 days, which is what the bill follows.">
   <meta name="robots" content="noindex">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://storagebun.com/billing">
+  <meta property="og:site_name" content="Storagebun">
+  <meta property="og:title" content="Storagebun — billing">
+  <meta property="og:description" content="Your balance, top-ups and receipts, and the biggest size your drive reached in the last 30 days, which is what the bill follows.">
+  <meta property="og:image" content="https://storagebun.com/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Storagebun, a Finder drive for people and their agents">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Storagebun — billing">
+  <meta name="twitter:description" content="Your balance, top-ups and receipts, and the biggest size your drive reached in the last 30 days, which is what the bill follows.">
+  <meta name="twitter:image" content="https://storagebun.com/og.png">
   <link rel="stylesheet" href="/site.css">
   <style>
 body { padding: 0 clamp(20px, 5vw, 72px) 72px; }
@@ -26,10 +39,7 @@ h1 {
   line-height: 1.05;
 }
 
-.lede {
-  max-width: 60ch;
-  color: var(--ink-soft);
-}
+.lede { max-width: 60ch; color: var(--ink-soft); }
 
 section { padding: clamp(28px, 5vh, 48px) 0 0; }
 
@@ -64,10 +74,7 @@ h2 {
   font-size: 15px;
 }
 
-.readout {
-  margin: 18px 0 0;
-  border-top: 1px solid var(--rule);
-}
+.readout { margin: 18px 0 0; border-top: 1px solid var(--rule); }
 
 .pair {
   display: flex;
@@ -95,15 +102,9 @@ h2 {
 
 .balance-slot { display: grid; }
 
-.balance-slot > * {
-  grid-area: 1 / 1;
-  min-width: 0;
-}
+.balance-slot > * { grid-area: 1 / 1; min-width: 0; }
 
-.balance-slot > [hidden] {
-  display: block;
-  visibility: hidden;
-}
+.balance-slot > [hidden] { display: block; visibility: hidden; }
 
 .balance-slot > .status { align-self: start; }
 
@@ -228,10 +229,7 @@ h2 {
   vector-effect: non-scaling-stroke;
 }
 
-#peak-billed {
-  fill: var(--accent);
-  fill-opacity: 0.12;
-}
+#peak-billed { fill: var(--accent); fill-opacity: 0.12; }
 
 #peak-mark,
 #peak-cap-mark {
