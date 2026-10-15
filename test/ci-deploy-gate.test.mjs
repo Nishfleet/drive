@@ -39,7 +39,7 @@ test("the go job still runs the two-device conflict proof", () => {
   const body = next ? rest.slice(0, 1 + next.index) : rest;
   assert.match(
     body,
-    /- name: Two-device conflict proof\n {8}run: go test \.\/cmd\/drive\/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s\n/,
+    /- name: Two-device conflict proof\n {8}run: \|\n(?: {10}.*\n)*? {10}go test \.\/cmd\/drive\/ -run TestTwoDevicesKeepBothSaves -v -count=1 -timeout 300s/,
   );
   const step = body.slice(body.indexOf("- name: Two-device conflict proof"));
   const stepEnd = step.search(/\n {6}- /);
