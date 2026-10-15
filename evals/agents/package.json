@@ -6,6 +6,6 @@
   "type": "module",
   "devDependencies": {
     "@libsql/linux-x64-gnu": "0.5.29",
-    "promptfoo": "0.123.1"
+    "promptfoo": "0.124.0"
   }
 }

@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// The api Worker's own answer for GET /v1/export, exactly the shape
-// workers/api/src/export-routes.js returns.
 const exportBody = `{
   "generatedAt": "2026-09-30T12:00:00.000Z",
   "account": {"id": "acct_1", "name": "Nish", "email": "nish@example.com"},
@@ -34,9 +32,6 @@ const exportBody = `{
   "next": {"fileCursor": null, "versionCursor": null}
 }`
 
-// exportServer stands in for the api Worker: it answers the one route with
-// `body`, and records the Authorization header so a test can prove the export
-// was requested with the device token the account gate needs.
 func exportServer(t *testing.T, body string) (*httptest.Server, *string) {
 	t.Helper()
 	var seen string
@@ -57,8 +52,6 @@ func exportServer(t *testing.T, body string) (*httptest.Server, *string) {
 	return server, &seen
 }
 
-// exportHome writes the credentials `drive init` leaves, so runExport finds
-// the api Worker and the device token the export is gated on.
 func exportHome(t *testing.T, apiBase, token string) string {
 	t.Helper()
 	home := t.TempDir()
@@ -105,8 +98,6 @@ func TestExportWritesTheAccountDataToAFile(t *testing.T) {
 	if len(document.Versions) != 1 || document.Versions[0].B2FileID != "f1" {
 		t.Errorf("export versions = %+v, want the one version", document.Versions)
 	}
-	// A key that has never been seen is null, not an epoch instant: the saved
-	// document must not claim the key was last used in 1970.
 	if document.Keys[0].LastSeenAt != nil {
 		t.Errorf("lastSeenAt = %v, want null for a key never seen", *document.Keys[0].LastSeenAt)
 	}
@@ -129,7 +120,7 @@ func TestExportWritesTheFileModeCredentialsGet(t *testing.T) {
 }
 
 func TestExportRefusesAMachineThatIsNotSignedIn(t *testing.T) {
-	home := t.TempDir() // no credentials file at all
+	home := t.TempDir()
 	err := runExport([]string{"--home", home})
 	if err == nil {
 		t.Fatal("export on an unsigned-in machine must fail, not write an empty document")
@@ -140,8 +131,6 @@ func TestExportRefusesAMachineThatIsNotSignedIn(t *testing.T) {
 }
 
 func TestExportReportsTheWorkersRefusalRatherThanAnEmptyDocument(t *testing.T) {
-	// A 401 from the gate: the export must carry the Worker's own sentence,
-	// never an empty document that reads as "you have no files".
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -167,11 +156,6 @@ func TestExportRejectsAnUnexpectedArgument(t *testing.T) {
 }
 
 func TestExportWalksEveryPageAndMergesThem(t *testing.T) {
-	// The route is a bounded page, so a drive larger than one page is walked
-	// cursor by cursor here and merged into the one document the person saves.
-	// Two pages: the first reports `complete: false` and a cursor, the second
-	// completes. The saved document must carry both pages' files, and the
-	// keys exactly once (the route reads the whole key list on every page).
 	pages := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json; charset=utf-8")
@@ -217,13 +201,8 @@ func TestExportWalksEveryPageAndMergesThem(t *testing.T) {
 }
 
 func TestExportStopsWhenAPageNeverCompletes(t *testing.T) {
-	// A server that always reports `complete: false` with a moving cursor
-	// would otherwise loop forever holding a hung terminal. The walk is
-	// bounded, so it gives up with a named error and writes nothing.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json; charset=utf-8")
-		// A cursor that moves by one each time, so the loop's own page bound
-		// is what stops it.
 		n := r.URL.Query().Get("n")
 		step := 0
 		fmt.Sscanf(n, "%d", &step)

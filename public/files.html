@@ -5,17 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Storagebun — your files</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
   <meta name="description" content="Your drive in any browser or on your phone: browse, preview, download, upload, and put anything back from Recently deleted.">
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="/site.css">
   <style>
-/* Web Files page (drive issue #31). The palette, the reset and the page chrome
-   come from the shared site stylesheet (drive #71); what is left here is this
-   page's mobile-first shell and its own tap target. Mobile first: every action
-   is a 44px tap target, the list is one column at 360px, and the viewer fills
-   the screen on a phone. class="drive" on <html> aliases the shared tokens
-   onto the home-page look, calmer than the public pages (docs/design/DESIGN.md). */
-
 :root {
   --tap: 44px;
 }
@@ -28,61 +23,6 @@ body {
   z-index: 30;
 }
 
-/* The page bar: the site's own header and menu (public/site.css's .masthead,
-   the one the usage, first-run and sign-in pages carry) with this page's
-   folder path under it. Before drive#425 the page had a second top bar of its
-   own — a wordmark, a static "Your drive" and no menu at all — so a reader who
-   arrived here could not reach Pricing or Usage from here. The bar around the
-   header is still this page's own: it is what keeps the header on screen while
-   a long listing scrolls past. */
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: var(--paper);
-  border-bottom: 1px solid var(--rule);
-  display: flex;
-  flex-direction: column;
-}
-
-/* Below the desktop breakpoint the shared header wraps to several lines — the
-   wordmark, the tagline and five links — so the bar is not stuck to the top on
-   a phone. It scrolls away with the page and leaves the list the screen. */
-@media (max-width: 719px) {
-  .topbar {
-    position: static;
-  }
-}
-
-/* The bar and the tab strip line up with the 900px column main renders the
-   list in, so a header link sits over the first letter of the first row rather
-   than 40px to its left, and a row scrolling under them never shows past the
-   edge. The column is written once, here, so the header, the strip and the
-   list cannot drift apart. */
-.topbar,
-.tabs {
-  padding-left: calc(max(0px, (100% - 900px) / 2) + clamp(14px, 4vw, 40px));
-  padding-right: calc(max(0px, (100% - 900px) / 2) + clamp(14px, 4vw, 40px));
-}
-
-/* The shared header, at the height of a page you work in rather than one you
-   read: the site's own 28px/20px padding is a reading page's. This is the
-   page's own padding around the header and its own bottom rule; the header
-   itself — how it is laid out, its links, its tagline, how it marks the page
-   you are on and the size of the wordmark — is public/site.css's, so this page
-   cannot drift from it again the way it did before drive#425. */
-.masthead {
-  margin: 0;
-  padding: 14px 0 12px;
-  border-bottom: 0;
-}
-
-.wordmark {
-  font-size: 24px;
-}
-
-/* The folder path is this page's own row under the shared header: where you
-   are in the drive, which no other page's header carries. */
 .crumbs {
   display: flex;
   flex-wrap: wrap;
@@ -118,10 +58,6 @@ body {
   white-space: nowrap;
 }
 
-/* The view strip (drive#425), roomy on purpose: it sat 10px under the header
-   with a 4px gap between the tabs and 10px inside each one, so it read as the
-   bottom of the header rather than as the switch between Files and Recently
-   deleted. */
 .tabs {
   display: flex;
   gap: 8px;
@@ -150,14 +86,51 @@ body {
 }
 
 main {
-  padding: 0 clamp(14px, 4vw, 40px) 96px;
-  max-width: 900px;
+  padding-bottom: 96px;
 }
 
 .page-line {
   margin: 16px 0;
   color: var(--ink-soft);
   font-size: 15px;
+}
+
+.filter {
+  width: 100%;
+  min-height: 44px;
+  margin: 0 0 12px;
+  padding: 0 14px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+
+.filter-none {
+  margin: 0 0 12px;
+  color: var(--ink-soft);
+}
+
+.earlier {
+  flex-basis: 100%;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.earlier li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 6px 0;
+}
+
+.row[hidden] {
+  display: none;
 }
 
 .status {
@@ -169,13 +142,13 @@ main {
 
 .status[data-kind="error"] {
   color: var(--bad);
-  background: #fbeae7;
+  background: color-mix(in srgb, var(--bad) 12%, var(--paper));
   font-weight: 600;
 }
 
 .status[data-kind="done"] {
   color: var(--good);
-  background: #e8f2ea;
+  background: color-mix(in srgb, var(--good) 12%, var(--paper));
   font-weight: 600;
 }
 
@@ -188,17 +161,9 @@ main {
   padding: 0;
   list-style: none;
   border-top: 1px solid var(--rule);
-  /* One row is reserved, always (drive#225): the shell is removed the moment
-     rows land, and without this the list would collapse under whatever the
-     read actually returned and the page would jump by the shell's height. */
   min-height: calc(var(--tap) + 12px);
 }
 
-/* The file-list shell (drive#225): one row, in the HTML, so the page is
-   usable before any script runs and so the first listing does not move the
-   page. It is exactly the box a row is — the same --tap minimum, the same
-   6px padding — so replacing it with rows shifts nothing, and so the list's
-   reserved height is already taken while the read is out. */
 .row.is-shell {
   height: calc(var(--tap) + 12px);
   cursor: progress;
@@ -267,6 +232,10 @@ main {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.row .meta a {
+  color: var(--ink);
 }
 
 .row .name:hover,
@@ -420,7 +389,6 @@ body.is-dragging .drop-hint {
   cursor: progress;
 }
 
-/* The viewer fills a phone and sits as a card on a desktop. */
 dialog.viewer {
   width: 100%;
   max-width: 100%;
@@ -502,7 +470,7 @@ dialog.viewer::backdrop {
   width: 100%;
   margin: 0;
   padding: 12px;
-  background: #f3efe5;
+  background: var(--paper-raised);
   border: 1px solid var(--rule);
   border-radius: 6px;
   font-family: var(--mono);
@@ -517,6 +485,21 @@ dialog.viewer::backdrop {
   color: var(--ink-soft);
 }
 
+@media (max-width: 559px) {
+  .row {
+    flex-wrap: wrap;
+  }
+
+  .row .meta {
+    flex: 1 1 calc(100% - 44px);
+  }
+
+  .row .actions {
+    flex: 1 0 100%;
+    padding-left: 40px;
+  }
+}
+
 @media (min-width: 720px) {
   dialog.viewer {
     width: min(880px, 92vw);
@@ -529,10 +512,6 @@ dialog.viewer::backdrop {
   }
 }
 
-/* Drive#92: the one place the reduced-motion reset reaches a rule that would
-   otherwise win on specificity, so it is spelled with !important on purpose.
-   public/index.html has the same block, with the same comment, and
-   biome.json turns noImportantStyles off for the two of them. */
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;
@@ -540,15 +519,6 @@ dialog.viewer::backdrop {
   }
 }
   </style>
-  <!-- drive#225: the browser's own prefetch cache, warmed before a click. A
-       folder's listing is the one request this page repeats, so the rule asks
-       the browser to fetch a folder row's listing when the pointer rests on it
-       (or a finger touches it) rather than when the click lands. It is a stock
-       browser feature: no library, no request of ours, and a browser without
-       the API ignores the block entirely. `eagerness: "moderate"` is what makes
-       it hover- and touch-triggered rather than fetch-on-parse, and a listing
-       is a signed-in GET answered with `no-store`, so the browser's prefetch
-       cache is the only thing that can win the time back. -->
   <script type="speculationrules">
   {
     "prefetch": [
@@ -567,79 +537,84 @@ dialog.viewer::backdrop {
 </head>
 <body>
   <a class="skip-link" href="#file-list-heading">Skip to your files</a>
-  <div class="topbar">
-    <header class="masthead">
-      <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
-      <span class="tagline">A Finder drive for people and their agents.</span>
-      <a href="/files" aria-current="page">Your files</a>
-      <a href="/">Pricing</a>
+  <!-- shell:app-header current="/files" -->
+  <nav class="app-side" aria-label="Main">
+    <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a href="/home">Home</a>
+    <a href="/files" aria-current="page">Files</a>
+    <a href="/usage">Usage and billing</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Webhooks</a>
+    <span class="app-side-end">
       <a href="/get-started">Get started</a>
-      <a href="/usage">Usage</a>
-      <a href="/devices">Devices</a>
-      <a href="/signin" id="nav-signin">Sign in</a>
-      <noscript>
-        <!-- Not Django: POST /api/signin refuses a cross-site post
-             (isSameOriginRequest). A token in the markup would protect nothing. -->
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout">
-          <button type="submit">Sign out</button>
-        </form>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout-all">
-          <button type="submit">Sign out everywhere</button>
-        </form>
-      </noscript>
-      <button type="button" id="nav-signout" hidden>Sign out</button>
-      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
-    </header>
-    <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
-  </div>
+      <a href="/docs/">Docs</a>
+    </span>
+  </nav>
+  <header class="app-top">
+    <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <details class="account-menu" id="account-menu">
+      <summary>Account</summary>
+      <div class="account-panel">
+        <a href="/signin" id="nav-signin">Sign in</a>
+        <noscript>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout">
+            <button class="btn btn-ghost" type="submit">Sign out</button>
+          </form>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout-all">
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
+          </form>
+        </noscript>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      </div>
+    </details>
+  </header>
+  <nav class="app-tabs" aria-label="Tab bar">
+    <a href="/home">Home</a>
+    <a href="/files" aria-current="page">Files</a>
+    <a href="/usage">Usage</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Hooks</a>
+  </nav>
+  <!-- /shell:app-header -->
 
-  <!-- The pending-close banner (drive issue #424). Hidden until
-       GET /api/account/close says this account is closing, then
-       public/close-banner.js fills the two slots from that payload: the
-       sentence is the module's own words with the purge date in them, and the
-       link goes to the page where the close and the cancel both live. The
-       styles are the shared stylesheet's, so the four pages that carry this
-       aside are one banner. -->
+
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
     <a id="close-banner-cancel" href="/usage">Cancel closing</a>
   </div>
-  <nav class="tabs" aria-label="Views">
-    <button type="button" id="tab-files" aria-pressed="true">Files</button>
-    <button type="button" id="tab-deleted" aria-pressed="false">Recently deleted</button>
-    <button type="button" id="tab-rewind" aria-pressed="false">Rewind</button>
-  </nav>
-
   <main>
     <h1 id="file-list-heading">Your files</h1>
+    <nav class="tabs" aria-label="Views">
+      <button type="button" id="tab-files" aria-pressed="true" class="btn">Files</button>
+      <button type="button" id="tab-deleted" aria-pressed="false" class="btn">Recently deleted</button>
+      <button type="button" id="tab-rewind" aria-pressed="false" class="btn">Rewind</button>
+    </nav>
+    <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
     <p class="page-line" id="page-line">Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.</p>
+    <input class="field filter" type="search" id="file-filter" aria-label="Filter this folder by name" placeholder="Filter this folder" autocomplete="off">
+    <p class="filter-none" id="filter-none" hidden>No file here matches that. Clear the box to see them all.</p>
     <p class="status" id="status" role="status" aria-live="polite"></p>
     <ul class="uploads" id="uploads" aria-label="Uploads" hidden></ul>
 
     <ul class="list" id="file-list" aria-labelledby="file-list-heading">
-      <!-- The file-list shell (drive#225). The rows arrive from /api/files, so
-           one row of the same height as a real one sits here in the HTML: the
-           page is usable before any script runs, and the listing landing moves
-           nothing. renderRows empties this list on its first render. -->
       <li class="row is-shell" id="file-list-shell" aria-hidden="true">
         <span class="icon"></span>
         <div class="meta"><span class="name">Loading</span><p class="sub">Your files</p></div>
         <div class="actions"><span></span></div>
       </li>
     </ul>
-    <button type="button" id="more" hidden>More</button>
+    <button type="button" id="more" hidden class="btn">More</button>
     <div class="empty" id="empty" hidden>
       <p class="what" id="empty-what"></p>
       <p class="next" id="empty-next"></p>
     </div>
-    <!-- The account gate's message (drive issue #73). Shown when a read
-         answers 401, with the words the API itself sent: the message table's
-         `unauthorized` entry, rendered from the 401 body, so the page never
-         carries a second copy of it (test/pr-gate.test.mjs pins that). -->
     <div class="empty" id="signed-out" hidden>
       <p class="what" id="signed-out-what"></p>
     </div>
@@ -649,23 +624,19 @@ dialog.viewer::backdrop {
 
   <div class="upload">
     <input type="file" id="file-input" multiple hidden>
-    <button type="button" id="upload-button">Upload</button>
+    <button type="button" id="upload-button" class="btn">Upload</button>
   </div>
 
   <dialog class="viewer" id="viewer" aria-labelledby="viewer-title">
     <div class="viewer-head">
       <h2 class="title" id="viewer-title">File</h2>
       <a id="viewer-download" href="/api/files/download" download>Download</a>
-      <button type="button" id="viewer-close">Close</button>
+      <button type="button" id="viewer-close" class="btn">Close</button>
     </div>
     <div class="viewer-body" id="viewer-body"></div>
   </dialog>
 
   <script>
-// Web Files page (drive issue #31). The words and the arithmetic live in
-// src/files.js; the page is a static asset and cannot import it, so
-// test/files.test.mjs reads this file and fails CI when a sentence, an
-// endpoint or the 30-day window drifts from that module.
 const FILES_ENDPOINT = "/api/files";
 const PREVIEW_ENDPOINT = "/api/files/preview";
 const EMBED_ENDPOINT = "/api/files/embed";
@@ -673,23 +644,18 @@ const DOWNLOAD_ENDPOINT = "/api/files/download";
 const UPLOAD_ENDPOINT = "/api/files/upload";
 const DELETE_ENDPOINT = "/api/files/delete";
 const RESTORE_ENDPOINT = "/api/files/restore";
-// The rewind read and the one-click rewind (drive#774). src/rewind.js owns the
-// route, so the page names it once and never builds a path of its own.
+const VERSIONS_ENDPOINT = "/api/files/versions";
+const RESTORE_VERSION_ENDPOINT = "/api/files/restore-version";
 const REWIND_ENDPOINT = "/api/rewind";
 // The window is src/files.js's number and nothing in this script reads it:
 // test/files.test.mjs reads it out of this line so the page cannot drift
 // from the module. The underscore says the reader is the test, not the
 // script, so a linter leaves the line alone (drive#92).
-const _RECENTLY_DELETED_DAYS = 30;
+const _RECENTLY_DELETED_DAYS = 3;
 const PAGE_LINE = "Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.";
-// The rewind tab's own line: it names what the list holds, and what the one
-// button on a row does. The other two views keep the files line they have
-// always had.
 const REWIND_PAGE_LINE =
   "Every branch an agent worked in, with the files it changed. Rewind puts your files back exactly as they were.";
 
-// The page's copy for a preview, one entry per kind src/files.js names. A kind
-// with no viewer still says the one thing to do.
 const PREVIEW_COPY = {
   image: { open: "Opens the picture in the page.", fallback: "" },
   video: { open: "Plays the video in the page.", fallback: "" },
@@ -713,31 +679,19 @@ const EMPTY_STATES = {
   },
   trash: {
     what: "Nothing has been deleted.",
-    next: "Files you delete land here for 30 days, ready to put back.",
+    next: "Files you delete land here for 3 days, ready to put back.",
   },
 };
-
-// The account gate's words (drive issue #73), the message table's
-// `unauthorized` entry in src/messages.js verbatim — the page cannot import
-// it, so test/files.test.mjs pins these strings against that table. A 401
-// from any route means this browser has no signed-in account, so the page
-// says so instead of showing an empty drive that is not the truth. The words
-// are not here: the API's 401 body is the message table's `unauthorized` entry
-// (src/messages.js), and the page renders what it sent, so there is one copy.
 
 const UPLOAD_COPY = {
   empty: "Choose at least one file to upload.",
   done: "Uploaded.",
 };
 const DELETE_COPY = {
-  confirm: "Delete this file? You can restore it from Recently deleted for 30 days.",
+  confirm: "Delete this file? You can restore it from Recently deleted for 3 days.",
   done: "Moved to Recently deleted.",
 };
 const RESTORE_COPY = { done: "Put back." };
-// The rewind tab's words (drive#774). Every reason a rewind is not possible
-// comes from src/rewind.js as a flag on the row, so the page holds no second
-// copy of that rule: the two reasons are `unavailableReason`, and what the
-// button is about to do is one sentence.
 const REWIND_COPY = {
   confirm: "Rewind this branch? The agent's work is thrown away, and your files go back to what they were.",
   done: "Rewound. Your files are back as they were.",
@@ -747,15 +701,6 @@ const REWIND_COPY = {
   },
 };
 
-// A date as a person reads it, in the time zone of the browser showing it
-// (drive#559). The Worker sends instants and never words for them: a date
-// rendered on a server in the UTC zone reads an hour off for a whole country,
-// and at the end of a month it reads the wrong day. `toLocaleString` with no
-// locale asked for writes the words and the order the browser's own reader has
-// chosen, and an omitted time zone means the one the clock it sits on shows.
-// Three shapes, the same three the list has always had: the clock for
-// something written today, the day and the month for this year, the year in
-// for anything older.
 function whenLabel(iso) {
   if (!iso) return "";
   const at = new Date(iso);
@@ -774,7 +719,7 @@ function whenLabel(iso) {
   return at.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
-// The day a parked file leaves Recently deleted: always a day in the next 30,
+// The day a parked file leaves Recently deleted: always a day in the next 3,
 // so it reads as a day and a month in the reader's own calendar.
 function dayLabel(iso) {
   if (!iso) return "";
@@ -805,9 +750,6 @@ const tabRewind = document.getElementById("tab-rewind");
 
 let path = "/";
 let view = "folder";
-// The listing's continuation token (drive#570): what the last page handed
-// back, or null when the folder has shown every row. The More button holds
-// it; the page never does arithmetic on it, it only passes it back.
 let nextCursor = null;
 
 function say(message, kind) {
@@ -815,11 +757,6 @@ function say(message, kind) {
   statusLine.dataset.kind = kind || "";
 }
 
-// A 401 is the account gate (drive issue #73), not an empty drive and not a
-// failed request. The file list is emptied so a stranger is never left looking
-// at a list, the empty state is cleared because "Your drive is empty" is a
-// lie here, and the upload button is disabled: every action on this page needs
-// the account the page does not have.
 function showSignedOut(message) {
   list.textContent = "";
   empty.hidden = true;
@@ -829,28 +766,18 @@ function showSignedOut(message) {
   showSessionNav(false);
 }
 
-// The other half of the sign-in panel: a read that succeeds proves this
-// browser does have an account, so the panel goes away and the actions come
-// back. Without this the page's own words ("this page updates on its own")
-// would be false the moment the sign-in flow lands.
 function showSignedIn() {
   signedOut.hidden = true;
   uploadButton.disabled = false;
   showSessionNav(true);
 }
 
-// One reporter for a caught failure, so a caller in the middle of an action
-// does not print a second copy of news the sign-in panel already carries.
 function reportFailure(error) {
   if (!error.signedOut) {
     say(error.message, "error");
   }
 }
 
-// The flagged error every 401 branch throws: the sign-in panel already shows
-// the message, so reportFailure() must not print it again. One factory, so a
-// new 401 branch cannot throw a plain error and double the copy (the review
-// of this change caught exactly that in the upload path).
 function signedOutError() {
   const error = new Error();
   error.signedOut = true;
@@ -867,8 +794,6 @@ function api(url, options) {
     }
     if (response.status === 401) {
       showSignedOut(payload.error);
-      // A thrown error, so every caller stops here instead of rendering a
-      // half-state; the sign-in message is already on the page.
       throw signedOutError();
     }
     if (!response.ok) {
@@ -882,6 +807,7 @@ function crumbsForParts(parts) {
   crumbs.textContent = "";
   const root = document.createElement("button");
   root.type = "button";
+  root.className = "btn btn-ghost btn-sm";
   root.textContent = "Your drive";
   root.addEventListener("click", () => {
     path = "/";
@@ -903,6 +829,7 @@ function crumbsForParts(parts) {
     } else {
       const link = document.createElement("button");
       link.type = "button";
+      link.className = "btn btn-ghost btn-sm";
       link.textContent = part;
       const target = walked;
       link.addEventListener("click", () => {
@@ -938,17 +865,7 @@ function rowFor(row) {
 
   const meta = document.createElement("div");
   meta.className = "meta";
-  // A folder's name is a navigation, so it is a link (drive#225): the href is
-  // the listing itself, which is what lets the speculation rules block above
-  // prefetch it on hover, and which is what a person without JavaScript
-  // follows straight to the folder's listing. The click handler stops the
-  // navigation so the page still swaps the list in place.
   const listing = `${FILES_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
-  // A file's name is a link to the file itself, not to the folder listing it
-  // sits in: the preview URL for a kind the viewer opens in the page, and the
-  // download URL for every other file (drive#416). The listing URL is JSON, so
-  // a click that follows it — the handler below, or a browser with the script
-  // blocked — buys a page of raw JSON instead of the file.
   const name = document.createElement("a");
   if (row.kind === "folder") {
     name.href = listing;
@@ -967,15 +884,9 @@ function rowFor(row) {
       setTab();
       refresh();
     } else if (isPreviewable(row.kind)) {
-      // The viewer already holds the preview, so the link's own navigation is
-      // stopped: leaving it to run takes the page off the listing and onto the
-      // preview URL (drive#416).
       event.preventDefault();
       openViewer(row);
     }
-    // A kind with no viewer downloads, and the href above is the download URL:
-    // the click is left to do exactly that, so nothing has to be scripted for
-    // a person without JavaScript to get the file.
   });
   meta.append(name);
   const sub = document.createElement("p");
@@ -989,6 +900,7 @@ function rowFor(row) {
   if (row.kind === "folder") {
     const open = document.createElement("button");
     open.type = "button";
+    open.className = "btn btn-sm";
     open.textContent = "Open";
     open.addEventListener("click", () => {
       path = row.path;
@@ -1004,15 +916,96 @@ function rowFor(row) {
     download.textContent = "Download";
     actions.append(download);
 
+    const earlier = document.createElement("button");
+    earlier.type = "button";
+    earlier.className = "btn btn-sm";
+    earlier.textContent = "Earlier copies";
+    earlier.addEventListener("click", () => showEarlierCopies(row, li));
+    actions.append(earlier);
+
     const del = document.createElement("button");
     del.type = "button";
-    del.className = "danger";
+    del.className = "btn btn-sm btn-danger danger";
     del.textContent = "Delete";
     del.addEventListener("click", () => removeFile(row));
     actions.append(del);
   }
   li.append(actions);
   return li;
+}
+
+const EARLIER_COPY = {
+  none: "No earlier copies of this file. A copy shows up here after you save over it.",
+  note: "Deleted or replaced files stay restorable for 3 days, free.",
+  restore: "Put this one back",
+  restored: "Put back. The copy it replaced is under Earlier copies if you want it again.",
+};
+
+// An account on the 30-day or 1-year history add-on keeps copies longer, and
+// the page's promises say so. The Worker sends the window with every listing;
+// 3 days is the free default the copy above is written for.
+function applyHistoryWindow(days) {
+  if (days !== 30 && days !== 365) {
+    return;
+  }
+  const words = days === 365 ? "1 year" : `${days} days`;
+  const swap = (text) => text.replace("3 days", words);
+  DELETE_COPY.confirm = swap(DELETE_COPY.confirm);
+  EMPTY_STATES.trash.next = swap(EMPTY_STATES.trash.next);
+  EARLIER_COPY.note = EARLIER_COPY.note.replace("for 3 days, free", `for ${words}`);
+}
+
+async function showEarlierCopies(row, li) {
+  const open = li.querySelector(".earlier");
+  if (open) {
+    open.remove();
+    return;
+  }
+  let found;
+  try {
+    found = await api(`${VERSIONS_ENDPOINT}?path=${encodeURIComponent(row.path)}`);
+  } catch (error) {
+    reportFailure(error);
+    return;
+  }
+  const box = document.createElement("ul");
+  box.className = "earlier";
+  const note = document.createElement("li");
+  note.textContent = EARLIER_COPY.note;
+  box.append(note);
+  const copies = Array.isArray(found.versions) ? found.versions : [];
+  if (copies.length === 0) {
+    const none = document.createElement("li");
+    none.textContent = EARLIER_COPY.none;
+    box.append(none);
+  }
+  for (const copy of copies) {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = `Saved ${whenLabel(copy.savedAt)} · replaced ${whenLabel(copy.replacedAt)} · permanently removed ${whenLabel(copy.restorableUntil)}`;
+    const put = document.createElement("button");
+    put.type = "button";
+    put.className = "btn btn-sm";
+    put.textContent = EARLIER_COPY.restore;
+    put.addEventListener("click", async () => {
+      put.disabled = true;
+      try {
+        await api(RESTORE_VERSION_ENDPOINT, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: row.path, versionId: copy.versionId }),
+        });
+        say(EARLIER_COPY.restored, "done");
+        refresh(true);
+      } catch (error) {
+        put.disabled = false;
+        reportFailure(error);
+      }
+    });
+    item.append(label, put);
+    box.append(item);
+  }
+  li.append(box);
 }
 
 function trashRowFor(row) {
@@ -1029,7 +1022,7 @@ function trashRowFor(row) {
   meta.className = "meta";
   const name = document.createElement("button");
   name.type = "button";
-  name.className = "name";
+  name.className = "btn btn-ghost name";
   name.textContent = row.name;
   name.addEventListener("click", () => {
     viewerTitle.textContent = row.name;
@@ -1060,6 +1053,7 @@ function trashRowFor(row) {
   if (row.restorable) {
     const restore = document.createElement("button");
     restore.type = "button";
+    restore.className = "btn btn-sm";
     restore.textContent = row.restoreLabel;
     restore.addEventListener("click", () => restoreFile(row));
     actions.append(restore);
@@ -1072,12 +1066,36 @@ function appendRows(rows) {
   for (const row of rows) {
     list.append(view === "deleted" ? trashRowFor(row) : rowFor(row));
   }
+  applyFilter();
 }
 
-// The rewind row (drive#774). One branch an agent worked in, and the files
-// its work changed. The counts and the reason a rewind is not possible both
-// come off the row src/rewind.js sends, so the list and the one-branch read
-// cannot disagree about what a rewind would undo.
+const filterEl = document.getElementById("file-filter");
+const filterNone = document.getElementById("filter-none");
+function applyFilter() {
+  if (!filterEl || !filterNone) {
+    return;
+  }
+  const wanted = String(filterEl.value || "").trim().toLowerCase();
+  let total = 0;
+  let shown = 0;
+  for (const item of list.children ? [...list.children] : []) {
+    if (item.id === "file-list-shell") {
+      continue;
+    }
+    total += 1;
+    const nameEl = item.querySelector(".name");
+    const match = wanted === "" || String(nameEl?.textContent || "").toLowerCase().includes(wanted);
+    item.hidden = !match;
+    if (match) {
+      shown += 1;
+    }
+  }
+  filterNone.hidden = !(wanted !== "" && total > 0 && shown === 0);
+}
+if (filterEl) {
+  filterEl.addEventListener("input", applyFilter);
+}
+
 function rewindCountsLabel(files) {
   return [
     files.added.length ? `${files.added.length} added` : "",
@@ -1088,9 +1106,6 @@ function rewindCountsLabel(files) {
     .join(", ");
 }
 
-// The files a rewind would undo, named rather than only counted: three of
-// them and how many more there are, so a long branch does not push the row
-// off the screen.
 function rewindNamesLabel(files) {
   const names = [...files.added, ...files.changed, ...files.removed];
   if (names.length <= 3) return names.join(", ");
@@ -1154,6 +1169,7 @@ function rewindRowFor(preview) {
   if (preview.canRewind) {
     const rewind = document.createElement("button");
     rewind.type = "button";
+    rewind.className = "btn btn-sm";
     rewind.textContent = "Rewind";
     rewind.addEventListener("click", () => rewindThis(preview));
     actions.append(rewind);
@@ -1174,10 +1190,6 @@ function renderRewinds(rewinds) {
   for (const preview of rewinds) list.append(rewindRowFor(preview));
 }
 
-// One tap and the agent's work is thrown away: the branch's copy goes and the
-// original is left exactly as it is, which is the same discard `drive discard`
-// performs. The confirm names the trade, because the branch's own work is not
-// recoverable afterwards.
 async function rewindThis(preview) {
   if (!window.confirm(REWIND_COPY.confirm)) {
     return;
@@ -1206,8 +1218,6 @@ function renderRows(rows) {
   appendRows(rows);
 }
 
-// The continuation token in, the next slice of rows out. One shape for both
-// the first load and the More click, so the paging logic lives once.
 async function listPage(cursor) {
   const url =
     view === "deleted"
@@ -1216,8 +1226,6 @@ async function listPage(cursor) {
   return api(url);
 }
 
-// What the More button shows: the token decides it, and an in-flight load
-// turns it off so a second click cannot ask for the same page twice.
 function showMore(cursor) {
   moreButton.hidden = view !== "folder" || cursor === null;
   moreButton.disabled = false;
@@ -1264,9 +1272,6 @@ function openViewer(row) {
     return;
   }
   const src = `${PREVIEW_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
-  // The media elements read the embed URL, which always serves a picture
-  // inline. The direct-open preview URL sends an SVG as an attachment so a
-  // top-level open cannot render it as a document on our address (drive#657).
   const mediaSrc = `${EMBED_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
   if (row.kind === "image") {
     const img = document.createElement("img");
@@ -1312,17 +1317,11 @@ function openViewer(row) {
 
 viewerClose.addEventListener("click", () => viewer.close());
 
-// `keepStatus` is for the actions that just reported a result: the list reloads
-// under them, but the line that says what happened stays put instead of being
-// wiped a frame after it appeared.
 async function refresh(keepStatus) {
   if (!keepStatus) {
     say("");
   }
   try {
-    // The rewind tab reads its own route rather than the files listing: the
-    // rows are branches, not files, and the page renders them with its own
-    // row shape (drive#774). The More button has no place here, so it goes.
     if (view === "rewind") {
       showSignedIn();
       const payload = await api(REWIND_ENDPOINT);
@@ -1333,6 +1332,7 @@ async function refresh(keepStatus) {
     }
     const payload = await listPage(null);
     showSignedIn();
+    applyHistoryWindow(payload.historyDays);
     nextCursor = view === "folder" ? (payload.nextCursor ?? null) : null;
     renderRows(payload.rows || []);
     showMore(nextCursor);
@@ -1421,12 +1421,6 @@ async function uploadFiles(files) {
   try {
     for (const file of files) {
       const row = uploadRow(file);
-      // The name goes over the wire as the browser knows it, and what to store
-      // is the Worker's one decision: src/files.js's safeFileName trims it,
-      // turns a slash, a backslash or a control character into a dash, and
-      // refuses a name left empty. The page has no second copy of that rule to
-      // drift (drive#92), and test/files.test.mjs is the gate that watches both
-      // sides of it.
       const url = `${UPLOAD_ENDPOINT}?path=${encodeURIComponent(path)}&name=${encodeURIComponent(
         file.name,
       )}`;
@@ -1439,9 +1433,6 @@ async function uploadFiles(files) {
       }
       const payload = response.payload;
       if (response.status === 401) {
-        // The account gate (drive issue #73) answers every route, including
-        // this one, and upload has its own request rather than api()'s, so the
-        // same 401 words go to the panel here.
         row.fail("Sign in first");
         showSignedOut(payload.error);
         throw signedOutError();
@@ -1478,18 +1469,33 @@ async function removeFile(row) {
       body: JSON.stringify({ path: row.path }),
     });
     say(DELETE_COPY.done, "done");
+    offerUndo(row);
     refresh(true);
   } catch (error) {
     reportFailure(error);
   }
 }
 
+// Delete is reversible, so the line that says it happened carries the way
+// back: one press puts the file where it was.
+function offerUndo(row) {
+  const undo = document.createElement("button");
+  undo.type = "button";
+  undo.className = "btn btn-sm undo";
+  undo.textContent = "Undo";
+  undo.addEventListener("click", () => {
+    undo.disabled = true;
+    restoreFile(row);
+  });
+  statusLine.append(" ", undo);
+}
+
 async function restoreFile(row) {
   try {
-    await api(RESTORE_ENDPOINT, {
+    await api(row.versionId ? RESTORE_VERSION_ENDPOINT : RESTORE_ENDPOINT, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: row.path }),
+      body: JSON.stringify(row.versionId ? { path: row.path, versionId: row.versionId } : { path: row.path }),
     });
     say(RESTORE_COPY.done, "done");
     refresh(true);
@@ -1556,10 +1562,6 @@ document.addEventListener("drop", (event) => {
 });
 fileInput.addEventListener("change", () => uploadFiles([...fileInput.files]));
 
-// The signed-in menu (drive#423). Sign in is the default so a browser with
-// no script still has a way in. A successful files read flips it to Sign out
-// and Sign out everywhere; a 401 flips it back. The posts go to the same
-// /api/signin steps the route already serves.
 const SIGNIN_ENDPOINT = "/api/signin";
 const navSignin = document.getElementById("nav-signin");
 const navSignout = document.getElementById("nav-signout");
@@ -1609,12 +1611,13 @@ navSignoutAll.addEventListener("click", () => {
   postSignout("signout-all");
 });
 
+// Home links here with #rewind, so "see and undo" lands on the agent list.
+if (typeof location !== "undefined" && location.hash === "#rewind") {
+  view = "rewind";
+  setTab();
+}
 refresh();
   </script>
-  <!-- The one shared pending-close banner script (drive issue #424).
-       The static signed-in pages load this file as a module; get-started
-       imports the same file into its one bundle so it stays inside the
-       Lighthouse script-count budget. -->
   <script type="module" src="/close-banner.js"></script>
 </body>
 </html>

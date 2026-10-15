@@ -1,64 +1,51 @@
-// Tests for the Web Files page (drive issue #31). Two halves, the same split
-// test/status.test.mjs uses for core/status.js:
-//
-// 1. The logic in core/files.js: what a file is, how a listing is ordered, the
-//    path validator, the trash key round-trip, the 30-day window, the words,
-//    and every /api/files* route against a real in-memory store — browse,
-//    preview, download, upload, delete and one-tap restore.
-// 2. The shipped page: public/files.html is a static asset and cannot import
-//    the module, so this reads the file and fails when its copy, its endpoints
-//    or its window drift from core/files.js.
-
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 import {
-  accountStorageKey,
-  ChangedUnderUsError,
   CONTROL_OR_BACKSLASH,
   CONTROL_OR_SLASH,
-  createMemoryStore,
-  createS3Store,
   DELETE_COPY,
   EMPTY_STATES,
   FILES_EMBED_ENDPOINT,
   FILES_ENDPOINT,
   FILES_PATH,
   fileKind,
-  fileRows,
   findTrashName,
-  handleFilesRequest,
   isPreviewable,
   isRestorable,
   isTrashExpired,
   PAGE_LINE,
   PREVIEW_COPY,
-  parseListObjects,
   parseListVersions,
   parseTrashName,
   previewContentType,
   previewCopy,
   previewDisposition,
-  purgeExpiredTrash,
   RECENTLY_DELETED_DAYS,
   RESTORE_COPY,
   safeFileName,
-  scopeStore,
   sortEntries,
   splitEntries,
-  storageBucketForKey,
   TRASH_PATH,
   TRASH_PURGE_SCHEDULE,
   trashName,
-  trashRows,
   trashStorePath,
   UPLOAD_COPY,
   UPLOAD_FILE_MAX_BYTES,
   validatePath,
   withoutTrash,
 } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore, storageBucketForKey } from "../core/files-memory.js";
+import { createS3Store, fileRows, parseListObjects, trashRows } from "../core/files-s3.js";
+import {
+  accountStorageKey,
+  ChangedUnderUsError,
+  purgeExpiredTrash,
+  scopeStore,
+} from "../core/files-scope.js";
 import { bucketForAccount } from "../core/keyprovider.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import {
@@ -323,22 +310,22 @@ test("the newest parked copy of a path is the one restore finds", () => {
   assert.equal(findTrashName(entries, "/c.txt"), null);
 });
 
-test("a deleted file is restorable for 30 days and not one day later", () => {
+test("a deleted file is restorable for 3 days and not one day later", () => {
   const day = 24 * 60 * 60 * 1000;
-  assert.equal(RECENTLY_DELETED_DAYS, 30);
-  assert.equal(isRestorable(now - 29 * day, now), true);
-  assert.equal(isRestorable(now - 30 * day, now), true);
-  assert.equal(isRestorable(now - 31 * day, now), false);
+  assert.equal(RECENTLY_DELETED_DAYS, 3);
+  assert.equal(isRestorable(now - 2 * day, now), true);
+  assert.equal(isRestorable(now - 3 * day, now), true);
+  assert.equal(isRestorable(now - 4 * day, now), false);
   // A clock that went backwards is not a file from the future.
   assert.equal(isRestorable(now + day, now), false);
 });
 
-test("a file past the 30 days has no Restore button and says why", () => {
+test("a file past the 3 days has no Restore button and says why", () => {
   const day = 24 * 60 * 60 * 1000;
   const [fresh, stale] = trashRows(
     /** @type {import("../core/files.js").FileEntry[]} */ ([
       { name: trashName("/fresh.md", now - day), path: "/fresh.md", kind: "file" },
-      { name: trashName("/stale.md", now - 31 * day), path: "/stale.md", kind: "file" },
+      { name: trashName("/stale.md", now - 4 * day), path: "/stale.md", kind: "file" },
     ]),
     now,
   );
@@ -346,11 +333,11 @@ test("a file past the 30 days has no Restore button and says why", () => {
   assert.equal(fresh.restorable, true);
   assert.equal(fresh.restoreLabel, "Restore");
   assert.equal(fresh.goneLabel, "");
-  // The promise is 30 days, so past it the page does not offer what it cannot do.
+  // The promise is 3 days, so past it the page does not offer what it cannot do.
   assert.ok(stale);
   assert.equal(stale.restorable, false);
   assert.notEqual(stale.restoreLabel, "Restore");
-  assert.match(stale.goneLabel, /30 days/);
+  assert.match(stale.goneLabel, /3 days/);
 });
 
 test("the trash folder is hidden in the drive root, not deeper in it", () => {
@@ -1379,12 +1366,12 @@ test("restore: a file that is not in Recently deleted says so", async () => {
   assert.match((await response.json()).error, /not in Recently deleted/);
 });
 
-test("restore: a file past the 30 days is gone, and the Worker says so", async () => {
+test("restore: a file past the 3 days is gone, and the Worker says so", async () => {
   const { store, upload } = drive();
   const day = 24 * 60 * 60 * 1000;
   await upload("/", "old.md", "from a month ago", "text/markdown");
-  // Deleted 31 days before the clock this test reads.
-  const deletedAt = now - 31 * day;
+  // Deleted 4 days before the clock this test reads.
+  const deletedAt = now - 4 * day;
   /** @param {number} clock */
   const at = (clock) => /** @param {Request} request */ (request) =>
     handleFilesRequest(request, store, account, clock);
@@ -1406,7 +1393,7 @@ test("restore: a file past the 30 days is gone, and the Worker says so", async (
     }),
   );
   assert.equal(response.status, 410);
-  assert.match((await response.json()).error, /30 days/);
+  assert.match((await response.json()).error, /3 days/);
 });
 
 // ---------------------------------------------------------------- a move the storage makes
@@ -2532,7 +2519,8 @@ test("a key with & < > ' round-trips the S3 store's list, read and delete", asyn
   // the escaped text, and the read and delete that followed it asked S3 for a
   // key that does not exist. Every step below goes through one fake bucket
   // that answers exactly the XML a real one answers.
-  const { createS3Store, scopeStore } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
+  const { scopeStore } = await import("../core/files-scope.js");
   const name = "a&b <c> 'd'.txt";
   const key = `u/acct/${name}`;
   const escapedKey = "u/acct/a&amp;b &lt;c&gt; &apos;d&#39;.txt";
@@ -2591,7 +2579,7 @@ test("a key with & < > ' round-trips the S3 store's list, read and delete", asyn
 });
 
 test("the in-memory store keeps the version history the reconciler reads", async () => {
-  const { createMemoryStore } = await import("../core/files.js");
+  const { createMemoryStore } = await import("../core/files-memory.js");
   const store = createMemoryStore();
   await store.write("u/1/a.txt", "one", "text/plain");
   await store.write("u/1/a.txt", "two", "text/plain");
@@ -2614,7 +2602,7 @@ test("the in-memory store keeps the version history the reconciler reads", async
 });
 
 test("the S3 stand-in needs an endpoint and a bucket", async () => {
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   assert.throws(
     () =>
       createS3Store({
@@ -2628,7 +2616,7 @@ test("the S3 stand-in needs an endpoint and a bucket", async () => {
 });
 
 test("the S3 store needs both a region and a credential, or neither", async () => {
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   assert.throws(
     () =>
       createS3Store({
@@ -2650,7 +2638,7 @@ test("the S3 store needs both a region and a credential, or neither", async () =
 });
 
 test("a credentialed S3 store signs every request and still uses fetchImpl", async () => {
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   /** @type {string[]} */
   const authorizations = [];
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -2682,7 +2670,7 @@ test("a credentialed S3 store signs every request and still uses fetchImpl", asy
 });
 
 test("an unsigned write sends the stream as it is, without buffering it", async () => {
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode("chunk"));
@@ -2711,7 +2699,7 @@ test("a missing bucket answers an empty listing, not a 500 (drive#540)", async (
   // Files page reads it as an empty folder: S3 answers a missing bucket 404
   // (NoSuchBucket) and a missing folder 200 with no keys, so a 404 on a list
   // is always the bucket.
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   const notFound = `<?xml version="1.0" encoding="UTF-8"?>
 <Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>`;
   /** @type {typeof fetch} */
@@ -2741,7 +2729,7 @@ test("a missing bucket answers an empty listing, not a 500 (drive#540)", async (
 });
 
 test("a signed write sends the original stream and UNSIGNED-PAYLOAD", async () => {
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode("chunk"));
@@ -2777,7 +2765,7 @@ test("a signed stream write with no declared size is refused, not buffered", asy
   // isolate memory. The store refuses it so the caller declares a size
   // (drive#539); the owner upload reads a length-less body under its own
   // ceiling and always passes one.
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode("chunk"));
@@ -2798,7 +2786,8 @@ test("the S3 stand-in keys every call under the account scopeStore gave it", asy
   // The bucket is one namespace for every account, so this is the layer where
   // a missing prefix would actually cross accounts (drive issue #73). The fake
   // fetch records the URLs, and the assertion is on the storage keys in them.
-  const { createS3Store, scopeStore } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
+  const { scopeStore } = await import("../core/files-scope.js");
   /** @type {Array<{url: string, method: string}>} */
   const urls = [];
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -3154,7 +3143,8 @@ test("the S3 stand-in follows the continuation token, so a folder is never trunc
   // 100,000-file drive indexed 20,000 of them (drive issue #18). The fake
   // storage here answers two pages, so the test fails on a store that stops at
   // the first one.
-  const { createS3Store, nextContinuationToken } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
+  const { nextContinuationToken } = await import("../core/files.js");
   /** @param {string[]} names @param {string|null} next */
   const page = (names, next) => {
     const contents = names
@@ -3263,53 +3253,19 @@ test("the page is a mobile-first surface with one-tap actions", () => {
   assert.match(page, /class="skip-link" href="#file-list-heading"/);
 });
 
-test("the page wears the site's header, with room for the view strip", () => {
-  // drive#425, from the new-customer walkthrough: the files page's top bar was
-  // its own — a wordmark and a static "Your drive" — so it was the one page
-  // with no way from it to Pricing or Usage. It now carries the shared
-  // masthead (public/site.css's .masthead, which test/usage.test.mjs holds to
-  // one navigation across the pages that use it), with this page's folder path
-  // under it, and the view strip given room instead of sitting cramped against
-  // the header.
-  const masthead = page.match(/<header class="masthead">[\s\S]*?<\/header>/);
-  assert.ok(masthead, "the page carries the shared masthead header");
-  assert.match(
-    masthead[0],
-    /<span class="tagline">A Finder drive for people and their agents\.<\/span>/,
-  );
-  assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
+test("the page wears the app shell, with room for the view strip", () => {
+  assert.match(page, /<!-- shell:app-header current="\/files" -->/);
+  assert.doesNotMatch(page, /<header class="masthead">/, "the shell replaces the old masthead");
   assert.doesNotMatch(page, /<header class="topbar">/, "the page has no top bar of its own");
-  // The static label is gone, and no script is left reading it. The words are
-  // not lost either: the crumbs row's own root button says "Your drive"
-  // (crumbsForParts), which is where the walkthrough's reader saw them before.
+  assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
   assert.doesNotMatch(page, /id="account"/);
   assert.doesNotMatch(page, /getElementById\("account"\)|class="account"/);
 
-  // The rule each part of the header owns, and it owns nothing else: this
-  // page's own padding, background and sticky bar around the shared masthead
-  // (public/site.css owns the header's own metrics, its link colour and the
-  // tagline), this page's own wordmark size, and the crumbs row. A page that
-  // starts restyling a part it does not own fails here, which is what keeps the
-  // pages from drifting apart again. test/site-styles.test.mjs holds the same
-  // line for the other pages.
   /** @param {string} selector */
   const rules = (selector) =>
     [...page.matchAll(new RegExp(`(?:^|\\n)\\.${selector} \\{([^}]*)\\}`, "g"))].map(
       (rule) => rule[1],
     );
-  const mastheadRules = rules("masthead").join("");
-  for (const own of ["margin: 0;", "padding: 14px 0 12px;", "border-bottom: 0;"]) {
-    assert.ok(mastheadRules.includes(own), `the page gives the header its own ${own}`);
-  }
-  assert.ok(
-    !mastheadRules.includes("display:"),
-    "the page does not lay the header out, which the shared chrome already does",
-  );
-  assert.deepEqual(
-    rules("wordmark"),
-    ["\n  font-size: 24px;\n"],
-    "the page sets its own wordmark size and nothing else",
-  );
   assert.equal(rules("crumbs").length, 1, "the folder-path row has one rule of its own");
 
   // The strip's rule is the one that lays it out as a strip; the page has a
@@ -3471,8 +3427,8 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   assert.ok(script.includes("if (!keepStatus)"));
   assert.equal(
     (script.match(/refresh\(true\);/g) || []).length,
-    4,
-    "delete, restore, upload and rewind all reload under their own result line",
+    5,
+    "delete, restore, put-back-an-earlier-copy, upload and rewind all reload under their own result line",
   );
   // An upload failure says what happened; it never reads as done.
   assert.ok(script.includes("The upload did not finish. Try again."));
@@ -3504,7 +3460,8 @@ test("the S3 stand-in copies server-side with CopyObject, so no bytes pass throu
   // `drive branch` calls FileStore.copy (build step 7): on the real store that
   // is S3's CopyObject, named by x-amz-copy-source, and the body is empty.
   // The header form is the one proven against `rclone serve s3` on 2026-10-01.
-  const { createS3Store, scopeStore } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
+  const { scopeStore } = await import("../core/files-scope.js");
   /** @type {Array<{method: string, url: string, headers: Record<string, string>}>} */
   const calls = [];
   /** @type {typeof fetch} */
@@ -3634,7 +3591,8 @@ test("a copy the storage refuses as too big becomes a multipart copy, even with 
   // source over its 5 GiB single-copy ceiling is the signal, and the byte
   // length comes from the source's own HEAD. Without that answer the copy is a
   // named failure, not a copy that silently moved nothing.
-  const { createS3Store, scopeStore } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
+  const { scopeStore } = await import("../core/files-scope.js");
   const sixGb = 6 * 1024 ** 3;
   /** @type {string[]} */
   const seen = [];
@@ -3687,7 +3645,8 @@ test("a multipart copy that fails aborts its upload, so its parts stop being bil
   // Every S3-shaped provider bills the parts of an unfinished multipart upload,
   // and `drive branch` copies whole folders: a copy that gave up halfway must
   // not leave that bill behind, and must say which part failed.
-  const { createS3Store, scopeStore } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
+  const { scopeStore } = await import("../core/files-scope.js");
   /** @type {string[]} */
   const seen = [];
   /** @type {typeof fetch} */
@@ -3782,7 +3741,7 @@ test("the purge judges by the name, so a stray file under .trash is left alone",
   const store = createMemoryStore();
   const scoped = scopeStore(store, { id: "acct-a" });
   await scoped.write(`${TRASH_PATH}/not-a-trash-key`, "bytes", "text/plain");
-  await park(store, "acct-a", "/expired.txt", now - 31 * 24 * 60 * 60 * 1000);
+  await park(store, "acct-a", "/expired.txt", now - 4 * 24 * 60 * 60 * 1000);
 
   const purged = await purgeExpiredTrash(db, store, now);
 
@@ -3814,8 +3773,8 @@ test("a purge needs its database and refuses to run without one", async () => {
 
 test("a parked file is expired past the window and never before it opens", () => {
   const day = 24 * 60 * 60 * 1000;
-  assert.equal(isTrashExpired(now - 30 * day, now), false);
-  assert.equal(isTrashExpired(now - 30 * day - 1, now), true);
+  assert.equal(isTrashExpired(now - 3 * day, now), false);
+  assert.equal(isTrashExpired(now - 3 * day - 1, now), true);
   // A future-dated name waits for now to catch up rather than vanishing
   // a day before its own window opens.
   assert.equal(isTrashExpired(now + day, now), false);
@@ -3828,7 +3787,7 @@ test("the entrypoint's trash trip runs the purge on its own schedule", async () 
     .bind(now)
     .run();
   const store = createMemoryStore();
-  await park(store, "acct-a", "/expired.txt", now - 31 * 24 * 60 * 60 * 1000);
+  await park(store, "acct-a", "/expired.txt", now - 4 * 24 * 60 * 60 * 1000);
   const env = { DRIVE_DB: db };
   // The same direct-drive wrapper the fetch calls use above: the handler type
   // is optional on ExportedHandler and takes the injectable store as a fourth
@@ -4143,7 +4102,7 @@ test("a 5xx from storage is retried once, and the retry re-signs the request", a
 });
 
 test("listKeys lists flat, resumes after a start-after key, and follows the continuation token", async () => {
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   /** @type {string[]} */
   const urls = [];
   /**
@@ -4186,7 +4145,7 @@ test("listKeys lists flat, resumes after a start-after key, and follows the cont
 });
 
 test("a repeated continuation token is refused instead of holding the listing open", async () => {
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Contents><Key>u/acct/a.txt</Key><Size>10</Size></Contents>
@@ -4201,7 +4160,7 @@ test("a repeated continuation token is refused instead of holding the listing op
 });
 
 test("removeBatch sends one DeleteObjects call with a Content-MD5 over the escaped keys", async () => {
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   /** @type {{url: string, method: string, headers: Record<string, string>, body: string}[]} */
   const sent = [];
   /** @type {typeof fetch} */
@@ -4241,7 +4200,7 @@ test("removeBatch sends one DeleteObjects call with a Content-MD5 over the escap
 });
 
 test("removeBatch refuses a 200 answer that carries per-key errors", async () => {
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Error><Key>u/acct/stuck.txt</Key><Code>InternalError</Code><Message>We encountered an internal error</Message></Error>
@@ -4264,7 +4223,7 @@ test("removeBatch refuses a 200 answer that carries per-key errors", async () =>
 });
 
 test("a scoped purge cursor cannot reach outside the account's own prefix", async () => {
-  const { createMemoryStore } = await import("../core/files.js");
+  const { createMemoryStore } = await import("../core/files-memory.js");
   const store = createMemoryStore();
   await scopeStore(store, { id: "acct_a" }).write("/a.txt", "mine", "text/plain");
   await scopeStore(store, { id: "acct_b" }).write("/b.txt", "theirs", "text/plain");
@@ -4291,7 +4250,7 @@ test("a scoped purge cursor cannot reach outside the account's own prefix", asyn
 });
 
 test("removeBatch refuses more than the 1,000-key ceiling and a mixed-bucket batch", async () => {
-  const { createS3Store } = await import("../core/files.js");
+  const { createS3Store } = await import("../core/files-s3.js");
   let calls = 0;
   const store = createS3Store({
     endpoint: "http://127.0.0.1:9000",
@@ -4319,4 +4278,30 @@ test("removeBatch refuses more than the 1,000-key ceiling and a mixed-bucket bat
     /keys from one bucket/,
   );
   assert.equal(calls, 0, "a refused batch makes no provider call");
+});
+
+test("the purge keeps an account's Recently deleted for the history window it chose", async () => {
+  const day = 24 * 60 * 60 * 1000;
+  const { db } = makeMeteredDB();
+  for (const [id, days] of /** @type {[string, number|null][]} */ ([
+    ["free", null],
+    ["month", 30],
+  ])) {
+    await db
+      .prepare("INSERT INTO accounts (id, email, created_at, history_days) VALUES (?1, ?2, ?3, ?4)")
+      .bind(id, `${id}@x.test`, now, days)
+      .run();
+  }
+  const store = createMemoryStore();
+  for (const id of ["free", "month"]) {
+    await park(store, id, "/ten.txt", now - 10 * day);
+    await park(store, id, "/forty.txt", now - 40 * day);
+  }
+
+  await purgeExpiredTrash(db, store, now);
+
+  const names = async (/** @type {string} */ id) =>
+    (await scopeStore(store, { id }).listAll(TRASH_PATH)).map((e) => e.name);
+  assert.deepEqual(await names("free"), []);
+  assert.deepEqual(await names("month"), [trashName("/ten.txt", now - 10 * day)]);
 });

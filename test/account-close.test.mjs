@@ -1,17 +1,11 @@
-// Account close: keys revoked at once, files after 30 days, mail at day 0
-// and day 25 (drive#235, docs/build-spec.md "Keys and safety"). The person
-// confirms by typing their email and can cancel inside the grace window.
-//
-// Tests cover the stand-in (real SQLite migrations + the in-memory file
-// store). Nothing here talks to production D1.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createD1DeviceStore } from "../core/devices.js";
 import { replyToFor } from "../core/email-send.js";
 import { EMAIL_KINDS, renderEmail } from "../core/emails.js";
-import { createMemoryStore as createFileStore, scopeStore } from "../core/files.js";
+import { createMemoryStore as createFileStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { createMemoryStore as createKeyStore } from "../core/keystore.js";
 import {
   CLOSE_CANCEL_ENDPOINT,
@@ -323,7 +317,7 @@ test("the one box posts cancel while a close is pending and close once it is not
   assert.equal((page.match(/<form class="close-form"/g) ?? []).length, 1);
   assert.equal((page.match(/<label for="close-email"/g) ?? []).length, 1);
   assert.match(page, /id="close-email-label">Type your email to confirm</);
-  assert.match(page, /id="close-submit">Close account</);
+  assert.match(page, /id="close-submit" class="btn btn-primary">Close account</);
   const script = page.slice(page.indexOf("<script>"));
   assert.doesNotMatch(script, /cancel-form|cancel-error|cancel-email/);
   // A close is pending while the 30-day window is open: state is closed and

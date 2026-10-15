@@ -24,11 +24,15 @@ would rather you read it here than find out in week three.
   end is Linux. The Mac mount is in the CLI and is built for macOS, but we
   have not run the measured suite on a Mac, so treat read-write on a Mac as
   untested.
-- **No `restore` command yet.** A delete from the Files page is restorable for
-  30 days in Recently deleted; a delete made any other way is recoverable for
-  one day by asking us. `drive restore` is not in the CLI.
-- **{{VERSION_HISTORY}}** Save a file again and the file is replaced; no command
-  lists the versions that were there before.
+- **`drive restore` puts back one file at a time.** A delete from the Files page
+  is restorable for 3 days in Recently deleted. `drive restore <file>` lists
+  the earlier copies of a file you saved over, and `--latest` or `--copy N` puts
+  one back. A file deleted from the mounted folder appears in Recently deleted on the
+  Files page shortly after, and Restore puts it back; `drive restore` does not
+  list it yet.
+- **{{VERSION_HISTORY}}** Save a file again and the file is replaced. The copy it
+  replaced stays for 3 days and the Files page lists it under Earlier copies
+  and `drive restore` lists them.
 - **No app or a desktop icon.** The drive is a folder and a command line.
 - **Twenty live keys per account.** An account holds at most 20 live keys at
   once — its device, agent, s3 and branch keys all counted together. A mint

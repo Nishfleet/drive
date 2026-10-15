@@ -1,30 +1,11 @@
-// Accessibility on the signed-in pages, in a real browser, against a real
-// signed-in account (drive issue #527).
-//
-// The Lighthouse run in .github/workflows/ci.yml asserts the accessibility
-// category on the six public pages as static files. It cannot see the pages a
-// customer actually uses: /files and /usage sit behind the account gate, so
-// Lighthouse collects them signed out. This file closes that gap — axe (the
-// engine behind Lighthouse's own accessibility category) over the same two
-// pages with a real session cookie, over the real Worker, in the same Chrome
-// the Lighthouse run already drives on this self-hosted runner. No new
-// browser tool: puppeteer-core is a declared devDependency, the same one
-// test/files-page-click.test.mjs uses.
-//
-// axe-core is an explicit devDependency because this file imports it
-// directly. Lighthouse's accessibility category is built on it, so the two
-// gates run the same rules.
-//
-// A violation of serious or critical impact fails. Moderate and minor are
-// named in the diagnostic and do not fail.
-
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { createMemoryStore, FILES_ENDPOINT } from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { createMemoryStore } from "../core/files-memory.js";
 import worker from "../src/index.js";
 import { TEST_FILES_STORE } from "../src/index-support.js";
 import {
@@ -41,6 +22,7 @@ const CHROME = process.env.DRIVE_CHROME ?? "/usr/bin/google-chrome";
 const PAGES = Object.freeze([
   { name: "files.html", ready: "#file-list li:not(.is-shell)" },
   { name: "usage.html", ready: "#usage-body:not([hidden])" },
+  { name: "webhooks.html", ready: "#hooks-empty:not([hidden])" },
 ]);
 
 /**

@@ -1,4 +1,3 @@
-// Split out of core/devices.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
 import { first, run } from "./db.js";
 import { deviceFromRow } from "./devices-rows.js";
 import { bucketForKeyPrefix } from "./keyprovider.js";
@@ -48,18 +47,9 @@ export function createListMethods(ctx) {
             keyId: device.id,
             kind: device.kind,
             prefix: device.prefix,
-            // The bucket this row's own prefix puts it in. A cap swap mints
-            // its replacement against this bucket (core/cap.js
-            // `applyCapSwap`), so a team key stays in the team's bucket and
-            // an account key stays in the account's, whatever the cap does
-            // (drive#462).
             bucket: bucketForKeyPrefix(accountId, device.prefix),
             capabilities: Object.freeze([...device.capabilities]),
             ...(device.cappedFrom ? { cappedFrom: Object.freeze([...device.cappedFrom]) } : {}),
-            // Which cap took the key down, beside the powers it took, so a caller
-            // planning a swap -- or a give-back pass (drive#656) -- can tell the
-            // spending cap's freeze from something else's. A row with no reason
-            // leaves the field out rather than answering with an empty string.
             ...(device.cappedReason ? { cappedReason: device.cappedReason } : {}),
           }),
         );

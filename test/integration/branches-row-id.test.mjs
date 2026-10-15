@@ -1,13 +1,7 @@
-// 0015 rebuilds `branches` so the primary key is the row's own id (drive#165).
-// Production drive-data already applied 0003 with PRIMARY KEY (account_id, name,
-// state), so editing 0003 in place cannot change a live database. This file
-// applies the real migration files in order against node:sqlite and asserts
-// both the upgraded READ (two closed rows of one name) and the upgraded WRITE
-// (a second approve of a re-branched name).
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMemoryStore, scopeStore } from "../../core/files.js";
+import { createMemoryStore } from "../../core/files-memory.js";
+import { scopeStore } from "../../core/files-scope.js";
 import { createKvSnapshotStore } from "../../src/branches.js";
 import { approveBranch, createBranch } from "../../src/branches-routes.js";
 import { getBranch } from "../../src/branches-snapshot.js";

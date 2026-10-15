@@ -1,22 +1,5 @@
 package main
 
-// The branch commands (drive issue #8, build step 7, drive#156): branch a
-// folder for an agent to work in, list branches, see the diff, approve it
-// back or throw it away. Two HTTP families on the same APIBase (drive#156):
-// /api/branches* (src/branches.js) copies and records the branch, and
-// POST /v1/keys {kind:"branch", name} mints the key limited to that copy.
-// Both use the device token `drive init` signed in with, so the branch the
-// CLI names, the key it stores and the state the server records cannot
-// disagree.
-//
-// `drive branch` copies a folder server-side into `.branches/<name>/` and
-// mints a branch key (list/read/write, no delete) scoped to
-// `u/<account>/.branches/<name>/`. The branch name defaults to the folder's
-// own name, and `--name` picks another when that one is taken. The key is
-// stored 0600 in branch-keys.json so approve, discard, or a re-run after a
-// failed mint can find it. The secret is never printed and never put on the
-// command line (drive#75).
-
 import (
 	"errors"
 	"flag"
@@ -28,9 +11,7 @@ import (
 	"time"
 )
 
-// BranchSummary is one branch as /api/branches lists it (src/branches.js). A
-// failure is an APIError from the client, whose message already carries the
-// server's sentence, so there is no error field to decode here.
+// BranchSummary is one branch as /api/branches lists it (src/branches.js).
 type BranchSummary struct {
 	Name          string
 	SourcePrefix  string
@@ -84,22 +65,13 @@ type branchDiscardAnswer struct {
 	Removed int
 }
 
-// BRANCHES_PATH is the CLI's one copy of the route family (src/branches.js
-// BRANCHES_ENDPOINT), so the commands and the server cannot drift.
+// BRANCHES_PATH is the CLI's one copy of the route family (src/branches.js BRANCHES_ENDPOINT), so the commands and the server cannot drift.
 const BRANCHES_PATH = "/api/branches"
 
-// branchJobPollInterval is how long the CLI waits between GETs of an in-flight
-// create/approve/discard/rewind (drive#563). The HTTP route answers 202 as soon
-// as the job is claimed; this loop is what waits for the last batch.
 const branchJobPollInterval = 500 * time.Millisecond
 
-// branchJobPollLimit caps the wait: 100,000 files at 80 a batch is 1,250
-// batches. A queue batch pays delivery plus processing, so 500ms ticks for
-// two hours stay above that even when each batch takes a couple of seconds.
 const branchJobPollLimit = 14400
 
-// sleepBranchJob is time.Sleep except in tests that replace it so a poll
-// finishes without waiting on the clock.
 var sleepBranchJob = time.Sleep
 
 func isBranchJobState(state string) bool {
@@ -111,9 +83,6 @@ func isBranchJobState(state string) bool {
 	}
 }
 
-// waitForBranch polls GET /api/branches/<name> until the job is no longer
-// in flight. A 202 create/approve/discard returns before the last batch, so
-// the command that started the job has to wait here.
 func waitForBranch(client *APIClient, name string) (BranchSummary, error) {
 	var last BranchSummary
 	for attempt := 0; attempt < branchJobPollLimit; attempt++ {
@@ -133,17 +102,6 @@ func waitForBranch(client *APIClient, name string) (BranchSummary, error) {
 	return last, fail("unexpected")
 }
 
-// branchClient builds the client every branch command uses. The api base is
-// the deployment's own (--api / DRIVE_API_URL), falling back to the one base
-// `drive init` signed in to. That base fronts both /api/branches* and
-// /v1/keys (drive#156); there is no second keysBase. The token is this
-// device's, so a branch is made, keyed and approved as the signed-in account.
-// branchClient is the api client for a branch command. It keeps the branch
-// rules this file owns -- no signed-in device, no api base, and the empty token
-// is named here as `not-signed-in` rather than as a 401 the person cannot act
-// on -- and adds the one re-sign-in every account route gets, so a branch on a
-// device whose sign-in slipped past its window comes back on its own
-// (drive#557).
 func branchClient(home, api string) (*APIClient, error) {
 	client, err := signedInClient(home, api, os.Stdout)
 	if err != nil {
@@ -155,18 +113,10 @@ func branchClient(home, api string) (*APIClient, error) {
 	return client, nil
 }
 
-// branchPathFor names one branch's endpoint. The name is escaped, so a name
-// the server accepted is the same name this call asks for back.
 func branchPathFor(name string) string {
 	return BRANCHES_PATH + "/" + url.PathEscape(name)
 }
 
-// defaultBranchName is the branch name a folder gets when --name is not given:
-// the folder's own name, the way a person would say it. The root has no name
-// of its own, so it becomes "root". A folder name that is not a legal branch
-// name (a space, say) falls back to "branch", so `drive branch "/My Photos"`
-// works and the person can still pass --name for the one they want; the
-// server's own checkedBranchName is the only place a name is judged.
 func defaultBranchName(folder string) string {
 	trimmed := strings.TrimRight(folder, "/")
 	if trimmed == "" {
@@ -219,9 +169,6 @@ func runBranch(args []string) error {
 		if !isAPIStatus(err, "409") {
 			return err
 		}
-		// A second `drive branch` on an open name is 409. That is also the
-		// recovery path after a mint that failed: the copy is already there,
-		// so this run fetches it and mints the key the first run missed.
 		recovered = true
 		var existing branchDiffAnswer
 		if getErr := client.Do("GET", branchPathFor(branchName), nil, &existing); getErr != nil {
@@ -251,17 +198,11 @@ func runBranch(args []string) error {
 	return nil
 }
 
-// isAPIStatus reports whether err is an api Worker refusal with this status
-// code in its status line (the shape APIClient.do wraps as *APIError).
 func isAPIStatus(err error, code string) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && strings.Contains(apiErr.Status, code)
 }
 
-// ensureBranchKey mints a branch key and stores it 0600, or reuses a stored
-// one when this is a 409 recovery and the key is already on disk. A fresh
-// create always mints, so a reused branch name after discard does not keep
-// the old key.
 func ensureBranchKey(home string, client *APIClient, name string, recovered bool) (MintedKey, error) {
 	if recovered {
 		existing, err := branchKeyFor(home, name)
@@ -293,9 +234,6 @@ func ensureBranchKey(home string, client *APIClient, name string, recovered bool
 	return key, nil
 }
 
-// checkBranchKey refuses a minted key that is not a branch key: the prefix
-// must be the branch folder, and delete must be absent. The secret is
-// required (MintKey already checks) but is never printed.
 func checkBranchKey(name string, key MintedKey) error {
 	if key.KeyID == "" || key.Secret == "" || key.Prefix == "" {
 		return fail("api-answer")
@@ -324,21 +262,12 @@ func printBranchResult(branch BranchSummary, key MintedKey, recovered bool) {
 	printBranchKey(key)
 }
 
-// printBranchKey shows the person the prefix and the two env var names an
-// agent tool would run on (drive#75). The secret and the access key id stay
-// out of the terminal and off the command line; they live in the 0600 file.
 func printBranchKey(key MintedKey) {
 	fmt.Printf("  branch key %s (no delete)\n", key.Prefix)
 	fmt.Printf("  an agent tool runs with %s_ACCESS_KEY_ID and %s_SECRET_ACCESS_KEY in its environment, never on the command line\n",
 		agentKeyEnv, agentKeyEnv)
 }
 
-// dropBranchKey revokes the stored branch key on the server and forgets the
-// local copy. Approve and discard pass the branch name the person typed
-// (`drive approve <branch>` / `drive discard <branch>`), which is the same
-// name `drive branch --name` stored the key under — not the folder path. A
-// missing local key is not an error: an older CLI created the branch with no
-// key. A 404 from revoke means the key is already gone.
 func dropBranchKey(home, name string, client *APIClient) error {
 	key, err := branchKeyFor(home, name)
 	if err != nil {
@@ -414,8 +343,6 @@ func runDiff(args []string) error {
 	return nil
 }
 
-// printBranchDiff renders the four lists the diff carries. The source-changed
-// list is the clash approve will stop on, so it is printed last and named.
 func printBranchDiff(name string, diff BranchDiff) {
 	changed := len(diff.Added) + len(diff.Changed) + len(diff.Removed)
 	if changed == 0 && len(diff.SourceChanged) == 0 {

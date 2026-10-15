@@ -1,7 +1,3 @@
-// Copy and sign-up gates for drive issue #387, updated for drive#463: card at
-// sign-up, no $1 credit text, no membership, "minimum" only in "no minimum",
-// and no founding pricing, cap or spots count on a public surface (drive#586).
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -90,6 +86,15 @@ function dataFor(kind) {
       happenedAt: "2026-10-06T09:00:00.000Z",
       replyTo: REPLY_TO,
     };
+  }
+  if (kind === "first-file-nudge") {
+    return { hours: 72, replyTo: REPLY_TO };
+  }
+  if (kind === "bill-dropped") {
+    return { fromLine: "$10.00", toLine: "$2.00", replyTo: REPLY_TO };
+  }
+  if (kind === "runway-notice") {
+    return { runwayLine: "Your $14 lasts about 1 month at your current size.", replyTo: REPLY_TO };
   }
   throw new Error(`no test data for ${kind}`);
 }

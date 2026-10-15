@@ -1,29 +1,3 @@
-// The month's bill, end to end from the meter (drive issue #163).
-//
-// Everything here runs through the REAL database: the rollup's own SQL against
-// the real migrations on a real node:sqlite database, the month's reads, and
-// monthBillCents() in core/billing.js - the one function that turns the month's
-// numbers into money. No fake D1 and no hand-rolled month: a case is set up by
-// storing file versions the way the storage provider reports them and letting
-// the hourly trigger roll the hours, so the GB-minutes the bill reads are the
-// ones the meter actually wrote.
-//
-// The rule under test (drive#463, Nish 2026-10-04): pay only for what you store.
-//
-//     bill = min(2c x avg GB, $10 x max(1, avg TB))
-//
-// with avg the time-weighted average over the month: GB-minutes over the
-// minutes in that UTC calendar month (drive#531), so
-// the bill reads the average only. The meter still writes an hourly peak, and
-// the tests below keep it honest, but no bill reads it. No minimum, no credit.
-//
-// The half-open boundary is the same in the schema, the SQL and the month
-// reader: an hour starts a month, so a file spanning 00:00 UTC on the 1st is
-// split there and each side is rolled into the month it falls in. That case is
-// here (below) rather than left to arithmetic, because it is the one where a
-// `<=` in a single place would quietly bill a customer two months of a file,
-// or none of one of them.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -37,17 +11,9 @@ import {
 } from "../core/billing.js";
 import { handleCapRequest } from "../core/cap-request.js";
 import { createD1DeviceStore } from "../core/devices.js";
-import {
-  gbMinutesInHour,
-  MINUTE_MS,
-  monthStart,
-  monthUsageRollup,
-  recordEvent,
-  rollupHour,
-  runMeterCron,
-  toVersion,
-  validateEvent,
-} from "../core/meter.js";
+import { gbMinutesInHour, MINUTE_MS, rollupHour, toVersion } from "../core/meter.js";
+import { recordEvent, runMeterCron, validateEvent } from "../core/meter-events.js";
+import { monthStart, monthUsageRollup } from "../core/meter-usage.js";
 import { at, GB, makeMeteredDB } from "./d1-sqlite.mjs";
 
 const TB = 1000 * GB;

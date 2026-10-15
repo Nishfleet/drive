@@ -1,19 +1,11 @@
-// Share and web downloads bill the owner (drive#517 finish line 5). The dl
-// Worker bills mount reads; these are the other two ways bytes leave storage:
-// a share link opened by anyone, and the signed-in web routes (download,
-// preview, embed). Each adds the bytes its response carries to the owner's
-// download total, the same usage_minutes column the invoice reads.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import {
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-} from "../core/files.js";
-import { downloadRecorder } from "../core/meter.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
+import { downloadRecorder } from "../core/meter-usage.js";
 import { newLinkToken, SHARE_LINK_PREFIX } from "../src/share.js";
 import { handleShareFileRequest } from "../src/share-routes.js";
 import { newShareRecord } from "../src/share-store.js";
@@ -21,7 +13,7 @@ import { makeMeteredDB } from "./d1-sqlite.mjs";
 
 const OWNER = { id: "acct_owner", name: "Owner" };
 const NOW = Date.UTC(2026, 9, 6, 10, 0, 0);
-const BYTES = "0123456789".repeat(30); // 300 bytes
+const BYTES = "0123456789".repeat(30);
 
 /**
  * @param {{prepare(sql: string): {get(...params: unknown[]): unknown}}} sqlite

@@ -1,30 +1,8 @@
-// Share links and upload requests over the real D1 schema (drive issue #207,
-// from the 00:35 review of #87: they were two in-memory Maps in src/share.js,
-// so a link worked on the one Worker instance that minted it and every link
-// died on the next deploy).
-//
-// This file is the proof the Maps are gone. It runs the real routes from
-// src/share.js against a real SQLite database with the real migration files
-// applied (migrations/drive/0006_share_links.sql), through the same D1-shaped
-// adapter the rest of the test tree uses (test/harness.mjs createTestD1), and
-// it makes the two claims the memory store could not:
-//
-//   1. A link minted through one store instance RESOLVES through a second,
-//      freshly built store over the same database — a new object, the stand-in
-//      a second Worker isolate is. That is the deploy-survival claim, and a
-//      Map cannot pass it by construction.
-//   2. A revoked link and an expired link are both refused by the route after
-//      the instance is replaced, so "it resolves elsewhere" never turns into
-//      "a dead link still works".
-//
-// Every assertion reads the row back with plain node:sqlite statements, off
-// the same engine, so a row the adapter remembered and the schema never got
-// could not pass this file — the same rule test/integration/meter-schema
-// .test.mjs follows.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMemoryStore, handleFilesRequest, scopeStore } from "../../core/files.js";
+import { handleFilesRequest } from "../../core/files-handlers.js";
+import { createMemoryStore } from "../../core/files-memory.js";
+import { scopeStore } from "../../core/files-scope.js";
 import { failureMessage } from "../../core/messages.js";
 import {
   DAY_MS,

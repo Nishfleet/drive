@@ -1,12 +1,8 @@
-// Branch jobs (drive#563): copy, approve, discard and rewind run in file
-// batches so a large folder stays inside one Worker's subrequest budget.
-// These tests are the issue's finish line, against the in-memory store with
-// the shipped migrations.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createMemoryStore, scopeStore } from "../core/files.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { failureMessage } from "../core/messages.js";
 import {
   BRANCH_JOBS_DEAD_LETTER_QUEUE,

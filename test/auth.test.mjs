@@ -1,18 +1,3 @@
-// The sign-in stack on Better Auth, over the customer database (drive issue
-// #181, split from #161 after that issue timed out at 55 minutes with nothing
-// pushed). Six proofs, each against a real SQLite engine with the shipped
-// migrations applied — D1 is SQLite, so the SQL these tests run is the SQL the
-// Worker runs:
-//
-//   1. The shipped migrations are the schema Better Auth's own planner expects.
-//   2. A link works once.
-//   3. A link expires.
-//   4. A session survives a Worker restart (a new isolate, a new instance of
-//      core/auth.js, and the same database).
-//   5. Sign-out kills the session.
-//   6. Deny by default: an unknown cookie, a foreign database, and a
-//      deployment with no auth at all all read as signed out.
-
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -33,7 +18,7 @@ import {
   signinDeviceName,
   signinLinkEmail,
 } from "../core/auth.js";
-import { createMemoryStore } from "../core/files.js";
+import { createMemoryStore } from "../core/files-memory.js";
 import worker from "../src/index.js";
 import { TEST_FILES_STORE } from "../src/index-support.js";
 import {

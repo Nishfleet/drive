@@ -1,9 +1,3 @@
-// The meter at scale (drive#519): a correction that touches one account
-// re-rolls that account and never the global mark, one bad row is logged and
-// skipped, the draw catches up from its own mark however long it was down,
-// the hourly statements plan through indexes, and the crons fan out one
-// message per account when the queue is bound.
-
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -12,17 +6,18 @@ import {
   ACCOUNT_HOUR_USAGE_SQL,
   CLEAR_EMPTY_ACCOUNTS_SQL,
   HOUR_USAGE_SQL,
-  METER_CRON,
-  METER_RECONCILE_SCHEDULE,
   MINUTE_MS,
-  monthStart,
-  pruneHiddenVersions,
-  reconcileMeter,
+} from "../core/meter.js";
+import {
+  METER_CRON,
   recordEvent,
   runMeterCron,
   VERSION_RETENTION_DAYS,
   validateEvent,
-} from "../core/meter.js";
+} from "../core/meter-events.js";
+import { METER_RECONCILE_SCHEDULE, pruneHiddenVersions } from "../core/meter-fair-use.js";
+import { reconcileMeter } from "../core/meter-reconcile.js";
+import { monthStart } from "../core/meter-usage.js";
 import worker from "../src/index.js";
 import { METER_JOB_KINDS } from "../src/meter-jobs.js";
 import { applyMigrations, at, GB, makeMeteredDB, midnight } from "./d1-sqlite.mjs";

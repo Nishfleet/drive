@@ -1,7 +1,3 @@
-// The three static-file contracts drive#527 adds: the agent files are at the
-// address the README prints, hashed assets get a one-year immutable cache,
-// and the site address is written in cmd/drive/site.json.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

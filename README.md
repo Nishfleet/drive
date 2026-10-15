@@ -8,20 +8,20 @@ write the same folder.
 - **Plain files.** Real names, opened by the apps you already use. Nothing is
   packed into a database.
 - **Version history is not in version 1.** Saving a file again replaces it. A
-  delete from the Files page is restorable for 30 days in Recently deleted, and
-  a delete made any other way is recoverable for one day, by asking us. The
+  delete from the Files page is restorable for 3 days in Recently deleted.
+  Deleted or replaced files stay restorable for 3 days, free. The
   full list of what version 1 does not do is on the
   [Limits page](https://storagebun.com/docs/limits).
-- **An agent's delete is undoable for 1 day.** An agent gets its own key. The
-  storage takes that key's delete but keeps the deleted copy for 1 day, and we
-  can put it back if you ask within that day. After that it is gone. A branch key reaches your whole Storagebun, not only its branch, because the
+- **An agent's delete is undoable for 3 days.** An agent gets its own key. The
+  storage takes that key's delete but keeps the deleted copy for 3 days, and we
+  can put it back if you ask within that time. After that it is gone. A branch key reaches your whole Storagebun, not only its branch, because the
   storage limits a key to the whole Storagebun. `drive init` mounts `~/Drive-agents/<tool>`
   for each tool on its own key, and the MCP server and the tool's allowed folders
   point there, not at your Storagebun. Windows is not in version 1, and the tool there
   still works inside your own Storagebun, because the agent mount is not proven there.
 - **One price.** Add $10 or more. Pay 2 cents per GB from your balance. Never more than $15 per TB.
   No plans. Your balance never expires.
-- **A card at sign-up.** We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.
+- **A card on your first top-up.** There is no free tier. Your first $10 top-up opens storage and puts a card on file. 20 GB draws about 40 cents a month from your balance.
 - **A cap you set.** At the cap the drive goes read-only: nothing is deleted and
   the bill stops.
 
@@ -48,6 +48,10 @@ agents.
   the three commands, the log on each system, a lost laptop, your files out
 - [Limits](https://storagebun.com/docs/limits) — what
   version 1 does not do
+- [API reference](https://storagebun.com/docs/api) — every
+  route behind the `drive` command, with a curl example
+- [Webhooks](https://storagebun.com/docs/webhooks) — signed
+  calls to your own server when your balance changes
 - [Benchmarks](https://storagebun.com/docs/benchmarks) —
   measured speed, including where we lose
 - [Security](https://storagebun.com/docs/security) — who

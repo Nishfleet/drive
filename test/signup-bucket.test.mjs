@@ -1,17 +1,9 @@
-// The sign-up bucket proof (drive issue #540): a customer who only ever uses
-// the website gets their own storage bucket at the sign-in verify step, so the
-// Files page and web upload work before any device has signed in. The whole
-// walk runs through the Worker's own dispatch — POST /api/signin, the mailed
-// link, GET /api/signin/verify — against the pinned MinIO stand-in, the same
-// engine test/step1-storage.test.mjs proves the bucket build with, and skips
-// to a skip (never a pass) when no container engine answers.
-
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { platform } from "node:os";
 import { test } from "node:test";
 import { bucketForAccount } from "../core/keyprovider.js";
-import { createS3Client, readBucketConfig } from "../core/s3.js";
+import { createS3Client, HIDDEN_VERSION_DAYS, readBucketConfig } from "../core/s3.js";
 import worker from "../src/index.js";
 import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_BASE_URL } from "./harness.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
@@ -158,7 +150,11 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
         true,
         "the hidden-version lifecycle rule must be readable back",
       );
-      assert.equal(config.lifecycleDays, 1, "hidden versions are kept one day");
+      assert.equal(
+        config.lifecycleDays,
+        HIDDEN_VERSION_DAYS,
+        "hidden versions are kept three days",
+      );
       assert.equal(
         await provisionedForNoOne(made),
         true,
@@ -245,7 +241,7 @@ test("a fresh web sign-up gets a working drive with no device key", async (t) =>
       true,
       "the second provisioning call put the hidden-version rule back",
     );
-    assert.equal(config.lifecycleDays, 1, "hidden versions are kept one day");
+    assert.equal(config.lifecycleDays, HIDDEN_VERSION_DAYS, "hidden versions are kept three days");
     const listed = await workerFetch(
       new Request(`${TEST_BASE_URL}/api/files`, { headers: { cookie } }),
       env,

@@ -1,7 +1,6 @@
-// Split out of core/devices.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
 import { BILLING_CONFIG, size30DropsOutDay, size30Window, storedGb } from "./billing.js";
 import { first, run } from "./db.js";
-import { monthStart, monthUsageThrough, size30Through } from "./meter.js";
+import { monthStart, monthUsageThrough, size30Through } from "./meter-usage.js";
 
 /** @typedef {import("./devices-rows.js").DeviceStoreContext} DeviceStoreContext */
 /** @typedef {import("./devices-rows.js").Device} Device */
@@ -130,10 +129,6 @@ export function createAccountMethods(ctx) {
           downloadBytes: size30.downloadBytes,
           capUsd: options.capUsd,
           cardAdded: true,
-          // The display stamp only, forwarded from the same accounts row
-          // `cardAdded` reads (drive#417): until a card is really on file the
-          // usage page says no charge has been made and shows no bill. The cap
-          // line and the write cap do not read it.
           cardOnFile: await readCardAdded(accountId),
         };
       },
@@ -220,8 +215,6 @@ export function createAccountMethods(ctx) {
             `markCapNoticeSent needs kind "cap-warning" or "read-only", got ${String(kind)}`,
           );
         }
-        // The column name is one of the two literals above and never anything a
-        // caller passed, so this is not a caller-shaped SQL string.
         await run(
           db,
           `UPDATE accounts SET ${column} = ?1 WHERE id = ?2 AND ${column} IS NULL`,
@@ -248,7 +241,6 @@ export function createAccountMethods(ctx) {
             `clearCapNotice needs kind "cap-warning" or "read-only", got ${String(kind)}`,
           );
         }
-        // One of the two literals above, never caller-shaped SQL.
         await run(db, `UPDATE accounts SET ${column} = NULL WHERE id = ?1`, accountId);
       },
 

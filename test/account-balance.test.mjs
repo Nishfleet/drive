@@ -1,14 +1,3 @@
-// The account page's balance section (drive#586 part 3): the balance, the
-// top-up presets and custom amount, the auto top-up switch (off by default)
-// and the recent ledger lines, on /usage (TOP_UP_PAGE, where the checkout
-// returns).
-//
-// public/usage.html is a static asset with a one-script budget
-// (lighthouserc.json), so the balance section is a second inline block, marked
-// data-part="balance". This file runs that block against a stub DOM and a stub
-// fetch, the way test/usage.test.mjs runs the month's block, so what it proves
-// is what the page does, not what its source says.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -106,6 +95,7 @@ function summary(overrides = {}) {
         amount: "$15.00",
         window_start: null,
         reason: null,
+        receipt_url: "/api/receipts/7",
         at: "2026-10-04T09:00:00.000Z",
       },
     ],
@@ -193,6 +183,12 @@ test("the page shows the balance, its line and the recent ledger lines", async (
   assert.match(lines[1], /Top-up/);
   assert.match(lines[1], /\+\$15\.00/);
   assert.equal(elements.get("ledger-empty").hidden, true);
+  // Only the top-up carries a receipt link, and it is the Worker's own path.
+  const [usage, topUp] = elements.get("ledger-list").appended;
+  assert.equal(usage.appended.length, 4 - 1);
+  const link = topUp.appended.at(-1);
+  assert.equal(link.href, "/api/receipts/7");
+  assert.equal(link.textContent, "Receipt");
 });
 
 test("the presets are $10, $25 and $50, and the custom amount starts at $10", async () => {

@@ -1,134 +1,31 @@
-// Share links and upload requests (drive issue #19, build-spec.md "Against
-// the competitor": "Public file links and upload requests" — the one competitor feature the
-// spec lists as a gap with no design anywhere else).
-//
-// Two features, one file, because they are the same problem from both ends:
-// a stranger holds a token and must be able to do exactly the one thing the
-// owner allowed, and nothing else.
-//
-//   share link     `drive share <file>` (POST /api/share) mints a token that
-//                  GET /s/<token> resolves to one file's bytes, logged out.
-//                  It expires after 7 days by default and can be revoked, and
-//                  a revoked or expired token is a 404 like a token that
-//                  never existed. The share row stores the file's etag at
-//                  mint (drive#554). If the live object later has a different
-//                  etag, the link refuses with a short page rather than
-//                  labelling the download: serving the new bytes would let a
-//                  swapped-in file ride the old link. Mint also hashes the
-//                  bytes against the stock known-bad list and refuses a hit.
-//                  Downloads are counted on the share's own row, and the
-//                  resolved owner account id is what the dl Worker uses to
-//                  add the bytes to that owner's free-3x allowance
-//                  (build-spec.md "How the money is worked out"; the byte
-//                  rollup itself is build step 5, issue #58).
-//   upload request `drive request <folder>` (POST /api/request) mints a token
-//                  that public/upload.html uses to drop files into one
-//                  folder. It expires on the same 7-day window and can be
-//                  revoked, and it refuses uploads while the owner's drive is
-//                  read-only at its spending cap — the cap is read from
-//                  core/billing.js's capStatus(), never re-decided here, so a
-//                  capped drive cannot take a new file through a request page.
-//                  A stranger is also bounded by a per-file size, a per-link
-//                  total the owner sets (low default), and the two stock
-//                  rate-limit bindings (per IP and per token), so one link
-//                  cannot fill the drive up to the cap (issue #208).
-//
-// Why a token and not a signed storage URL: revocation has to be immediate.
-// A signed URL keeps working until it expires, and the only way to kill it is
-// to rotate the storage key, which breaks every device at once. A token that
-// is looked up on every hit cannot outlive `revoke`, and the share route sends
-// no-store so no cache can serve the bytes after the revocation either.
-//
-// The store is an injected interface (`LinkStore` below), and it is the
-// customer database — DRIVE_DB, the same binding the file index and the
-// branches table use, with the rows in migrations/drive/0006_share_links.sql.
-// It was a pair of in-memory Maps once, which made a link work on exactly the
-// Worker instance that minted it and lose it on every deploy (issue #207).
-// Nothing here invents a second path to storage: bytes go through the FileStore
-// interface (core/files.js) and the link records go through the same D1
-// statements src/search.js and src/branches.js already send, so there is one
-// way to reach the customer database and one place the account is applied.
-
 import { BYTES_PER_GB, GB_PER_TB } from "../core/billing.js";
 import { TRASH_PATH, validatePath } from "../core/files.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { formatBytes } from "../core/status.js";
 import { DAY_MS } from "../core/units.js";
 
-/** Where a link's bytes are served. The dl Worker takes this path over. */
 export const SHARE_LINK_PREFIX = "/s";
-/** The owner-facing share API: list, mint, revoke. */
 export const SHARE_ENDPOINT = "/api/share";
-/** The owner-facing upload-request API: list, mint, revoke. */
 export const REQUEST_ENDPOINT = "/api/request";
-/** The public upload page (public/upload.html; `?k=<token>` names the request). */
 export const REQUEST_PAGE = "/upload.html";
-/** How long a link lasts, in days, when the caller does not choose. */
 export const DEFAULT_LINK_DAYS = 7;
 export { DAY_MS };
-// Per-file ceiling on a public upload request (drive issue #208, from the
-// 00:35 review of #87). 32 MB stays inside a Workers isolate (128 MB) even
-// while the stream is copied into one buffer to count it; the platform's
-// 100 MB request-body cap is above this, so the isolate is the bound that
-// matters. The 1 GB per-link total is what stops a stranger filling the
-// drive. Refusing on Content-Length before the body is read, then counting
-// the stream, is what stops a declared size that is smaller than the body.
+// A Workers isolate has 128 MB of memory and the platform caps a request body at 100 MB (https://developers.cloudflare.com/workers/platform/limits/).
 export const REQUEST_FILE_MAX_BYTES = 32_000_000;
-// Per-link total, the low default. One upload page cannot fill the drive
-// while the owner sleeps: a stranger is bounded to 1 GB through the link,
-// on top of the owner's spending cap. The owner may set a different total
-// when they mint the page (POST /api/request {folder, maxBytes}).
 export const REQUEST_TOTAL_MAX_BYTES = BYTES_PER_GB;
-// The most open links one account may hold (drive issue #549): 50 share links
-// and 50 upload pages. A script with one account cannot mint unbounded tokens
-// to walk, and an owner with a burst of links revokes one to make room.
 export const MAX_OPEN_LINKS = 50;
-// The per-link file-count cap (drive issue #549): a link takes 100 files by
-// default. The reservation UPDATE enforces it in the same statement that
-// counts the bytes, so a link cannot be filled by a script that drops files
-// faster than the count is written.
 export const REQUEST_MAX_FILES = 100;
-// One json_remove call cannot carry more arguments than SQLite's function
-// bound (SQLITE_MAX_FUNCTION_ARG, 127 stock), so a deep arrival queue is
-// cleared in chunks of this many front entries per UPDATE (drive issue #684).
+// SQLITE_MAX_FUNCTION_ARG is 127 by default, which bounds json_remove's argument list.
 export const REMOVE_CHUNK = 64;
-// The one-a-day bound (drive issue #684): 20 hours, so the shared nightly
-// cron at any time of day mails a link once, and a trip that fires twice
-// inside a day is caught by the stamp rather than by the clock.
 export const DIGEST_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
-// The longest file name an upload page accepts (drive issue #549): the same
-// 255 the owner's own Files page lives with, checked before the body is read.
 export const REQUEST_NAME_MAX_LENGTH = 255;
-// A per-link total above this is a number the owner cannot mean (drive issue
-// #549): 1 TB is the pre-charge storage ceiling, so a link promising more
-// could never be honoured anyway. The TB is the billing one, so a promise can
-// never outrun the ceiling it is checked against.
 const REQUEST_TOTAL_MAX_CEILING_BYTES = GB_PER_TB * BYTES_PER_GB;
-// How many times a shared file's own size a link may serve before it stops
-// (drive issue #549): a share is for showing a file, not for hosting it as a
-// seed, and 30x a file is far above the handful of opens a person makes.
 const SHARE_DOWNLOAD_CAP_MULTIPLIER = 30;
-// A link whose row is this old and no longer open can be pruned (drive issue
-// #549): expired and revoked rows are kept 90 days so the owner's list still
-// shows what they did, then removed.
 export const LINK_RETENTION_DAYS = 90;
-// How long a link stays quiet about repeated known-bad drops (drive issue
-// #826): the first refusal through a link mails the owner, repeats inside
-// the window answer the same 403 and mail nothing, and the window reopening
-// mails a fresh notice. Without it, anyone holding the link can mail the
-// owner once per POST at the link's rate-limit pace; with it, the flood is
-// one mail a day per link, and a stranger the owner has already been told
-// about cannot crowd out a new one.
 export const MALWARE_NOTICE_QUIET_MS = 24 * 60 * 60 * 1000;
-// 16 random bytes as base64url: 22 characters of [A-Za-z0-9_-]. The length is
-// fixed, so a token in a URL either has exactly this shape or is not one of
-// ours; guessing one is a 2^128 search.
 const TOKEN_BYTES = 16;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 
-// The base64url alphabet. Hand-rolled rather than Buffer/btoa because the same
-// code runs in the Worker and in node --test, and a token alphabet is small
-// enough to pin exactly.
 const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 /** Encode bytes as base64url, no padding, the alphabet a URL path can carry.
@@ -327,7 +224,6 @@ export function shareDownloadCapFor(size) {
   return bytes * SHARE_DOWNLOAD_CAP_MULTIPLIER;
 }
 
-/** The word the owner's list shows for each state. */
 const LINK_STATE_LABELS = Object.freeze({
   active: "Open",
   revoked: "Revoked",
@@ -424,39 +320,22 @@ export function requestRow(record, now, base) {
   });
 }
 
-// ---------------------------------------------------------------- the words
-
-// The upload page's copy. public/upload.html is a static asset and cannot
-// import this module, so test/share.test.mjs reads the shipped page and fails
-// when its words drift from here — the same gate test/files.test.mjs runs for
-// core/files.js and public/files.html.
 export const UPLOAD_PAGE_COPY = Object.freeze({
   title: "Drop files here",
   lede: "Files you drop land in the folder below. The owner sees them on their drive.",
   folderLabel: "Lands in",
-  // The owner's display name (drive issue #684): the label the page puts in
-  // front of it, so a stranger knows whose drive they are dropping into. The
-  // name itself comes from the info response.
   ownerLabel: "Shared by",
   choose: "Choose files",
   hint: "or drop them anywhere on this page",
   uploading: "Uploading…",
   done: "Uploaded. Drop another whenever you like.",
-  // The closed page's own two lines, and the no-token case. They are not the
-  // open page's title: a closed link that still says "Drop files here" tells a
-  // stranger to do something that cannot work. The two lines are the message
-  // table's link-not-found entry read through, not a second copy — the same
-  // words the route itself answers with (drive#193: one table, no drift).
   closedTitle: FAILURE_MESSAGES["link-not-found"].what,
   closedBody: FAILURE_MESSAGES["link-not-found"].next,
   noToken: "This page needs the link it was sent with. Open the link again to drop files.",
 });
 
-/** The page's one line about the link itself. */
 export const UPLOAD_PAGE_LINE =
   "This page takes files into one folder and nothing else. It stops working when the link expires or the owner turns it off.";
-
-// ---------------------------------------------------------------- the store
 
 /**
  * What the handlers need from the link store, and nothing more.
@@ -492,9 +371,6 @@ export const UPLOAD_PAGE_LINE =
  * @property {(token: string, at: number) => Promise<void>} requests.stampMalwareNotice
  */
 
-// The columns both tables are read back through, named once so a row read and
-// a record written cannot drift: the record fields are the same words the
-// handlers already use, and the SQL spells them in snake_case.
 export const SHARE_COLUMNS =
   "token, account_id, path, name, created_at, expires_at, revoked_at, download_count, download_bytes, max_download_bytes, etag";
 export const REQUEST_COLUMNS =

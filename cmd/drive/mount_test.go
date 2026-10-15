@@ -1,32 +1,5 @@
 package main
 
-// The mount speed hill-climb (drive issue #224).
-//
-// The issue asks for the speed half of the eval-design/hill-climbing post,
-// applied to the mount: one change per round, every row re-measured, a change
-// kept only when its target row improves by more than that row's measured
-// noise and nothing else gets worse by more than noise. A held-out set uses
-// different file sizes on the other network profile so a keep is not an
-// overfit to the tuning sizes.
-//
-// It is a Go test rather than a script because this repo's speed numbers are
-// produced by `go test` (#99, gated by test/benchmarks.test.mjs: "no helper
-// script"): the suite the published figures come from, run with the same
-// command a reader types. The two stock tools it drives are rclone's own
-// `serve s3` (the stand-in storage the step-1 proof uses) and hyperfine, which
-// the issue names for the statistics. Neither is reimplemented here.
-//
-// The loop is off unless DRIVE_HILL=1, so `go test ./...` and CI `-short`
-// stay green. Run it:
-//
-//	DRIVE_HILL=1 go test ./cmd/drive -run TestMountSpeedHillClimb -v -timeout 45m
-//	DRIVE_HILL=1 DRIVE_BENCH_RUNS=10 go test ./cmd/drive -run TestMountSpeedHillClimb -v -timeout 45m
-//
-// The simulated network is stock `tc netem`. netem and the FUSE mount both
-// need a user namespace on this host, so the test re-execs inside
-// `unshare -Urmn` (user, mount and network), which is what the stand-in mount
-// proofs already do (issue #62; two-mount-sync.test.mjs).
-
 import (
 	"bytes"
 	"encoding/json"
@@ -43,16 +16,13 @@ import (
 	"time"
 )
 
-// hillClimbFlag is one knob the climb is allowed to turn. env is the suffix
-// after DRIVE_BENCH_ that VFSArgs reads, so a round's override is the same
-// handle the product already carries.
 type hillClimbFlag struct {
 	name      string
 	flag      string
 	env       string
 	baseline  string
 	candidate string
-	target    string // hillClimbRow.scenario this flag exists to move
+	target    string
 }
 
 func tunableFlags() []hillClimbFlag {
@@ -68,16 +38,11 @@ func tunableFlags() []hillClimbFlag {
 type hillClimbRow struct {
 	scenario string
 	metric   string
-	set      string // "tune" or "hold"
-	// seed runs once per stand-in, against storage, never inside the timing.
-	seed func(t *testing.T, h *hillStandin)
-	// prepare is hyperfine --prepare, empty when the timed command does not mutate.
-	prepare func(h *hillStandin) string
-	cmd     func(h *hillStandin) string
-	// copies > 1 seeds name-0..name-(n-1) and times each with hyperfine
-	// --parameter-list, so a folder rename never has to move the same
-	// directory back (rclone's S3 backend errors Dir.Remove not empty).
-	copies int
+	set      string
+	seed     func(t *testing.T, h *hillStandin)
+	prepare  func(h *hillStandin) string
+	cmd      func(h *hillStandin) string
+	copies   int
 }
 
 func hillClimbRows() []hillClimbRow {
@@ -127,7 +92,6 @@ func hillClimbRows() []hillClimbRow {
 				return "mv " + h.shell(filepath.Join(h.mountDir, "rename-{i}")) + " " + h.shell(filepath.Join(h.mountDir, "renamed-{i}"))
 			},
 		},
-		// Held-out: different sizes, measured on the other network profile.
 		{
 			scenario: "open-time", metric: "first-byte", set: "hold",
 			seed: func(t *testing.T, h *hillStandin) { h.seed(t, "hold-get.bin", 512<<10) },
@@ -181,7 +145,7 @@ func hillClimbRows() []hillClimbRow {
 type netemProfile struct {
 	name string
 	args []string
-	set  string // "tune" or "hold": which row set this profile measures
+	set  string
 }
 
 func netemProfiles() []netemProfile {
@@ -394,12 +358,6 @@ func TestVFSArgsPinsTheSafetyFlags(t *testing.T) {
 	}
 }
 
-// TestVFSReadChunkingBoundsPerFileMemory is the memory half of the mount's
-// safety flags (issue #543): rclone's parallel reader allocates one read-chunk
-// buffer per stream, so chunk size x streams is the memory one open file can
-// take. The shipped pair is 2-4 streams of 16-32 MiB and the product stays at
-// or under 128 MiB per file. The last two checks prove the bound bites: the old
-// 128M x 2 pair (the bug this fixes) trips it.
 func TestVFSReadChunkingBoundsPerFileMemory(t *testing.T) {
 	const (
 		minChunk   = 16 << 20
@@ -434,8 +392,6 @@ func TestVFSReadChunkingBoundsPerFileMemory(t *testing.T) {
 	}
 }
 
-// perFileReadMemory is the read-buffer memory one open file can take: rclone
-// allocates one read-chunk buffer per stream.
 func perFileReadMemory(chunk int64, streams int) int64 { return chunk * int64(streams) }
 
 func TestTunedVFSValueOverride(t *testing.T) {
@@ -516,8 +472,6 @@ func TestMountSpeedHillClimb(t *testing.T) {
 		}
 		return
 	}
-	// A fresh network namespace has loopback down. The stand-in and the mount
-	// both bind 127.0.0.1, and netem is attached to lo, so bring it up first.
 	bringUpLoopback(t)
 
 	runs := hillRuns(t)
@@ -660,9 +614,6 @@ func hyperfine(t *testing.T, runs int, prepare, cmd string, copies int) (hyperfi
 		for i := range copies {
 			ids[i] = strconv.Itoa(i)
 		}
-		// Each copy is a fresh folder, so the first timed run is the
-		// measurement. Warmup would consume a copy. Noise is the spread
-		// across the ten copies (combineStats).
 		args = append(args, "--warmup", "0", "--runs", "1", "--parameter-list", "i", strings.Join(ids, ","))
 	} else {
 		args = append(args, "--warmup", "2", "--runs", strconv.Itoa(runs))
@@ -756,8 +707,6 @@ func (h *hillStandin) remount(t *testing.T, pairs [][]string) {
 	cmd.Env = append(os.Environ(),
 		"DRIVE_S3_ACCESS_KEY_ID="+h.cfg.AccessKey,
 		"DRIVE_S3_SECRET_ACCESS_KEY="+h.cfg.SecretKey,
-		// The climb measures VFS flags. Prefetch is a separate login item
-		// (issue #227) and would list and warm files during the timed runs.
 		"DRIVE_PREFETCH=0",
 	)
 	if len(pairs) > 0 {
@@ -902,15 +851,6 @@ func reexecInNetNamespace() error {
 	return cmd.Run()
 }
 
-// TestSystemdUserSessionAbsentGatesTheFallback pins which startLinuxLoginItem
-// errors Mount treats as "no systemd user manager, start the mount in the
-// background" (drive#105) and which it returns as a real error. The fallback
-// is for a clean container that has no user bus to start the login item with;
-// a systemd host whose unit simply fails to start must be reported, because a
-// detached rclone there plus the unit still enabled would mount a second
-// rclone at the next login. The absent cases below are the two the
-// clean-container proof produced (systemctl missing, and systemctl present but
-// unable to reach the bus).
 func TestSystemdUserSessionAbsentGatesTheFallback(t *testing.T) {
 	absent := []string{
 		"systemctl --user daemon-reload: exec: \"systemctl\": executable file not found in $PATH",
@@ -935,13 +875,6 @@ func TestSystemdUserSessionAbsentGatesTheFallback(t *testing.T) {
 	}
 }
 
-// The re-run fix (drive issue #561): a second `drive init` (or
-// `drive mount`) whose files are already exactly on disk must not
-// restart the login item, because a restart stops the running
-// rclone and unmounts a live drive under open files. The start
-// action and both mounted probes are seams here: the test records
-// the action a real host's user manager would take, and answers
-// the probes without a kernel mount.
 func mountTestSeams(t *testing.T, gate bool) (*int, *bool) {
 	t.Helper()
 	starts := 0
@@ -967,9 +900,6 @@ func TestMountSkipsRestartWhenNothingChanged(t *testing.T) {
 	if *starts != 1 {
 		t.Fatalf("the first mount started the login item %d times, want 1", *starts)
 	}
-	// The cache is marked from the first mount on, on every
-	// platform, so a backup tool that walks the home folder skips
-	// the mount's transient bytes (issue #561).
 	if _, err := os.Stat(filepath.Join(DefaultCacheDir(home), "CACHEDIR.TAG")); err != nil {
 		t.Fatalf("CACHEDIR.TAG missing after the first mount: %v", err)
 	}
@@ -985,8 +915,6 @@ func TestMountSkipsRestartWhenNothingChanged(t *testing.T) {
 	if !strings.Contains(printed, "already running") {
 		t.Fatalf("re-run printed %q, want it to say the mount is already running", printed)
 	}
-	// The tag is rewritten identically, so the mark survives every
-	// re-run, not just the first one.
 	if got, err := os.ReadFile(filepath.Join(DefaultCacheDir(home), "CACHEDIR.TAG")); err != nil || string(got) != cacheDirTag {
 		t.Fatalf("CACHEDIR.TAG after the re-run = (%q, %v), want the shipped tag", got, err)
 	}
@@ -1010,10 +938,6 @@ func TestMountLeavesRcloneEnvByteIdentical(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The skip path only fires when the re-run writes the same bytes,
-	// so the env writer must be deterministic. If it ever writes a
-	// timestamp or reorders its keys, this test fails and the fix is
-	// known dead rather than silently never skipping.
 	if !bytes.Equal(first, second) {
 		t.Fatalf("rclone.env changed between two identical mounts:\n%s\n---\n%s", first, second)
 	}
@@ -1026,8 +950,6 @@ func TestMountRepairsAModeThatDrifted(t *testing.T) {
 	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
 		t.Fatal(err)
 	}
-	// The config carries the storage secret and is written 0600. A mode
-	// that drifted is a change the re-run must repair, not skip.
 	configPath := RcloneConfigPath(home)
 	if err := os.Chmod(configPath, 0o644); err != nil {
 		t.Fatal(err)
@@ -1043,8 +965,6 @@ func TestMountRepairsAModeThatDrifted(t *testing.T) {
 	}
 }
 
-// A probe that cannot answer is not proof that the drive is up: with
-// unchanged files, Mount must not exit 0 on that.
 func TestMountDoesNotClaimAMountItCouldNotCheck(t *testing.T) {
 	home := t.TempDir()
 	starts, _ := mountTestSeams(t, true)
@@ -1066,8 +986,6 @@ func TestMountDoesNotClaimAMountItCouldNotCheck(t *testing.T) {
 	}
 }
 
-// A rclone.env that cannot be read (a stray line, a loose mode) is treated
-// as absent and rewritten, as before the pair was reused.
 func TestMountRegeneratesADamagedRcloneEnv(t *testing.T) {
 	home := t.TempDir()
 	mountTestSeams(t, true)
@@ -1085,7 +1003,6 @@ func TestMountRegeneratesADamagedRcloneEnv(t *testing.T) {
 	}
 }
 
-// --dry-run writes nothing: no cache tag, no login item, no tmutil.
 func TestMountDryRunWritesNoCacheTag(t *testing.T) {
 	home := t.TempDir()
 	starts, _ := mountTestSeams(t, true)
@@ -1109,9 +1026,6 @@ func TestMountRestartsWhenThePlanChanged(t *testing.T) {
 	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
 		t.Fatal(err)
 	}
-	// A rotated storage key rewrites the config, so this run is a
-	// real change: the login item restarts and rclone picks the
-	// key up, exactly as before the fix.
 	rotated := testStorage()
 	rotated.SecretKey = "rotatedsecretkey"
 	if err := Mount("linux", home, "/fake/rclone", rotated, false, false, ""); err != nil {
@@ -1129,11 +1043,6 @@ func TestMountStartsAStoppedDriveWithUnchangedFiles(t *testing.T) {
 	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
 		t.Fatal(err)
 	}
-	// The drive is down (a reboot, a `drive unmount`): the files
-	// are unchanged, but "unchanged" is not a reason to leave a
-	// mount down, so this run still starts it. The wait then
-	// sees the mount up, which is what a start that worked
-	// looks like.
 	*gate = false
 	if err := Mount("linux", home, "/fake/rclone", testStorage(), false, false, ""); err != nil {
 		t.Fatal(err)
@@ -1143,11 +1052,6 @@ func TestMountStartsAStoppedDriveWithUnchangedFiles(t *testing.T) {
 	}
 }
 
-// The backup exclusion (drive issue #561): macOS's own backup tool walks the
-// home folder, so the mount's transient bytes — the cache chunks — are excluded
-// on the first mount and on every one after it. The exclusion is a note when it
-// fails: the drive works without it, and the CACHEDIR.TAG marker still tells a
-// tool that reads it.
 func TestWriteCacheTagEmptyDirIsANoOp(t *testing.T) {
 	if err := writeCacheTag(""); err != nil {
 		t.Fatalf("writeCacheTag(\"\") = %v, want nil so an empty cache dir does not fail the mount", err)
@@ -1170,7 +1074,6 @@ func TestExcludeTransientFromBackupAsksTmutilForTheCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tmutil was not called: %v", err)
 	}
-	// tmutil is called once, as "addexclusion <dir>" on its own line.
 	calls := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	want := "addexclusion " + cache
 	found := false
@@ -1185,18 +1088,14 @@ func TestExcludeTransientFromBackupAsksTmutilForTheCache(t *testing.T) {
 	}
 }
 
-// A `tmutil` that is not installed, or that refuses the exclusion, is a note
-// on stderr and nothing else: the drive mounts and runs either way. The
-// function must return, not fail the mount that called it.
 func TestExcludeTransientFromBackupWithoutTmutilIsNotAMountFailure(t *testing.T) {
 	bin := t.TempDir()
-	t.Setenv("PATH", bin) // an empty PATH: no tmutil anywhere
+	t.Setenv("PATH", bin)
 
 	excludeTransientFromBackup("darwin", MountPlan{CacheDir: t.TempDir()})
 }
 
-// Everywhere but macOS there is no command to call, so the marker is the whole
-// of the exclusion and the call must be a no-op rather than a failed command.
+// Everywhere but macOS there is no command to call, so the exclusion must be a no-op rather than a failed command.
 func TestExcludeTransientFromBackupIsANoOpOffMacOS(t *testing.T) {
 	bin := t.TempDir()
 	log := filepath.Join(bin, "calls")
@@ -1315,10 +1214,6 @@ func TestParkStrayMountFilesReclaimsALeftoverHolding(t *testing.T) {
 	}
 }
 
-// TestRestoreStrayMountFilesCopiesAcrossFilesystems proves the parked files
-// reach a mounted drive: the holding folder is on the local disk and the
-// mount is another filesystem, where a rename fails with EXDEV, so each entry
-// is copied (folders too) and then removed from the holding folder.
 func TestRestoreStrayMountFilesCopiesAcrossFilesystems(t *testing.T) {
 	dir := t.TempDir()
 	mount := filepath.Join(dir, "Drive")
@@ -1354,8 +1249,6 @@ func TestRestoreStrayMountFilesCopiesAcrossFilesystems(t *testing.T) {
 	}
 }
 
-// TestRestoreStrayMountFilesKeepsTheDrivesVersion proves a parked file never
-// overwrites a file of the same name already in the drive.
 func TestRestoreStrayMountFilesKeepsTheDrivesVersion(t *testing.T) {
 	dir := t.TempDir()
 	mount := filepath.Join(dir, "Drive")

@@ -1,30 +1,3 @@
-// Top-ups (drive#586): the customer adds $10 or more to a prepaid balance,
-// one Dodo checkout per top-up, and the balance is credited only when Dodo's
-// signed webhook says the money moved. A checkout redirect credits nothing.
-//
-// Three routes, all in src/index.js:
-//   POST /api/topup          (signed in) opens a Dodo checkout for an amount.
-//   GET  /api/balance        (signed in) the balance and the recent ledger.
-//   POST /api/billing/webhook (public, signed by Dodo) credits a top-up or
-//                            records a refund, through core/ledger.js.
-//
-// Dodo signs webhooks the Standard Webhooks way: the `webhook-id`,
-// `webhook-timestamp` and `webhook-signature` headers, and an HMAC-SHA256 over
-// `<id>.<timestamp>.<raw body>` with the endpoint's `whsec_` secret. The
-// secret is the Worker secret DODO_WEBHOOK_SECRET. It is deliberately NOT a
-// declared `bindings.secret()`: with it unset the webhook answers 503 (a
-// closed door, the same posture as EMAIL_SEND_TOKEN), so the deploy does not
-// require a value before Nish has the live Dodo account (#325, #503).
-//
-// Replays: a signature older or newer than five minutes is refused, and a
-// replay inside that window lands on the ledger's unique key for the payment
-// and credits nothing. Out of order: a refund that arrives before its payment
-// answers 409 so Dodo retries it later; a failed payment arriving after a
-// succeeded one is ignored, because only `payment.succeeded` credits.
-//
-// No live charge runs from here while DODO_PAYMENTS_API_KEY is unset: the
-// checkout route answers 503 with the message table's words.
-
 import { isDodoUrl, resolveDodoUrl } from "./dodo.js";
 import { sendEmail } from "./email-send.js";
 import { json } from "./http.js";
@@ -41,17 +14,17 @@ import {
 import { failureMessage, TOP_UP_PROMPT } from "./messages.js";
 import { pauseAccountKeys } from "./prepaid-pause.js";
 import { PREPAID } from "./pricing.js";
+import { runwayLine } from "./runway.js";
 import { unauthorizedResponse } from "./status.js";
+import { emitEvent } from "./webhooks.js";
 
 export const TOPUP_ENDPOINT = "/api/topup";
 export const BALANCE_ENDPOINT = "/api/balance";
 export const BILLING_WEBHOOK_PATH = "/api/billing/webhook";
 export const DODO_CHECKOUT_PATH = "/checkouts";
 
-/** The metadata tag that marks a Dodo payment as a drive top-up. */
 export const TOPUP_PURPOSE = "drive-topup";
 
-// How far a webhook's timestamp may be from now, in seconds.
 const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 
 /**
@@ -202,7 +175,7 @@ function objectOrNull(value) {
  * stops retrying them. Answers 409 only for a refund whose payment has not
  * been credited yet, so Dodo retries it after the payment lands.
  * @param {Request} request
- * @param {{db?: D1Database, secret?: string, now?: number, email?: unknown, mailFrom?: string, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} deps
+ * @param {{db?: D1Database, secret?: string, now?: number, fetch?: typeof fetch, email?: unknown, mailFrom?: string, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} deps
  * @returns {Promise<Response>}
  */
 export async function handleBillingWebhook(request, deps) {
@@ -225,8 +198,6 @@ export async function handleBillingWebhook(request, deps) {
       now,
     });
   } catch (error) {
-    // A malformed secret is the operator's to fix; say so in the log, never
-    // the secret itself, and refuse the event so Dodo keeps retrying it.
     console.error("billing webhook: the secret could not be read", String(error));
     return json({ error: failureMessage("topup-not-open") }, 503);
   }
@@ -257,7 +228,7 @@ export async function handleBillingWebhook(request, deps) {
  * @param {D1Database} db
  * @param {Record<string, unknown>} data
  * @param {number} now
- * @param {{email?: unknown, mailFrom?: string, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} mail
+ * @param {{email?: unknown, mailFrom?: string, fetch?: typeof fetch, pauseOn?: boolean, devices?: Parameters<typeof pauseAccountKeys>[1]["devices"]}} mail
  */
 async function creditFromEvent(db, data, now, mail) {
   const metadata = objectOrNull(data.metadata);
@@ -280,14 +251,8 @@ async function creditFromEvent(db, data, now, mail) {
   ) {
     return json({ error: "The top-up event is missing its account, payment or amount." }, 400);
   }
-  // Dodo is the merchant of record, so a payment's total can carry tax. The
-  // balance is credited the amount before tax: the customer chose $10, not
-  // $10 plus their country's tax.
   const amountCents = total - tax;
   if (data.currency !== "USD" || amountCents < MIN_TOP_UP_CENTS) {
-    // Money moved and the ledger cannot credit it. Loud, so the
-    // reconciliation and a person both see it; 200 so Dodo does not retry an
-    // event that will never change.
     console.error(
       "billing webhook: a top-up payment could not be credited",
       `payment=${paymentId}`,
@@ -297,16 +262,6 @@ async function creditFromEvent(db, data, now, mail) {
     return json({ ok: false, ignored: "amount or currency not creditable" });
   }
   const customer = objectOrNull(data.customer);
-  // The card the payment was made with (drive#503). Dodo keys a card on
-  // `payment_method_id`, the one field core/prepaid.js also reads off the live
-  // /payment-methods call, and it is behind the signature check so a browser
-  // cannot choose it: nothing in the request body supplies a card (the sign-in
-  // form's posted fingerprint is gone, core/abuse-guards.js). An event with no
-  // payment method id records no card at all rather than guessing one from
-  // another field -- an earlier `data.method` fallback could have given every
-  // account the same id and locked the second one out with nothing to show it.
-  // Absent is loud: the "card was not recorded" line below fires once per such
-  // payment, so a field-shape change surfaces instead of passing silently.
   const paymentMethodId =
     typeof data.payment_method_id === "string" ? data.payment_method_id : null;
   const credited = await creditTopUp(db, {
@@ -319,20 +274,12 @@ async function creditFromEvent(db, data, now, mail) {
     now,
   });
   if (!credited.accountFound) {
-    // Money moved for an account that is gone. Crediting it would strand the
-    // money under an id nobody can use, so nothing is written, the line below
-    // names the payment, and the reconciliation lists it as missing so a
-    // person refunds it. 200, because a retry cannot bring the account back.
     console.error(
       "billing webhook: a top-up payment names no account, so it was not credited",
       `payment=${paymentId}`,
     );
     return json({ ok: false, ignored: "no such account" });
   }
-  // The card is claimed server-side from the event (drive#503), and a card
-  // another live account already holds is refused. The money is credited
-  // either way: the one-account-per-card rule never holds a payment, and the
-  // line below is what says so to a person.
   if (credited.card !== undefined && !credited.card.claimed) {
     console.error(
       "billing webhook: a top-up was credited but its card was not recorded",
@@ -342,8 +289,6 @@ async function creditFromEvent(db, data, now, mail) {
     );
   }
   if (credited.credited) {
-    // A receipt only when money moved, and only once: a replayed event
-    // credits nothing and so mails nothing (drive#586, supersedes #572).
     await sendTopUpReceipt(db, {
       accountId,
       amountCents,
@@ -351,11 +296,18 @@ async function creditFromEvent(db, data, now, mail) {
       auto: metadata.source === "auto",
       mail,
     });
+    await emitEvent(
+      db,
+      /** @type {string} */ (accountId),
+      "balance.topped_up",
+      {
+        payment_id: paymentId,
+        amount_cents: amountCents,
+        balance_cents: credited.balanceCents,
+      },
+      { fetch: mail.fetch },
+    );
   }
-  // The prepaid pause restore (drive#589): a credit that brings the
-  // balance above $0 swaps the mount and device keys back to writes.
-  // A replay whose credit was already written still runs it, so a swap
-  // that failed on the first delivery is retried without double-crediting.
   if (credited.accountFound && mail.devices) {
     await pauseAccountKeys(/** @type {string} */ (accountId), {
       db,
@@ -524,8 +476,6 @@ export async function handleTopUpRequest(request, account, deps) {
   const session = objectOrNull(await response.json().catch(() => null));
   const url = session?.checkout_url;
   if (typeof url !== "string" || !isDodoUrl(url)) {
-    // Only a Dodo page is handed to the customer: a malformed or tampered
-    // answer must never become a redirect to somewhere else.
     return json({ error: failureMessage("topup-failed") }, 502);
   }
   return json({ checkout_url: url, amount_cents: cents });
@@ -566,7 +516,7 @@ export function isDodoCheckoutUrl(value) {
  * The balance as the account page and `drive status` read it.
  * @param {D1Database} db
  * @param {string} accountId
- * @param {{pauseOn?: boolean}} [options] pauseOn is false while the $0 pause is switched off, so the page never says uploads are paused when they are not
+ * @param {{pauseOn?: boolean, size30Bytes?: unknown}} [options] pauseOn is false while the $0 pause is switched off, so the page never says uploads are paused when they are not; size30Bytes, when known, adds the runway line
  */
 export async function balanceSummary(db, accountId, options = {}) {
   const pauseOn = options.pauseOn !== false;
@@ -581,12 +531,15 @@ export async function balanceSummary(db, accountId, options = {}) {
     balance_cents: balance,
     balance: formatCents(balance),
     balance_line: balanceLine(balance, { pauseOn }),
+    runway_line:
+      options.size30Bytes === undefined ? null : runwayLine(balance, options.size30Bytes),
     low_balance: balance > 0 && balance <= LOW_BALANCE_CENTS,
     paused: pauseOn && balance <= 0,
     min_top_up_usd: PREPAID.minTopUpUsd,
     top_up_presets_usd: [...PREPAID.topUpPresetsUsd],
     recent: recent.map((line) => ({
       kind: line.kind,
+      receipt_url: line.kind === "topup" ? `/api/receipts/${line.id}` : null,
       amount_cents: line.amountCents,
       amount: formatCents(line.amountCents),
       window_start: line.windowStart,
@@ -601,7 +554,7 @@ export async function balanceSummary(db, accountId, options = {}) {
  * @param {Request} request
  * @param {{id: string}|null} account
  * @param {D1Database|undefined} db
- * @param {{pauseOn?: boolean}} [options]
+ * @param {{pauseOn?: boolean, size30Bytes?: unknown}} [options]
  * @returns {Promise<Response>}
  */
 export async function handleBalanceRequest(request, account, db, options = {}) {

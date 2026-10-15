@@ -1,13 +1,5 @@
 package main
 
-// drive#560's tests: the CLI names itself with a versioned User-Agent on
-// every api call, a 426 from the api Worker prints the message table's update
-// sentence, and the once-a-day update notice asks whether a newer drive
-// exists at most every 24 hours and prints at most once in that window. The
-// notice tests run the real noticeUpdateOnceADay against a temp state file,
-// a hand-stepped clock and a local update read, so the caching and the
-// once-a-day rule are proven on the code that ships.
-
 import (
 	"bytes"
 	"encoding/json"
@@ -30,11 +22,6 @@ func TestUserAgentNamesTheVersionPlatformAndArch(t *testing.T) {
 	}
 }
 
-// TestTheCLINamesItselfOnEveryAPICall sends the two request builders the CLI
-// talks to the api Worker with through a real httptest server, and requires
-// both requests to carry the drive/<version> (<os>/<arch>) User-Agent the
-// server's version gate reads (drive#560). A request without it would be
-// judged by nothing and answered as though the version were fine.
 func TestTheCLINamesItselfOnEveryAPICall(t *testing.T) {
 	seen := make(chan string, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,12 +51,6 @@ func TestTheCLINamesItselfOnEveryAPICall(t *testing.T) {
 	}
 }
 
-// TestTheDirectRequestBuildersNameThemselvesToo is the rest of the
-// drive#560 User-Agent duty: the CLI's api calls are not all the APIClient's
-// two builders. Revoke (revoke.go), doJSON (share.go) and readCostLine
-// (status.go) build their own requests, and the server's version gate reads
-// every request the same way, so each must carry the same
-// drive/<version> (<os>/<arch>) header.
 func TestTheDirectRequestBuildersNameThemselvesToo(t *testing.T) {
 	seen := make(chan string, 3)
 	handler := func(w http.ResponseWriter, r *http.Request) {
@@ -78,14 +59,12 @@ func TestTheDirectRequestBuildersNameThemselvesToo(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"capLine": "$4.00 used this month"}`))
 	}
-	// Revoke answers 204 and never echoes the body.
 	revoked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.Header.Get("user-agent")
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer revoked.Close()
 
-	// share.go: doJSON builds the links request.
 	shared := httptest.NewServer(http.HandlerFunc(handler))
 	defer shared.Close()
 	var out map[string]any
@@ -96,7 +75,6 @@ func TestTheDirectRequestBuildersNameThemselvesToo(t *testing.T) {
 		t.Errorf("doJSON sent User-Agent %q, want %q", got, userAgent())
 	}
 
-	// status.go: readCostLine builds the usage request.
 	usage := httptest.NewServer(http.HandlerFunc(handler))
 	defer usage.Close()
 	if reason := readCostLine(usage.URL, "device-token"); reason != "" {
@@ -106,7 +84,6 @@ func TestTheDirectRequestBuildersNameThemselvesToo(t *testing.T) {
 		t.Errorf("readCostLine sent User-Agent %q, want %q", got, userAgent())
 	}
 
-	// revoke.go: APIKeyRevoker builds the revoke request.
 	if err := (APIKeyRevoker{BaseURL: revoked.URL}).Revoke(KeyPair{AccessKeyID: "k", SecretKey: "t"}); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
@@ -115,10 +92,6 @@ func TestTheDirectRequestBuildersNameThemselvesToo(t *testing.T) {
 	}
 }
 
-// TestAFourTwoSixPrintsTheUpdateSentence is the drive#560 end to end half on
-// the CLI side: the server refuses this client's versioned request with 426
-// and its own sentence, and the failure the person sees is the message
-// table's cli-too-old entry, not api-refused's.
 func TestAFourTwoSixPrintsTheUpdateSentence(t *testing.T) {
 	entry := messageTable["cli-too-old"]
 	body, err := json.Marshal(map[string]string{"error": entry[0]})
@@ -126,8 +99,6 @@ func TestAFourTwoSixPrintsTheUpdateSentence(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The request that gets refused is one that named its own version,
-		// so the gate had something to judge.
 		if got := r.Header.Get("user-agent"); !strings.HasPrefix(got, "drive/"+versionText()+" ") {
 			t.Errorf("the refused request sent User-Agent %q, want a drive/<version> one", got)
 		}
@@ -161,7 +132,6 @@ func TestAFourTwoSixPrintsTheUpdateSentence(t *testing.T) {
 	}
 }
 
-// stepClock returns a clock a test moves by hand.
 func stepClock(t *testing.T, start time.Time) (func() time.Time, func(time.Duration)) {
 	t.Helper()
 	now := start
@@ -212,7 +182,6 @@ func TestTheDailyNoticePrintsOnceADay(t *testing.T) {
 		t.Fatalf("the next-day run asked about an update %d times, want 2", asks)
 	}
 
-	// The state file says what happened, so the rule is checkable on disk.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -285,8 +254,6 @@ func TestAFailedUpdateCheckIsQuietAndRetriedTomorrow(t *testing.T) {
 	if asks != 2 {
 		t.Errorf("the failed check was not retried the next day (%d asks), want 2", asks)
 	}
-	// The written stamp carries a checked-at time and no printed notice, so
-	// nothing pretends a check succeeded when it did not.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -325,11 +292,6 @@ func TestACorruptUpdateCheckFileCountsAsNeverChecked(t *testing.T) {
 	}
 }
 
-// TestUpdateExistsOn pins the production read to the route ask `drive
-// update` uses: a machine whose package manager owns drive and reports it
-// outdated gets yes; one with nothing newer gets no; and a binary no package
-// manager owns (a checkout build) is a quiet no, not an error a status run
-// would print.
 func TestUpdateExistsOn(t *testing.T) {
 	f := brewBins()
 	newer, err := updateExistsOn(f.lookPath, f.capture)
@@ -357,13 +319,6 @@ func TestUpdateExistsOn(t *testing.T) {
 	}
 }
 
-// TestTwoStatusRunsPrintOneNotice is the drive#560 concurrency duty: the
-// state file is read, the package manager is asked, and the state file is
-// written, and on one machine two `drive status` commands can be in those
-// three steps at the same time. Both read a yesterday stamp, both ask, and
-// both print, so the run that loses the race must not print at all — the
-// winner's write is what quiets it. This runs two goroutines against the
-// production entry point, so the lock itself is what is being tested.
 func TestTwoStatusRunsPrintOneNotice(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("windows flock is a no-op, so two colliding status runs may both print")
@@ -374,8 +329,6 @@ func TestTwoStatusRunsPrintOneNotice(t *testing.T) {
 	inside := make(chan struct{}, 8)
 	gate := make(chan struct{})
 	newer := func() (bool, error) {
-		// Hold the package-manager ask open, so the run that lost the lock
-		// cannot finish before the winner has written state.
 		inside <- struct{}{}
 		<-gate
 		return true, nil
@@ -396,10 +349,8 @@ func TestTwoStatusRunsPrintOneNotice(t *testing.T) {
 		}()
 	}
 	run(&first)
-	<-inside // the first run holds the lock and is inside the probe
+	<-inside
 	run(&second)
-	// Give the losing run its whole window: it never reaches the probe, so
-	// no second `inside` arrives and this sleep is what proves it did not.
 	time.Sleep(100 * time.Millisecond)
 	close(gate)
 	wg.Wait()
@@ -419,12 +370,6 @@ func TestTwoStatusRunsPrintOneNotice(t *testing.T) {
 	}
 }
 
-// TestAHungPackageManagerDoesNotHangStatus pins the probe's time bound: the
-// notice rides on `drive status`, which is the quick look-at-your-drive
-// command, so a package manager that never answers must cost the notice its
-// own turn, not the command its hang. The bounded ask answers within the
-// window, the notice stays quiet, and the state records a check so tomorrow
-// retries.
 func TestAHungPackageManagerDoesNotHangStatus(t *testing.T) {
 	home := t.TempDir()
 	path := updateCheckPath(home)
@@ -439,7 +384,7 @@ func TestAHungPackageManagerDoesNotHangStatus(t *testing.T) {
 		now:          now,
 		probeTimeout: 20 * time.Millisecond,
 		updateExists: func() (bool, error) {
-			<-never // a package manager that never answers
+			<-never
 			return true, nil
 		},
 		out: &buf,
@@ -465,11 +410,6 @@ func TestAHungPackageManagerDoesNotHangStatus(t *testing.T) {
 	}
 }
 
-// TestAStateFileFromTheFutureCountsAsNeverChecked is the other half of the
-// drive#560 notice's resilience: a state file this machine cannot possibly
-// have written (a clock rolled back, a file copied from another machine)
-// must not be read as "checked", because a stamp in the future is older than
-// nothing and would silence the notice until the clock caught up with it.
 func TestAStateFileFromTheFutureCountsAsNeverChecked(t *testing.T) {
 	home := t.TempDir()
 	path := updateCheckPath(home)

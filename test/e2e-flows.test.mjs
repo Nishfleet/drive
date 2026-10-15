@@ -1,18 +1,44 @@
-// End-to-end flows in a real browser (see test/e2e-site.mjs): sign in with the
-// emailed link, add money, upload a file, share it. Each test starts its own
-// site and database, drives the shipped pages with clicks and typing, and
-// reads what the visitor would see.
-
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BILLING_WEBHOOK_PATH, signWebhook, TOPUP_PURPOSE } from "../core/topup.js";
-import { accountId, browserSignIn, chromeSkip, launchChrome, startSite } from "./e2e-site.mjs";
+import { chromeSkip, launchChrome, startSite } from "./e2e-site.mjs";
 import { TEST_BASE_URL } from "./harness.mjs";
 
 const OPTIONS = { timeout: 180_000, skip: chromeSkip };
+
+async function browserSignIn(
+  /** @type {import("puppeteer-core").Browser} */ browser,
+  /** @type {Awaited<ReturnType<typeof startSite>>} */ site,
+  /** @type {string} */ email,
+) {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(60_000);
+  const before = site.mail.length;
+  await page.goto(`${site.origin}/signin`, { waitUntil: "load" });
+  await page.click("#age");
+  await page.type('input[type="email"]', email);
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => /check your email|sent/i.test(document.body.innerText));
+  assert.equal(site.mail.length, before + 1, "one sign-in link was mailed");
+  const link = new URL(site.mail[before].url);
+  await page.goto(`${site.origin}${link.pathname}${link.search}`, { waitUntil: "load" });
+  return page;
+}
+
+async function accountId(
+  /** @type {Awaited<ReturnType<typeof startSite>>} */ site,
+  /** @type {string} */ email,
+) {
+  const row = await site.made.db
+    .prepare("SELECT id FROM accounts WHERE email = ?1")
+    .bind(email)
+    .first();
+  assert.ok(row, `an account row exists for ${email}`);
+  return String(row.id);
+}
 
 test("a visitor signs in with the emailed link and lands signed in", OPTIONS, async (t) => {
   const site = await startSite();
@@ -77,7 +103,6 @@ test(
       "the click opens the checkout",
     );
 
-    // Dodo confirms the payment to the Worker with a signed webhook.
     const body = JSON.stringify({
       type: "payment.succeeded",
       data: {
@@ -177,7 +202,6 @@ test("a shared link opens for a stranger with no account", OPTIONS, async (t) =>
   const link = share.body.share?.url ?? share.body.url;
   assert.ok(link, `the answer carries the link: ${JSON.stringify(share.body)}`);
 
-  // A stranger: a fresh browser context with no cookie.
   const stranger = await browser.createBrowserContext();
   const guest = await stranger.newPage();
   guest.setDefaultTimeout(60_000);
@@ -186,6 +210,50 @@ test("a shared link opens for a stranger with no account", OPTIONS, async (t) =>
   const text = await guest.evaluate(() => document.body.innerText);
   assert.match(text, /shared\.txt/);
   await stranger.close();
+});
+
+test("a deleted file shows in Recently deleted and one press puts it back", OPTIONS, async (t) => {
+  const site = await startSite();
+  t.after(() => site.close());
+  const browser = await launchChrome(site.origin);
+  t.after(() => browser.close());
+  const page = await browserSignIn(browser, site, "restorer@example.com");
+  page.on("dialog", (dialog) => dialog.accept());
+
+  await page.goto(`${site.origin}/files`, { waitUntil: "load" });
+  const uploaded = await page.evaluate(async () => {
+    const response = await fetch("/api/files/upload?path=%2F&name=keep.txt", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "worth keeping",
+    });
+    return response.status;
+  });
+  assert.equal(uploaded, 201);
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() =>
+    document.querySelector("#file-list")?.textContent?.includes("keep.txt"),
+  );
+
+  const rowButtons = await page.$$("#file-list .row .actions button");
+  const labels = await Promise.all(rowButtons.map((b) => b.evaluate((el) => el.textContent)));
+  await rowButtons[labels.indexOf("Delete")].click();
+  await page.waitForFunction(
+    () => !document.querySelector("#file-list")?.textContent?.includes("keep.txt"),
+  );
+
+  await page.click("#tab-deleted");
+  await page.waitForFunction(() =>
+    document.querySelector("#file-list")?.textContent?.includes("keep.txt"),
+  );
+  const restore = await page.waitForSelector("#file-list .row .actions button");
+  await restore?.click();
+  await page.click("#tab-files");
+  await page.waitForFunction(() =>
+    document.querySelector("#file-list")?.textContent?.includes("keep.txt"),
+  );
+  const listed = await page.$eval("#file-list", (el) => el.textContent);
+  assert.match(listed ?? "", /keep\.txt/);
 });
 
 test("dropping files on the Files page uploads them, with a bar for each", OPTIONS, async (t) => {
@@ -197,7 +265,6 @@ test("dropping files on the Files page uploads them, with a bar for each", OPTIO
 
   await page.goto(`${site.origin}/files`, { waitUntil: "load" });
   await page.waitForSelector("#upload-button:not([disabled])");
-  // The hint shows while a file is held over the page and goes when it leaves.
   await page.evaluate(() => {
     const data = new DataTransfer();
     data.items.add(new File(["one"], "first.txt", { type: "text/plain" }));

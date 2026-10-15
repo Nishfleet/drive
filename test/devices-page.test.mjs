@@ -1,7 +1,3 @@
-// The devices page (drive#525): list live keys with kind and last-used, and
-// revoke one at the provider. The handler is proven against the real D1
-// store; the Worker walk proves the account gate stands in front of it.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -228,4 +224,81 @@ test("the shipped page lists kind and last used, and posts revoke to the route",
   assert.match(page, /button\.disabled = true/);
   assert.match(page, /if \(response\.status === 401\)/);
   assert.match(page, /showSessionNav\(false\)/);
+});
+
+test("the page speaks plainly and every load failure has a Try again button (high-end gaps 4 and 11)", () => {
+  assert.match(page, /Devices and agents that can use your drive\. Turn any off with one click\./);
+  assert.match(page, /<th scope="col">Turn off<\/th>/);
+  assert.match(page, /const REVOKE_LABEL = "Turn off"/);
+  assert.doesNotMatch(page, /Reload the page to try again/);
+  assert.match(
+    page,
+    /<button type="button" id="devices-retry" hidden class="btn">Try again<\/button>/,
+  );
+  // Every call that says the load failed asks for the button.
+  const sayings = page
+    .split("\n")
+    .filter((line) => line.includes("sayStatus(") && line.includes("LOAD_FAILED"));
+  assert.ok(sayings.length >= 4, `found ${sayings.length}`);
+  for (const line of sayings) assert.match(line, /, true\);/, line);
+  assert.match(page, /retryEl\.addEventListener\("click"/);
+});
+
+/** @param {unknown[]} keys */
+async function runDevicesPage(keys) {
+  const vm = await import("node:vm");
+  /** @type {string[]} */
+  const copied = [];
+  const stub = () => {
+    /** @type {Map<string, () => void>} */
+    const listeners = new Map();
+    return {
+      hidden: false,
+      open: false,
+      textContent: "",
+      dataset: /** @type {Record<string, string>} */ ({}),
+      listeners,
+      addEventListener: (/** @type {string} */ type, /** @type {() => void} */ fn) =>
+        listeners.set(type, fn),
+      querySelector: () => ({ textContent: "" }),
+      appendChild() {},
+      replaceChildren() {},
+    };
+  };
+  const elements = new Map();
+  const copyButton = Object.assign(stub(), { dataset: { copy: "drive login" } });
+  const sandbox = {
+    document: {
+      getElementById: (/** @type {string} */ id) => {
+        if (!elements.has(id)) elements.set(id, stub());
+        return elements.get(id);
+      },
+      querySelectorAll: () => [copyButton],
+      createElement: stub,
+    },
+    navigator: {
+      clipboard: { writeText: async (/** @type {string} */ text) => copied.push(text) },
+    },
+    location: { reload() {} },
+    window: { confirm: () => true },
+    fetch: async () => ({ ok: true, status: 200, json: async () => ({ keys }) }),
+  };
+  const start = page.indexOf("<script>");
+  vm.runInNewContext(page.slice(start + 8, page.indexOf("</script>", start)), sandbox);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  return { elements, copyButton, copied };
+}
+
+test("the add wizard opens when there are no keys, folds away once there is one, and copies a command", async () => {
+  const empty = await runDevicesPage([]);
+  assert.equal(empty.elements.get("add-wizard").open, true);
+  const used = await runDevicesPage([
+    { keyId: "k1", name: "Mac", kind: "device", lastSeenAt: null },
+  ]);
+  assert.equal(used.elements.get("add-wizard").open, false);
+  await empty.copyButton.listeners.get("click")?.();
+  assert.deepEqual(empty.copied, ["drive login"]);
+  assert.equal(empty.copyButton.textContent, "Copied");
+  assert.match(page, /data-copy="drive init"/);
+  assert.match(page, /data-copy="drive agents connect claude"/);
 });

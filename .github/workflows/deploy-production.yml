@@ -219,7 +219,7 @@ jobs:
           out=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/)
           echo "workers.dev answered: ${out%%\?*}"
           case "$out" in
-            "302 https://nish345.cloudflareaccess.com/"*) ;;
+            "302 https://nish345.cloudflareaccess.com/"* | "302 https://storagebun.cloudflareaccess.com/"*) ;;
             *) echo "::error::the site is reachable without the Access sign-in"; exit 1 ;;
           esac
           # The api family is behind the same gate (drive#342): /v1/* on the
@@ -227,7 +227,7 @@ jobs:
           v1=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/v1/health)
           echo "/v1/health answered: ${v1%%\?*}"
           case "$v1" in
-            "302 https://nish345.cloudflareaccess.com/"*) ;;
+            "302 https://nish345.cloudflareaccess.com/"* | "302 https://storagebun.cloudflareaccess.com/"*) ;;
             *) echo "::error::the api family is reachable without the Access sign-in"; exit 1 ;;
           esac
           api=$(curl -s -o /dev/null -w '%{http_code}' https://drive-api.nishant345.workers.dev/v1/health)

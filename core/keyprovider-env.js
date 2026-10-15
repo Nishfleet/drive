@@ -1,28 +1,6 @@
-// Which key provider a deployment gets, chosen from the credentials it
-// carries, read in one place so both Workers agree.
-//
-// Drive#371 mints a storage key at the deployment's own vendor, and both
-// Workers need to answer "which provider is this deployment on?": the api
-// Worker mints and swaps keys with it, and the site Worker's account close and
-// cap routes withdraw a key's credential at the same vendor (drive#235,
-// drive#497). A second copy of this choice in either Worker is a second thing
-// to drift: close could revoke at the S3 provider while the api minted through
-// the reseller API, and the key would keep working at the storage server.
-//
-// This module reads the env and returns a provider, and nothing else. It is
-// shared by `workers/api/src/index.js` (the api Worker's `storeFor`) and
-// `src/index.js` (the site Worker's `closeDepsFor` and cap route), so one
-// deployment configuration has one answer.
-
 import { createIdriveKeyProvider } from "./idrive-keys.js";
 import { s3KeyProviderFromEnv } from "./s3-keys.js";
 
-/**
- * The reseller API base iDrive e2 publishes for access keys
- * (https://www.idrive.com/s3-storage-e2/reseller-api, drive#371). A deployment
- * overrides it with `IDRIVE_E2_API_ENDPOINT`, the same way `STORAGE_*` override
- * the S3 endpoint.
- */
 const IDRIVE_RESELLER_API = "https://api.idrivee2.com/api/reseller/v1";
 
 /**
@@ -96,21 +74,10 @@ export function keyProviderFor(env) {
   if (s3 !== null) {
     return s3;
   }
-  // The iDrive path carries the reseller API token and, when it provisions
-  // buckets, the S3 master credential the provisioning call needs
-  // (drive#371). The token alone mints against buckets that already exist.
   const apiToken = env.IDRIVE_E2_API_TOKEN;
   if (typeof apiToken !== "string" || apiToken === "") {
     return null;
   }
-  // The bucket a scope names is provisioned once, before the key limited to
-  // it is handed out (drive#371: one bucket per customer is the boundary,
-  // so the bucket has to exist before a key can name it). The provisioning
-  // call is an S3 call, so it needs the S3 master credential; a deployment
-  // that provisions its buckets elsewhere (the console, the reconciler)
-  // carries the reseller token alone and mints against buckets that are
-  // already there. The two are not mixed up: no credential means no
-  // provisioning, never a provisioning call with half a credential.
   const s3AccessKeyId = env.IDRIVE_S3_ACCESS_KEY_ID;
   const s3SecretAccessKey = env.IDRIVE_S3_SECRET_ACCESS_KEY;
   const storageConfig =

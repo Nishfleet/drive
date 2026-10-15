@@ -5,21 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Storagebun — sign in</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <meta name="description" content="Sign in to your drive: one link by email. We need a card at sign-up because there is no free tier.">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="description" content="Sign in to your drive: one link by email. There is no free tier.">
   <meta name="robots" content="noindex">
-  <!-- drive issue #10: the sign-in screen from docs/build-spec.md's "Screens"
-       table. The copy and the endpoints live in src/signin.js, the single
-       source; test/signin.test.mjs reads this shipped file and fails CI when
-       its copy, its endpoints, its method list or its vocabulary drifts from
-       the module. This page is a static asset and cannot import the module. -->
   <link rel="preload" href="/fonts/big-shoulders-display-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin><!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity -->
   <link rel="stylesheet" href="/site.css">
   <style>
-/* Sign-in page: the palette, the reset and the page chrome are in the shared
-   site stylesheet (public/site.css, drive #71); what is left here is only this
-   page's overrides and its own components. class="drive" on <html> aliases
-   those tokens onto the home-page look (drive#458). */
-
 body {
   padding: 0 clamp(20px, 5vw, 72px) 72px;
 }
@@ -97,17 +89,10 @@ label {
   gap: 10px;
 }
 
-input[type="email"],
-input[type="text"] {
+.field-row .field {
   flex: 1 1 260px;
+  width: auto;
   min-width: 0;
-  padding: 11px 12px;
-  border: 1.5px solid var(--ink);
-  border-radius: 999px;
-  background: var(--paper);
-  color: var(--ink);
-  font: inherit;
-  font-size: 16px;
 }
 
 input:focus-visible,
@@ -117,30 +102,14 @@ a:focus-visible {
   outline-offset: 2px;
 }
 
-button {
-  padding: 11px 18px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-size: 16px;
-  font-weight: 600;
-  cursor: pointer;
+.sent h2 {
+  margin: 0 0 8px;
 }
 
-button.primary {
-  background: var(--ink);
-  color: var(--paper-raised);
+.sent button + button {
+  margin-left: 8px;
 }
 
-button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-/* drive#180: the .providers layout block went with the Google and GitHub
-   buttons it laid out; nothing else used it. */
 .hint {
   color: var(--ink-faint);
   font-size: 14px;
@@ -176,7 +145,16 @@ button:disabled {
 .footer a {
   color: var(--ink-soft);
 }
-  </style>
+  .fine {
+  margin: 20px 0 0;
+}
+
+.fine p {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+</style>
 </head>
 <body>
   <a class="skip-link" href="#signin-heading">Skip to sign in</a>
@@ -189,67 +167,55 @@ button:disabled {
   <main>
     <h1 id="signin-heading">Sign in</h1>
     <p class="lede">One link by email.</p>
-    <p class="free">The drive is not open yet. Sign-ups on the pricing page go to a waitlist.</p>
-    <p class="hint">This screen is for an invited account. Without an invite, join the waitlist on the pricing page.</p>
-    <p class="free">No plans. Your balance never expires.</p>
-    <!-- drive#420: the one place this page says why a card is needed
-         (SIGNIN_COPY.needCard, src/signin.js). A tick box on this form
-         made every returning customer consent again and was how a
-         stranger learned whether an address was new (drive#538).
-         The emailed link claims a test stand-in; a real card waits on
-         the Dodo key (drive#417, drive#325). test/signin.test.mjs fails
-         CI when a second copy of the sentence comes back. -->
-    <p class="free">We need a card at sign-up because there is no free tier. Your first $10 top-up opens storage. 20 GB draws about 40 cents a month from your balance.</p>
-
     <div class="card">
-      <!-- Not Django: this is a static asset, and the route it posts to is not
-           a cookie-authenticated form handler that trusts the browser.
-           Whatever cookie a session later carries is set by POST /api/signin,
-           which refuses a request another origin made (isSameOriginRequest,
-           src/email-send.js), so a token in the markup would protect nothing. -->
       <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
       <form id="signin-form" action="/api/signin" method="post">
         <input type="hidden" name="step" value="start">
         <input type="hidden" name="method" value="email">
-        <!-- The 18+ sentence and its box (drive#781). The page is shown to
-             new and returning sign-ins alike (drive#538), so the box is
-             optional here and the route holds the tick against the link when
-             the account opens (drive#785): an older account signs in without
-             attesting again. -->
-        <p class="hint" id="age-sentence">You must be 18 or older to open an account.</p>
-        <label class="hint" for="age">
-          <input id="age" name="age" type="checkbox" value="on" aria-describedby="age-sentence">
-          I am 18 or older
-        </label>
         <label for="email">Email</label>
         <div class="field-row">
           <input id="email" name="email" type="email" required
-                 placeholder="you@example.com" autocomplete="email" spellcheck="false">
-          <button class="primary" id="email-button" type="submit">Email me a link</button>
+                 placeholder="you@example.com" autocomplete="email" spellcheck="false" class="field">
+          <button class="btn btn-primary" id="email-button" type="submit">Email me a link</button>
         </div>
+        <p class="hint" id="age-sentence">You must be 18 or older to open an account.</p>
+        <label class="hint" for="age">
+          <input id="age" name="age" type="checkbox" value="on" aria-describedby="age-sentence" class="check">
+          I am 18 or older
+        </label>
         <p class="hint">We email a link that signs you in. No password to remember.</p>
         <p class="hint">We use this address to send that sign-in link. Read the <a href="/privacy">privacy policy</a>.</p>
         <p class="hint">Signing up means you agree to the <a href="/terms">terms</a> and the <a href="/privacy">privacy policy</a>.</p>
       </form>
 
-      <!-- The live test address only (src/access-signin.js, drive#342): the
-           script shows this button when GET /api/signin/access names a
-           Cloudflare Access identity. Everywhere else that route is a 404 and
-           the button stays hidden. -->
+      <div class="sent" id="sent" hidden>
+        <h2 id="sent-heading" tabindex="-1">Check your email</h2>
+        <p>We sent a sign-in link to <strong id="sent-to"></strong>. Open it on this device.</p>
+        <p class="hint">The link is good for 10 minutes and works once. Nothing yet? Look in spam.</p>
+        <p>
+          <button type="button" id="sent-again" class="btn">Send it again</button>
+          <button type="button" id="sent-change" class="btn">Use a different email</button>
+        </p>
+      </div>
+
       <p id="access-signin" hidden>
-        <button class="primary" id="access-button" type="button">Continue as <span id="access-email"></span></button>
+        <button class="btn btn-primary" id="access-button" type="button">Continue as <span id="access-email"></span></button>
       </p>
 
-      <!-- drive#558: shown only when the sign-in started from the
-           device-approval page (?next= in the address bar). The string is
-           SIGNIN_COPY.deviceNote (src/signin.js), and the script below unhides
-           it from the URL; the approval mail carries the same sentence. -->
       <p class="hint" id="device-note" hidden>Open this link on the computer you ran drive login on, or approve from any device.</p>
 
       <p class="status" id="signin-status" role="status" aria-live="polite"></p>
     </div>
+
+    <div class="fine" id="signin-fine">
+    <p class="free">The drive is not open yet. Sign-ups on the pricing page go to a waitlist.</p>
+    <p class="hint">This screen is for an invited account. Without an invite, join the waitlist on the pricing page.</p>
+    <p class="free">No plans. Your balance never expires.</p>
+    <p class="free">There is no free tier. Your first $10 top-up opens storage and puts a card on file. 20 GB draws about 40 cents a month from your balance.</p>
+    </div>
   </main>
 
+  <!-- shell:footer -->
   <footer class="footer">
     <nav class="legal-links" aria-label="Legal">
       <a href="/terms">Terms</a>
@@ -260,25 +226,13 @@ button:disabled {
       <a href="/accessibility">Accessibility</a>
       <a href="/status">Status</a>
     </nav>
+    <p>A Finder drive for people and their agents.</p>
     <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
   </footer>
+  <!-- /shell:footer -->
 
   <script>
-// Sign-in submit. This script upgrades the reply from a page reload to a line
-// in the live region. Without JavaScript the email form still posts the address
-// to /api/signin (an ordinary form post, which the route reads as
-// application/x-www-form-urlencoded) and shows the route's JSON. Every path
-// writes a line: the server's own message when it sends one, the message
-// table's words when the browser never reached the service, and never a raw
-// error string (drive#28's rule for the pricing page). The session itself is
-// minted when the emailed link is followed, not by this page, so there is no
-// second post to make.
 const SIGNIN_ENDPOINT = "/api/signin";
-// drive#180: the methods the server can complete today, which is the list of
-// controls this page renders — SIGNIN_OFFERED_METHODS in src/signin.js, which
-// test/signin.test.mjs pins against this line. Email's control is the form
-// above, so the data-method loop below binds nothing until a provider method
-// joins this list and its button joins this page.
 const METHODS = ["email"];
 
 const form = document.getElementById("signin-form");
@@ -286,18 +240,20 @@ const emailInput = document.getElementById("email");
 const ageInput = document.getElementById("age");
 const emailButton = document.getElementById("email-button");
 const status = document.getElementById("signin-status");
+const sent = document.getElementById("sent");
+const sentTo = document.getElementById("sent-to");
+const sentAgain = document.getElementById("sent-again");
+const sentChange = document.getElementById("sent-change");
+const RESEND_WAIT_SECONDS = 30;
+let resendTimer = null;
+let lastEmail = "";
+let counting = false;
 
-// The same two constants the pricing page carries; test/messages.test.mjs
-// reads both pages and fails CI when either string drifts from the table.
 const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
 const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
-// The closed door, in the message table's own words; the test reads the page
-// and fails CI when either string drifts from the table.
 const CLOSED_MESSAGE = "Signing in is not open yet. Join the waitlist, and your first email will carry a sign-in link.";
 
-// A good link is /api/signin/verify?token=…, and a spent, expired or made-up
-// one lands back on this page with ?error=…, so the status line says so before
-// the person reaches for the form again.
+// A good link is /api/signin/verify?token=…
 const LINK_FAILED_MESSAGE = "That link did not work. Ask for a new one from the sign-in page.";
 const errorParam = new URLSearchParams(window.location.search).get("error");
 if (errorParam === "invalid-link" || errorParam === "no-token") {
@@ -305,20 +261,11 @@ if (errorParam === "invalid-link" || errorParam === "no-token") {
 } else if (errorParam === "sign-in-closed") {
   say(CLOSED_MESSAGE, "error");
 } else if (errorParam === "need-age") {
-  // drive#785: a link whose start posted no tick cannot open an account. The
-  // words are the age sentence the form already shows — taken from there so
-  // the rule is stated once and stays one string the copy gate pins.
   say(document.getElementById("age-sentence")?.textContent ?? UNEXPECTED_MESSAGE, "error");
 } else if (errorParam !== null) {
   say(UNEXPECTED_MESSAGE, "error");
 }
 
-// drive#558: a sign-in that started on the device-approval page arrives with
-// ?next= naming that page. The start post carries it — the server keeps only
-// the approve page's path, so anything else a URL could carry is dropped
-// there — and the note says the mail can be opened on any device, because the
-// return path now travels with the link's token instead of this browser's
-// cookies.
 const DEVICE_APPROVE_PREFIX = "/v1/device/approve";
 const nextParam = new URLSearchParams(window.location.search).get("next") ?? "";
 const deviceNote = document.getElementById("device-note");
@@ -332,10 +279,6 @@ function say(message, kind) {
   status.classList.toggle("is-done", kind === "done");
 }
 
-// One POST for all three methods. The reply's error line is shown as sent:
-// the server builds it from src/messages.js, so it is a finished sentence and
-// never a stack. A good answer means the link has gone out; the inbox, not
-// this page, is where the person goes next.
 async function start(method, email) {
   let response;
   try {
@@ -349,8 +292,6 @@ async function start(method, email) {
               method,
               email,
               age: ageInput?.checked ?? false,
-              // next is only set for the device-approve return path.
-              // The age box is always sent.
               next: nextParam === "" ? undefined : nextParam,
             },
       ),
@@ -379,10 +320,53 @@ async function start(method, email) {
   }
   if (method === "email") {
     say("Check your email — the link signs you in.", "done");
+    showSent(email);
     return;
   }
   say(`Opening ${method}…`, "done");
 }
+
+function showSent(email) {
+  lastEmail = email;
+  sentTo.textContent = email;
+  form.hidden = true;
+  sent.hidden = false;
+  document.getElementById("sent-heading").focus();
+  let left = RESEND_WAIT_SECONDS;
+  counting = true;
+  sentAgain.disabled = true;
+  sentAgain.textContent = `Send it again in ${left}s`;
+  clearInterval(resendTimer);
+  resendTimer = setInterval(() => {
+    left -= 1;
+    if (left > 0) {
+      sentAgain.textContent = `Send it again in ${left}s`;
+      return;
+    }
+    clearInterval(resendTimer);
+    counting = false;
+    sentAgain.disabled = false;
+    sentAgain.textContent = "Send it again";
+  }, 1000);
+}
+
+sentAgain.addEventListener("click", () => {
+  sentAgain.disabled = true;
+  say("Sending…", "pending");
+  counting = false;
+  start("email", lastEmail).finally(() => {
+    if (!counting) sentAgain.disabled = false;
+  });
+});
+
+sentChange.addEventListener("click", () => {
+  clearInterval(resendTimer);
+  counting = false;
+  sent.hidden = true;
+  form.hidden = false;
+  say("", "pending");
+  emailInput.focus();
+});
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -393,8 +377,6 @@ form.addEventListener("submit", (event) => {
   });
 });
 
-// "Continue as <email>" (src/access-signin.js): offered only when the route
-// answers with an identity Cloudflare Access proved.
 const ACCESS_ENDPOINT = "/api/signin/access";
 const accessBlock = document.getElementById("access-signin");
 const accessButton = document.getElementById("access-button");
