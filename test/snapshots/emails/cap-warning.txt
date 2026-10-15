@@ -1,0 +1,13 @@
+You've used 80% of your spending cap
+
+You've used 80% of your $12.00 spending cap.
+
+At $12.00 the drive goes read-only. Nothing is deleted, and uploads waiting on your machines stay on disk.
+
+Raise the cap to keep writing. If you leave it, nothing changes until you do.
+
+Open your drive: https://storagebun.com/
+
+-- Storagebun
+
+Reply to this email and it reaches us: support@drive.example

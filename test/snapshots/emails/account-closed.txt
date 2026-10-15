@@ -1,0 +1,17 @@
+Your Storagebun account is closed
+
+Your Storagebun account is closed.
+
+Every key was revoked at once. Your files stay for now.
+
+They will be deleted in 30 days, on 3 Nov (UTC). We will email you again 5 days before they go.
+
+You can cancel until then: open the usage page, type your email, and choose Cancel closing. Your files stay; you make new keys for your computers.
+
+If you want the files, they are already in your drive folder on your computer. Copy that folder somewhere safe before the day above.
+
+Manage your account or cancel closing: https://storagebun.com/usage.html
+
+-- Storagebun
+
+Reply to this email and it reaches us: support@drive.example
