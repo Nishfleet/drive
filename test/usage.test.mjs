@@ -1686,7 +1686,10 @@ test("an unreachable read offers a Try again button that other states hide", asy
 
 test("closing an account offers a copy-your-folder step and a pause first, and hides them once closed", () => {
   const html = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
-  assert.match(html, /id="close-alternatives"[^>]*>Before you go: your files are already in your drive folder/);
+  assert.match(
+    html,
+    /id="close-alternatives"[^>]*>Before you go: your files are already in your drive folder/,
+  );
   assert.match(html, /<a href="#cap-section">pause instead<\/a>/);
   assert.match(html, /id="cap-section"/);
   assert.match(html, /document\.getElementById\("close-alternatives"\)\.hidden = closed;/);
