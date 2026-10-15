@@ -1877,6 +1877,34 @@ details p {
   color: var(--drive-term-dim);
 }
 
+.chips,
+.proof {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: 20px 0 0;
+  padding: 0;
+}
+
+.chips li {
+  border: 1.5px solid currentColor;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 14px;
+}
+
+.proof {
+  gap: 8px 24px;
+  font-size: 14px;
+}
+
+.proof b {
+  font-family: var(--font-code);
+  font-weight: 700;
+}
+
 @media (max-width: 1000px) {
   .hero-grid,
   .feat,
@@ -2092,16 +2120,22 @@ details p {
         <div>
           <p class="kicker">For Mac &amp; Linux &middot; big files &middot; AI agents</p>
           <h1 class="price-heading" id="price-heading">
-            <span class="lead">Add $10 or more.</span>
-            <span class="amount">Pay 2 cents per&nbsp;GB from your balance.</span>
+            <span class="amount">Pay 2 cents per&nbsp;GB.</span>
             <span class="unit">Never more than $15 per TB.</span>
           </h1>
-          <p class="slogan">Pay only for what you use.<br><span>No plans. Your balance never expires.</span></p>
           <p class="lede">You pay for the biggest size your drive reached in the last 30 days. A drive for your video, datasets and archives. It uses almost no disk, and your agents can read and write it. Your first file is there about 1 second after install.</p>
           <div class="cta-row">
             <a class="btn" href="#waitlist" data-waitlist-source="hero">Get drive <span aria-hidden="true">&#8594;</span></a>
             <p class="cta-note">Add $10, store 200&nbsp;GB, and it draws $4 a month.</p>
           </div>
+          <ul class="chips" aria-label="How it is billed">
+            <li>Add $10 or more</li><li>No plans</li><li>Balance never expires</li>
+          </ul>
+          <ul class="proof" aria-label="Measured numbers">
+            <li><b>274 ms</b> until a 5&nbsp;GB video plays</li>
+            <li><b>1.02 s</b> from install to first file</li>
+            <li><b>Paris</b> is where your files live</li>
+          </ul>
         </div>
 
         <div class="stage demo" id="stage">
@@ -2136,7 +2170,7 @@ details p {
             <p class="ok">drive mounted in Finder</p>
             <p><span class="pr">$</span> <span class="caret" aria-hidden="true"></span></p>
           </div>
-          <button class="demo-toggle" id="demo-toggle" type="button" aria-pressed="false">Pause demo</button>
+          <button class="btn btn-ghost demo-toggle" id="demo-toggle" type="button" aria-pressed="false">Pause demo</button>
         </div>
       </div>
 
