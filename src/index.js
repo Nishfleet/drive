@@ -168,6 +168,7 @@ const handler = {
           ...(prepaidPauseFromEnv(env) ?? {}),
         },
         store,
+        searchDb: env.DRIVE_DB,
       }),
     );
   },

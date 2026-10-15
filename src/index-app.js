@@ -78,9 +78,11 @@ import {
   SEND_EMAIL_PATH,
   sentryFor,
   snapshotsFor,
+  storageEventsSecret,
   storeFor,
   withFileStore,
 } from "./index-support.js";
+import { meterJobsQueue } from "./meter-jobs.js";
 import { captureError } from "./monitoring.js";
 import { handlePortalRequest, PORTAL_ENDPOINT } from "./portal.js";
 import { handleRewindRequest, REWIND_ENDPOINT } from "./rewind.js";
@@ -95,6 +97,7 @@ import {
 import { handleRequestUploadRequest } from "./share-upload.js";
 import { handleSigninLinkVerify, handleSigninRequest, SIGNIN_ENDPOINT } from "./signin.js";
 import { handleStarterRequest, STARTER_ENDPOINT } from "./starter.js";
+import { handleSignedStorageEventRequest, SIGNED_STORAGE_EVENTS_PATH } from "./storage-events.js";
 import { handleWaitlistRequest } from "./waitlist.js";
 
 /** @typedef {import("./index.js").DriveApp} DriveApp */
@@ -451,6 +454,15 @@ export function createApp() {
 
   app.post("/api/storage-events", (c) =>
     handleStorageEventRequest(c.req.raw, c.env.METER_DB, c.env.METER_EVENT_TOKEN),
+  );
+
+  app.post(SIGNED_STORAGE_EVENTS_PATH, (c) =>
+    handleSignedStorageEventRequest(c.req.raw, {
+      db: c.env.METER_DB,
+      secret: storageEventsSecret(c.env),
+      queue: meterJobsQueue(c.env),
+      now: () => Date.now(),
+    }),
   );
 
   app.post(SIGNIN_ENDPOINT, (c) => handleSigninRequest(c.req.raw, c.env));
