@@ -9,7 +9,7 @@ description: The rate, the maximum, downloads, and the bill worked out for four 
 
 ## The rate
 
-{{SIZE_WINDOW}} {{RATE}} a month, never more than {{MAX_PER_TB}} for each TB. {{NO_PLANS}}
+{{SIZE_WINDOW}} {{RATE}} a month, never more than {{MAX_PER_TB}} for each TB. {{NO_PLANS}} There is no plan size. A drive is a drive: you are never moved to a bigger plan.
 
 ## Deleted files
 
@@ -67,9 +67,7 @@ plan. The numbers come from the same function the invoice uses.
 
 ## Honest notes
 
-- There is no plan size. A drive is a drive: you are never moved to a bigger
-  plan, and there is a cap you can set that stops spending before you think
-  about it.
+- There is a cap you can set that stops spending before you think about it.
 - Every figure above is worked out by the same function the invoice is worked
   out from, and a test fails the build if the page and the invoice disagree.
 - What is not in version 1 is on the [Limits](/limits) page, and it is
