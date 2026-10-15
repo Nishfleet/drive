@@ -1,5 +1,9 @@
 # Agent notes for drive
 
+Launch stage: 0 (day one). Next trigger: storagebun.com opens to outside users; one sign-up brings their files and a card, so stages 1 (accounts) and 2 (payments) are both due before it.
+
+Success: paying drives, the accounts charged a daily draw yesterday from a topped-up balance. Baseline: 0 live paying drives on 2026-10-15 (no live charge can run while the Dodo API key is unset, drive#325 open; until it is set, any row the query counts is a test-mode top-up). Measured by: `npx cf d1 query 0f636b57-4a2e-482a-bf40-8aa315e2403e --sql "SELECT COUNT(DISTINCT account_id) FROM daily_draws WHERE day = date('now','-1 day') AND draw_millicents > 0 AND account_id IN (SELECT account_id FROM balance_ledger WHERE kind = 'topup')"` (read-only, the drive database).
+
 A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month for the biggest size in the last 30 days.
 
 - The spec is `docs/build-spec.md` (what to build, step by step) and `docs/spec.md` (why: prices, rivals). These two repo files are the source. The vault copy under `02 Projects/competitor-clone/spec/` is a stale snapshot and is not kept in step: the vault is a private repo no worker can push to, and its copy of this spec is untracked (drive#89).
