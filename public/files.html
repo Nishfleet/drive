@@ -645,6 +645,7 @@ dialog.viewer::backdrop {
     <a href="/devices">Devices</a>
     <a href="/webhooks">Hooks</a>
   </nav>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
   <!-- /shell:app-header -->
 
 
@@ -832,6 +833,9 @@ let nextCursor = null;
 function say(message, kind) {
   statusLine.textContent = message;
   statusLine.dataset.kind = kind || "";
+  if (kind === "done" && typeof CustomEvent !== "undefined") {
+    document.dispatchEvent(new CustomEvent("toast", { detail: { text: message } }));
+  }
 }
 
 function showSignedOut(message) {
@@ -1444,7 +1448,7 @@ function openViewer(row) {
     fetch(src)
       .then((response) => {
         if (!response.ok) {
-          throw new Error("Could not read that file.");
+          throw new Error("Could not read that file. Pick it again.");
         }
         return response.text();
       })

@@ -31,4 +31,5 @@ How Storagebun talks, on every page, email and error. One voice, so it reads lik
 
 - `test/pricing-copy.test.mjs` and `test/membership-copy.test.mjs` pin the money sentences.
 - `test/shell.test.mjs` keeps one header and one footer on every page.
+- `test/error-copy.test.mjs` fails when an error block on a signed-in page has no next step or no Try again button, or when a failure sentence in a page script names no next step.
 - When you write new words, read them aloud once. If you would not say it to a person across a table, rewrite it.
