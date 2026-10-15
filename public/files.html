@@ -1364,10 +1364,10 @@ function offerUndo(row) {
 
 async function restoreFile(row) {
   try {
-    await api(RESTORE_ENDPOINT, {
+    await api(row.versionId ? RESTORE_VERSION_ENDPOINT : RESTORE_ENDPOINT, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: row.path }),
+      body: JSON.stringify(row.versionId ? { path: row.path, versionId: row.versionId } : { path: row.path }),
     });
     say(RESTORE_COPY.done, "done");
     refresh(true);
