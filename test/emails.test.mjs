@@ -6,7 +6,6 @@ import {
   handleSendEmailRequest,
   isAuthorizedSend,
   isSameOriginRequest,
-  replyToFor,
   sendEmail,
 } from "../core/email-send.js";
 import {
@@ -31,11 +30,7 @@ import { INSTALL_COMMAND } from "../core/status.js";
 
 // The deployment's sending address, set per deployment (the sending domain is
 // a deployment decision, not a code one).
-const MAIL_FROM = "notifications@drive.example";
-
-// The address every template's footer names, and the one sendEmail derives
-// from MAIL_FROM (drive#522).
-const REPLY_TO = replyToFor(MAIL_FROM);
+import { dataFor, MAIL_FROM, REPLY_TO, receiptData } from "./email-fixtures.mjs";
 
 /**
  * A fake send_email binding: records the message, and can be told to fail.
@@ -114,6 +109,8 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "upload-arrivals",
     "security-event",
     "first-file-nudge",
+    "share-opened",
+    "monthly-story",
     "runway-notice",
     "bill-dropped",
   ]);
@@ -349,88 +346,6 @@ test("payment failed never blames the person", () => {
 // ---------------------------------------------------------------------------
 // 5) monthly receipt, with the "you saved" line
 // ---------------------------------------------------------------------------
-
-/** @param {Record<string, unknown>} [overrides] */
-function receiptData(overrides = {}) {
-  return {
-    // October 2026, sent the way the Worker sends it: the month's own first
-    // instant, UTC (drive#559). The receipt names the month it bills for, so
-    // "this month" is never what a reader opens in a later month.
-    monthIso: "2026-10-01T00:00:00.000Z",
-    billUsd: 12,
-    meteredUsd: 16,
-    ceilingUsd: 12,
-    capped: true,
-    // The footer address every template prints (drive#522).
-    replyTo: REPLY_TO,
-    ...overrides,
-  };
-}
-
-// The data each kind actually takes. A kind rendered with another kind's data
-// must fail loudly (see the "no usable cap" test), so the loop tests use this
-// rather than one blob for all five.
-/** @param {string} kind */
-function dataFor(kind) {
-  // replyTo on every branch, because every template footer prints it
-  // (drive#522). sendEmail is the real producer of it; these tests render
-  // templates directly, so they pass the address the deployment would derive.
-  const base = { replyTo: REPLY_TO };
-  switch (kind) {
-    case "welcome":
-      return { ...base };
-    case "cap-warning":
-      return { ...base, capUsd: 12 };
-    case "read-only":
-      return { ...base, capUsd: 12 };
-    case "payment-failed":
-      return { ...base, amountUsd: 23.5 };
-    case "monthly-receipt":
-      return { ...receiptData(), ...base };
-    case "account-closed":
-    case "account-close-reminder":
-      return { ...base, graceDays: 30, reminderDays: 25, purgeOn: "3 Nov (UTC)" };
-    case "files-deleted":
-      return { ...base, purgedOn: "3 Nov (UTC)", graceDays: 30 };
-    case "top-up-receipt":
-      return { ...base, amountUsd: 25, balanceUsd: 31.5, auto: false };
-    case "low-balance":
-      return { ...base, balanceUsd: 1.8, autoTopUpUsd: null };
-    case "fair-use-pause":
-      return {
-        ...base,
-        copy: "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.",
-      };
-    case "device-approve-notice":
-      return {
-        ...base,
-        deviceName: "office laptop",
-        requestedAt: "2026-10-05T12:00:00.000Z",
-      };
-    case "upload-arrivals":
-      return {
-        ...base,
-        ownerName: "Nish",
-        folder: "Your drive",
-        arrivals: [{ name: "contract.pdf", sizeLabel: "1.2 MB" }],
-      };
-    case "security-event":
-      return {
-        ...base,
-        event: "agent-key-minted",
-        deviceName: "office laptop",
-        happenedAt: "2026-10-06T09:00:00.000Z",
-      };
-    case "first-file-nudge":
-      return { ...base, hours: 24 };
-    case "bill-dropped":
-      return { ...base, fromLine: "$10.00", toLine: "$2.00" };
-    case "runway-notice":
-      return { ...base, runwayLine: "Your $14 lasts about 1 month at your current size." };
-    default:
-      throw new Error(`no test data for ${kind}`);
-  }
-}
 
 test("a capped month says our price cap saved you, metered minus bill", () => {
   // drive#39, decision 1: capped month -> saved = metered - bill.

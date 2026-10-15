@@ -19,7 +19,7 @@ const API = /** @type {Record<string, unknown>} */ ({
   "/api/devices": { keys: [] },
   "/api/files": { view: "folder", path: "/", rows: [], folders: [] },
 });
-const PAGES = ["home", "files", "usage", "devices", "webhooks"];
+const PAGES = ["home", "files", "usage", "billing", "devices", "webhooks"];
 const WIDTHS = [390, 768, 1024, 1280];
 
 test("the app shell fits every width: no sideways scroll, a one-line top bar, the sidebar or the tab bar", {

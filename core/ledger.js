@@ -9,7 +9,7 @@ export const MAX_TOP_UP_CENTS = PREPAID.maxTopUpUsd * 100;
 
 export const LOW_BALANCE_CENTS = PREPAID.lowBalanceUsd * 100;
 
-export const TOP_UP_PAGE = "/usage";
+export const TOP_UP_PAGE = "/billing";
 
 /**
  * @typedef {"topup"|"usage"|"refund"|"adjustment"} LedgerKind
@@ -299,9 +299,10 @@ export async function hasToppedUp(db, accountId) {
  * @param {D1Database} db
  * @param {string} accountId
  * @param {number} [limit]
+ * @param {LedgerKind|null} [kind] only lines of this kind
  * @returns {Promise<LedgerLine[]>}
  */
-export async function recentLedger(db, accountId, limit = 10) {
+export async function recentLedger(db, accountId, limit = 10, kind = null) {
   nonEmpty(accountId, "accountId");
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     throw new TypeError(`limit must be a whole number from 1 to 100, got ${String(limit)}`);
@@ -309,10 +310,10 @@ export async function recentLedger(db, accountId, limit = 10) {
   const result = await db
     .prepare(
       `SELECT id, kind, amount_cents, window_start, reason, created_at
-         FROM balance_ledger WHERE account_id = ?1
+         FROM balance_ledger WHERE account_id = ?1 AND (?3 IS NULL OR kind = ?3)
         ORDER BY id DESC LIMIT ?2`,
     )
-    .bind(accountId, limit)
+    .bind(accountId, limit, kind)
     .all();
   return (result.results ?? []).map((raw) => {
     const row = /** @type {Record<string, unknown>} */ (raw);

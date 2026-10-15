@@ -21,11 +21,12 @@ const APP_PAGES = /** @type {Record<string, string>} */ ({
   home: "/home",
   files: "/files",
   usage: "/usage",
+  billing: "/billing",
   devices: "/devices",
   webhooks: "/webhooks",
 });
 const NOT_APP_PAGES = new Set([...PUBLIC_PAGES, "index", "signin", "starter", "upload", "og-card"]);
-const FOOTER_PAGES = [...PUBLIC_PAGES, "signin", "upload"];
+const FOOTER_PAGES = [...PUBLIC_PAGES, "signin", "upload", "starter", ...Object.keys(APP_PAGES)];
 
 test("no page is out of date with shell/", () => {
   assert.deepEqual(syncShell({ write: false }), [], "run npm run shell:sync");
@@ -75,5 +76,14 @@ test("every page that is not public carries the app shell", () => {
       name in APP_PAGES,
       `${name}.html is neither a public page nor listed in APP_PAGES; a signed-in page must carry the app shell`,
     );
+  }
+});
+
+test("a page's footer is the shared one, never its own copy", () => {
+  for (const name of FOOTER_PAGES) {
+    const html = page(name);
+    const inside = html.match(/<!-- shell:footer -->[\s\S]*?<!-- \/shell:footer -->/)?.[0] ?? "";
+    assert.equal(html.split("<footer").length - 1, 1, `${name} has one footer element`);
+    assert.ok(inside.includes("<footer"), `${name}'s footer sits inside the shared block`);
   }
 });

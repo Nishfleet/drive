@@ -9,6 +9,19 @@
   <link rel="manifest" href="/site.webmanifest">
   <meta name="description" content="What your drive stored this month and what it cost, from the same numbers the invoice is worked out from.">
   <meta name="robots" content="noindex">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://storagebun.com/usage">
+  <meta property="og:site_name" content="Storagebun">
+  <meta property="og:title" content="Storagebun — usage">
+  <meta property="og:description" content="What your drive stored this month and what it cost, from the same numbers the invoice is worked out from.">
+  <meta property="og:image" content="https://storagebun.com/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Storagebun, a Finder drive for people and their agents">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Storagebun — usage">
+  <meta name="twitter:description" content="What your drive stored this month and what it cost, from the same numbers the invoice is worked out from.">
+  <meta name="twitter:image" content="https://storagebun.com/og.png">
   <link rel="stylesheet" href="/site.css">
   <style>
 body {
@@ -244,133 +257,6 @@ h2 {
   color: var(--ink-soft);
 }
 
-.balance-slot {
-  display: grid;
-}
-
-.balance-slot > * {
-  grid-area: 1 / 1;
-  min-width: 0;
-}
-
-.balance-slot > [hidden] {
-  display: block;
-  visibility: hidden;
-}
-
-.balance-slot > .status {
-  align-self: start;
-}
-
-.balance-amount {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: clamp(34px, 5vw, 48px);
-  line-height: 1.1;
-  min-height: 1.1em;
-}
-
-.balance-line {
-  margin: 6px 0 0;
-  min-height: 2lh;
-  padding-left: 12px;
-  border-left: 4px solid var(--rule);
-  color: var(--ink-soft);
-}
-
-.balance-line[data-state="low"],
-.balance-line[data-state="paused"] {
-  border-left-color: var(--bad);
-  color: var(--ink);
-  font-weight: 600;
-}
-
-.topup {
-  margin: 18px 0 0;
-  padding: 16px 18px;
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-  background: var(--paper-raised);
-}
-
-.topup-presets {
-  min-height: calc(1lh + 16px);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.topup-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 8px 10px;
-  margin: 14px 0 0;
-}
-
-.topup-form label {
-  display: grid;
-  gap: 4px;
-  font-weight: 600;
-}
-
-.topup input[type="number"] {
-  width: 8rem;
-  font: inherit;
-  padding: 8px 10px;
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-}
-
-.topup .error {
-  margin: 10px 0 0;
-  color: var(--ink);
-  font-weight: 600;
-}
-
-.auto-topup {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  margin: 14px 0 0;
-  padding-top: 14px;
-  border-top: 1px solid var(--rule);
-}
-
-.ledger-box {
-  height: 16rem;
-  margin: 18px 0 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.ledger {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  border-top: 1px solid var(--rule);
-}
-
-.ledger li {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 4px 18px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--rule);
-}
-
-.ledger .amount {
-  font-family: var(--mono);
-}
-
-.ledger .when {
-  flex-basis: 100%;
-  color: var(--ink-faint);
-  font-size: 15px;
-}
-
 .footer {
   max-width: 940px;
   margin: 48px auto 0;
@@ -390,7 +276,8 @@ h2 {
     <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
     <a href="/home">Home</a>
     <a href="/files">Files</a>
-    <a href="/usage" aria-current="page">Usage and billing</a>
+    <a href="/usage" aria-current="page">Usage</a>
+    <a href="/billing">Billing</a>
     <a href="/devices">Devices</a>
     <a href="/webhooks">Webhooks</a>
     <span class="app-side-end">
@@ -400,8 +287,9 @@ h2 {
   </nav>
   <header class="app-top">
     <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
-    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
-    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <a class="balance-chip" id="balance-chip" href="/billing" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <button class="btn btn-ghost palette-open" id="palette-open" type="button" aria-haspopup="dialog">Search <kbd>Ctrl K</kbd></button>
+    <a class="top-up" href="/billing#topup-form">Top up</a>
     <details class="account-menu" id="account-menu">
       <summary>Account</summary>
       <div class="account-panel">
@@ -427,9 +315,27 @@ h2 {
     <a href="/home">Home</a>
     <a href="/files">Files</a>
     <a href="/usage" aria-current="page">Usage</a>
+    <a href="/billing">Billing</a>
     <a href="/devices">Devices</a>
     <a href="/webhooks">Hooks</a>
   </nav>
+  <dialog class="palette" id="palette" aria-label="Search and commands">
+    <input class="field" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" aria-label="Search pages, files and commands" placeholder="Jump to a page, a file or a command" autocomplete="off" spellcheck="false">
+    <div id="palette-list" role="listbox" aria-label="Results"></div>
+  </dialog>
+  <dialog class="palette" id="shortcuts" aria-labelledby="shortcuts-title">
+    <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+    <dl>
+      <dt><kbd>Ctrl</kbd> <kbd>K</kbd></dt><dd>Search and commands</dd>
+      <dt><kbd>?</kbd></dt><dd>This list</dd>
+      <dt><kbd>/</kbd></dt><dd>Filter the files in this folder</dd>
+      <dt><kbd>U</kbd></dt><dd>Upload files</dd>
+      <dt><kbd>Delete</kbd></dt><dd>Delete the picked files</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close, or clear the pick</dd>
+    </dl>
+    <button class="btn" type="button" id="shortcuts-close">Close</button>
+  </dialog>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
   <!-- /shell:app-header -->
 
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
@@ -458,39 +364,12 @@ h2 {
       </div>
     </section>
 
+    <div class="skeleton-block" aria-hidden="true"><p class="skeleton">Loading your usage and balance now, one moment.</p></div>
     <div id="usage-body" hidden>
-      <section aria-labelledby="balance-heading">
-        <h2 id="balance-heading">Balance</h2>
-        <div class="balance-slot">
-          <p class="status" id="balance-status" role="status" aria-live="polite" hidden></p>
-          <div id="balance-body" hidden>
-            <p class="balance-amount" id="balance-amount"></p>
-            <p class="balance-line" id="balance-line" data-state="ok"></p>
-            <p class="hint" id="topup-pending" role="status" hidden>Thanks. Your balance goes up here as soon as the payment is confirmed.</p>
-            <div class="topup">
-              <div class="topup-presets" id="topup-presets"></div>
-              <form class="topup-form" id="topup-form">
-                <label for="topup-amount">Another amount, in dollars
-                  <input type="number" id="topup-amount" name="amount" min="10" max="1000" step="1" inputmode="decimal" required class="field">
-                </label>
-                <button type="submit" class="btn btn-primary">Add</button>
-              </form>
-              <p class="error" id="topup-error" role="alert" hidden></p>
-              <div class="auto-topup">
-                <input type="checkbox" id="auto-topup" aria-describedby="auto-topup-note" class="check">
-                <label for="auto-topup">Auto top-up: add</label>
-                <input type="number" id="auto-topup-amount" min="10" max="1000" step="1" value="10" aria-label="Auto top-up amount, in dollars" class="field">
-                <span>when the balance drops under $2</span>
-              </div>
-              <p class="hint" id="auto-topup-note" role="status">Off until you turn it on. It uses your saved card and emails a receipt each time.</p>
-            </div>
-            <h3 class="hint" id="ledger-heading">Recent lines</h3>
-            <section class="ledger-box" aria-labelledby="ledger-heading">
-              <ul class="ledger" id="ledger-list"></ul>
-              <p class="hint" id="ledger-empty" hidden>No lines yet. Your first top-up shows here.</p>
-            </section>
-          </div>
-        </div>
+      <section aria-labelledby="billing-card-heading">
+        <h2 id="billing-card-heading">Billing</h2>
+        <p class="lede">Your balance, top-ups, receipts and the biggest-size explainer live on their own page.</p>
+        <p class="hint"><a id="billing-link" href="/billing">Open billing</a></p>
       </section>
 
       <section aria-labelledby="stored-heading">
@@ -505,34 +384,23 @@ h2 {
           <p class="what">No storage history yet.</p>
           <p class="next">It fills in from the drive's first day on the meter.</p>
         </div>
+        <p class="hint" id="meter-note">
+          A file you save through the drive folder, the S3 API or an agent tool
+          shows up here, in your cap and in search at the nightly run (03:00 and
+          04:00 UTC), not the moment you save it. A file you save in this
+          browser is counted straight away.
+        </p>
 
         <dl class="readout">
           <div class="pair">
             <dt>Stored GB now</dt>
-            <dd id="stored-now"></dd>
-          </div>
-          <div class="pair">
-            <dt>Biggest size in the last 30 days</dt>
-            <dd id="size30"></dd>
-          </div>
-          <div class="pair">
-            <dt>Date that size was reached</dt>
-            <dd id="size30-reached"></dd>
-          </div>
-          <div class="pair">
-            <dt>Date that size drops out</dt>
-            <dd id="size30-drops-out"></dd>
+            <dd id="stored-now" data-count></dd>
           </div>
           <div class="pair">
             <dt>Today's draw</dt>
             <dd id="today-draw"></dd>
           </div>
-          <div class="pair">
-            <dt>Cost so far</dt>
-            <dd id="cost"></dd>
-          </div>
         </dl>
-        <dl class="readout" id="bill-lines" hidden></dl>
       </section>
 
       <section aria-labelledby="downloads-heading">
@@ -620,6 +488,7 @@ h2 {
     </noscript>
   </main>
 
+  <!-- shell:footer -->
   <footer class="footer">
     <nav class="legal-links" aria-label="Legal">
       <a href="/terms">Terms</a>
@@ -630,8 +499,10 @@ h2 {
       <a href="/accessibility">Accessibility</a>
       <a href="/status">Status</a>
     </nav>
-    <p>Pay from your balance for the biggest size your drive reached in the last 30 days. <a href="/">See the price</a>.</p>
+    <p>A Finder drive for people and their agents.</p>
+    <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
   </footer>
+  <!-- /shell:footer -->
 
   <script>
 const USAGE_ENDPOINT = "/api/usage";
@@ -682,12 +553,7 @@ const chartLine = document.getElementById("chart-line");
 const chartFigureEl = document.getElementById("chart-figure");
 const storageEmptyEl = document.getElementById("storage-empty");
 const storedNowEl = document.getElementById("stored-now");
-const size30El = document.getElementById("size30");
-const size30ReachedEl = document.getElementById("size30-reached");
-const size30DropsOutEl = document.getElementById("size30-drops-out");
 const todayDrawEl = document.getElementById("today-draw");
-const costEl = document.getElementById("cost");
-const billLinesEl = document.getElementById("bill-lines");
 const downloadsEl = document.getElementById("downloads-line");
 const openPublicLinksEl = document.getElementById("open-public-links");
 const uploadLineEl = document.getElementById("upload-line");
@@ -841,7 +707,7 @@ function drawChart(series) {
   storageEmptyEl.hidden = true;
 }
 
-const LABEL_KEYS = ["storedNow", "size30", "size30Reached", "size30DropsOut", "todayDraw", "downloads", "cost", "cap", "accountCap"];
+const LABEL_KEYS = ["storedNow", "todayDraw", "downloads", "cap", "accountCap"];
 
 function render(summary) {
   if (typeof summary !== "object" || summary === null) {
@@ -874,9 +740,6 @@ function render(summary) {
         typeof summary.saved.copy !== "string")) ||
     (summary.uploadLine !== null && typeof summary.uploadLine !== "string") ||
     (summary.fairUseLine !== null && typeof summary.fairUseLine !== "string") ||
-    typeof summary.billCents !== "object" ||
-    summary.billCents === null ||
-    !Array.isArray(summary.billCents.lines) ||
     typeof summary.cardOnFile !== "boolean"
   ) {
     sayUnreachable();
@@ -898,27 +761,7 @@ function render(summary) {
 
   drawChart(summary.storedDaily);
   storedNowEl.textContent = labels.storedNow;
-  size30El.textContent = labels.size30;
-  size30ReachedEl.textContent = labels.size30Reached;
-  size30DropsOutEl.textContent = labels.size30DropsOut;
   todayDrawEl.textContent = labels.todayDraw;
-  costEl.textContent = labels.cost;
-  billLinesEl.replaceChildren();
-  for (const line of summary.billCents.lines) {
-    if (typeof line?.label !== "string" || typeof line?.usd !== "string") {
-      sayUnreachable();
-      return;
-    }
-    const row = document.createElement("div");
-    row.className = "pair";
-    const dt = document.createElement("dt");
-    dt.textContent = line.label;
-    const dd = document.createElement("dd");
-    dd.textContent = line.usd;
-    row.append(dt, dd);
-    billLinesEl.append(row);
-  }
-  billLinesEl.hidden = !summary.cardOnFile || summary.billCents.lines.length === 0;
   downloadsEl.textContent = labels.downloads;
   openPublicLinksEl.textContent = Number.isFinite(summary.openPublicLinks)
     ? String(summary.openPublicLinks)
@@ -1126,179 +969,8 @@ navSignoutAll.addEventListener("click", () => {
   postSignout("signout-all");
 });
   </script>
-  <script data-part="balance">
+  <script data-part="history">
 (() => {
-  const BALANCE_ENDPOINT = "/api/balance";
-  const TOPUP_ENDPOINT = "/api/topup";
-  const AUTO_TOPUP_ENDPOINT = "/api/topup/auto";
-  const UNREACHABLE = "Could not reach the balance just now. Reload the page to try again.";
-  const LABELS = {
-    topup: "Top-up",
-    usage: "Storage and downloads",
-    refund: "Refund",
-    adjustment: "Adjustment",
-  };
-
-  const statusEl = document.getElementById("balance-status");
-  const bodyEl = document.getElementById("balance-body");
-  const amountEl = document.getElementById("balance-amount");
-  const lineEl = document.getElementById("balance-line");
-  const presetsEl = document.getElementById("topup-presets");
-  const formEl = document.getElementById("topup-form");
-  const customEl = document.getElementById("topup-amount");
-  const errorEl = document.getElementById("topup-error");
-  const pendingEl = document.getElementById("topup-pending");
-  const autoEl = document.getElementById("auto-topup");
-  const autoAmountEl = document.getElementById("auto-topup-amount");
-  const autoNoteEl = document.getElementById("auto-topup-note");
-  const ledgerEl = document.getElementById("ledger-list");
-  const ledgerEmptyEl = document.getElementById("ledger-empty");
-
-  let minTopUpUsd = 10;
-
-  function sayStatus(message) {
-    statusEl.textContent = message;
-    statusEl.hidden = false;
-    bodyEl.hidden = true;
-  }
-
-  function sayError(message) {
-    errorEl.textContent = message;
-    errorEl.hidden = false;
-  }
-
-  async function postJson(url, body) {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json().catch(() => null);
-    return { response, payload };
-  }
-
-  async function topUp(amount) {
-    errorEl.hidden = true;
-    const dollars = Number(amount);
-    if (!Number.isFinite(dollars) || dollars < minTopUpUsd) {
-      sayError(`Add $${minTopUpUsd} or more.`);
-      return;
-    }
-    let answer;
-    try {
-      answer = await postJson(TOPUP_ENDPOINT, { amount_usd: String(amount) });
-    } catch (_error) {
-      sayError(UNREACHABLE);
-      return;
-    }
-    const { response, payload } = answer;
-    const url = payload && typeof payload.checkout_url === "string" ? payload.checkout_url : "";
-    if (!response.ok || !url.startsWith("https://")) {
-      sayError(payload && typeof payload.error === "string" ? payload.error : UNREACHABLE);
-      return;
-    }
-    window.location.assign(url);
-  }
-
-  async function saveAuto() {
-    const turningOn = autoEl.checked;
-    autoEl.disabled = true;
-    let answer;
-    try {
-      answer = await postJson(AUTO_TOPUP_ENDPOINT, {
-        amount_usd: turningOn ? String(autoAmountEl.value) : null,
-      });
-    } catch (_error) {
-      answer = null;
-    }
-    autoEl.disabled = false;
-    if (!answer || !answer.response.ok) {
-      autoEl.checked = !turningOn;
-      const payload = answer ? answer.payload : null;
-      autoNoteEl.textContent =
-        payload && typeof payload.error === "string" ? payload.error : UNREACHABLE;
-      return;
-    }
-    autoNoteEl.textContent = turningOn
-      ? "On. It uses your saved card and emails a receipt each time."
-      : "Off. Top up by hand when you need to.";
-  }
-
-  function ledgerLine(line) {
-    const item = document.createElement("li");
-    const what = document.createElement("span");
-    what.textContent = line.reason ? `${LABELS[line.kind] || line.kind}: ${line.reason}` : LABELS[line.kind] || line.kind;
-    const amount = document.createElement("span");
-    amount.className = "amount";
-    amount.textContent = line.amount_cents > 0 ? `+${line.amount}` : line.amount;
-    const when = document.createElement("span");
-    when.className = "when";
-    when.textContent = typeof line.at === "string" ? line.at.slice(0, 10) : "";
-    item.append(what, amount, when);
-    if (typeof line.receipt_url === "string" && /^\/api\/receipts\/[0-9]+$/.test(line.receipt_url)) {
-      const receipt = document.createElement("a");
-      receipt.href = line.receipt_url;
-      receipt.target = "_blank";
-      receipt.rel = "noopener";
-      receipt.textContent = "Receipt";
-      item.append(receipt);
-    }
-    return item;
-  }
-
-  function render(summary) {
-    minTopUpUsd = summary.min_top_up_usd;
-    amountEl.textContent = summary.balance;
-    lineEl.textContent = summary.runway_line
-      ? `${summary.balance_line} ${summary.runway_line}`
-      : summary.balance_line;
-    lineEl.dataset.state = summary.paused ? "paused" : summary.low_balance ? "low" : "ok";
-    presetsEl.replaceChildren(
-      ...summary.top_up_presets_usd.map((dollars) => {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "btn btn-primary";
-        button.textContent = `Add $${dollars}`;
-        button.addEventListener("click", () => topUp(dollars));
-        return button;
-      }),
-    );
-    customEl.min = String(summary.min_top_up_usd);
-    autoEl.checked = summary.auto_topup_usd !== null;
-    autoAmountEl.min = String(summary.min_top_up_usd);
-    autoAmountEl.value = String(
-      summary.auto_topup_usd === null ? summary.min_top_up_usd : summary.auto_topup_usd,
-    );
-    ledgerEl.replaceChildren(...summary.recent.map(ledgerLine));
-    ledgerEmptyEl.hidden = summary.recent.length > 0;
-    statusEl.hidden = true;
-    bodyEl.hidden = false;
-  }
-
-  async function read() {
-    let response;
-    try {
-      response = await fetch(BALANCE_ENDPOINT, { headers: { accept: "application/json" } });
-    } catch (_error) {
-      sayStatus(UNREACHABLE);
-      return;
-    }
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload || typeof payload.balance !== "string") {
-      sayStatus(payload && typeof payload.error === "string" ? payload.error : UNREACHABLE);
-      return;
-    }
-    render(payload);
-  }
-
-  formEl.addEventListener("submit", (event) => {
-    event.preventDefault();
-    return topUp(customEl.value);
-  });
-  autoEl.addEventListener("change", () => saveAuto());
-  pendingEl.hidden = new URLSearchParams(window.location.search).get("topup") !== "done";
-  read();
-
   // History (retention): how long deleted and replaced files stay restorable.
   // The Worker words the price for each window (core/history-addon.js), so this
   // block shows what the API says before it asks to turn anything on, and
@@ -1355,13 +1027,13 @@ navSignoutAll.addEventListener("click", () => {
         });
         const answer = await response.json().catch(() => null);
         if (!response.ok) {
-          statusEl.textContent = answer && answer.error ? answer.error : "That did not save. Nothing was billed.";
+          statusEl.textContent = answer && answer.error ? answer.error : "That did not save. Nothing was billed. Press Save to try again.";
         } else {
           payload.days = chosen;
           statusEl.textContent = "Saved.";
         }
       } catch (_error) {
-        statusEl.textContent = "Could not reach the server. Nothing was billed.";
+        statusEl.textContent = "Could not reach the server. Nothing was billed. Press Save to try again.";
       }
       statusEl.hidden = false;
       saveEl.disabled = false;

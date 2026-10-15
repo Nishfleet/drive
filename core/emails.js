@@ -1,9 +1,19 @@
 import { DEFAULT_CAP_USD } from "./cap-default.js";
 import { emailShell } from "./email-layout.js";
+import {
+  agentSessionsLine,
+  filesAddedLine,
+  monthLabel,
+  requireDay,
+  requireDays,
+  usd,
+} from "./emails-fields.js";
+import { savedLine } from "./emails-saved.js";
 import { escapeHtml } from "./escape-html.js";
 import { INSTALL_COMMAND, SIGN_IN_COMMAND, TOP_UP_PROMPT } from "./messages.js";
 import { absoluteUrl } from "./seo.js";
 
+export { SAVED_COPY, savedLine } from "./emails-saved.js";
 export { DEFAULT_CAP_USD };
 
 const PORTAL_URL = absoluteUrl("/api/billing/portal");
@@ -23,59 +33,6 @@ export const FROM_NAME = "Storagebun";
 export const REPLY_TO_LOCAL = "support";
 
 export const RATE_USD_PER_GB = 0.02;
-
-export const SAVED_COPY = Object.freeze({
-  capped: "Our price cap saved you",
-  uncapped: "You paid",
-  uncappedSuffix: "less than a flat plan",
-});
-
-/**
- * The "you saved" line for a receipt, or null when there is nothing to say.
- * Capped month: saving = metered - bill. Uncapped month: saving = ceiling -
- * bill. drive#39 fixed both baselines; the caller passes the three numbers it
- * already has, so this stays a pure comparison rather than a second bill.
- * @param {unknown} month
- * @returns {string | null}
- */
-export function savedLine(month) {
-  if (typeof month !== "object" || month === null) {
-    throw new TypeError(`savedLine needs a month object, got ${String(month)}`);
-  }
-  const fields =
-    /** @type {{meteredUsd?: unknown, billUsd?: unknown, ceilingUsd?: unknown, capped?: unknown}} */ (
-      month
-    );
-  const { meteredUsd, billUsd, ceilingUsd, capped } = fields;
-  if (typeof capped !== "boolean") {
-    throw new TypeError(`capped must be true or false, got ${String(capped)}`);
-  }
-  if (typeof meteredUsd !== "number" || !Number.isFinite(meteredUsd) || meteredUsd < 0) {
-    throw new TypeError(`meteredUsd must be 0 or more, got ${meteredUsd}`);
-  }
-  if (typeof billUsd !== "number" || !Number.isFinite(billUsd) || billUsd < 0) {
-    throw new TypeError(`billUsd must be 0 or more, got ${billUsd}`);
-  }
-  if (typeof ceilingUsd !== "number" || !Number.isFinite(ceilingUsd) || ceilingUsd < 0) {
-    throw new TypeError(`ceilingUsd must be 0 or more, got ${ceilingUsd}`);
-  }
-  const saved = capped ? meteredUsd - billUsd : ceilingUsd - billUsd;
-  if (saved <= 0) {
-    return null;
-  }
-  const dollars = usd(saved);
-  return capped
-    ? `${SAVED_COPY.capped} ${dollars}`
-    : `${SAVED_COPY.uncapped} ${dollars} ${SAVED_COPY.uncappedSuffix}`;
-}
-
-/**
- * @param {number} value
- * @returns {string}
- */
-function usd(value) {
-  return `$${value.toFixed(2)}`;
-}
 
 const SIGN_OFF = "-- Storagebun";
 
@@ -197,36 +154,6 @@ export function paymentFailedTemplate(data = {}) {
   return finish({ subject, lines, html_lines, replyTo: data.replyTo });
 }
 
-const MONTH_ISO = /^\d{4}-(0[1-9]|1[0-2])-01T00:00:00\.000Z$/;
-const MONTH_NAMES = Object.freeze([
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-]);
-
-/**
- * @param {unknown} value
- * @returns {string} the month named "October 2026", for the subject and the first line
- */
-function monthLabel(value) {
-  if (typeof value !== "string" || !MONTH_ISO.test(value)) {
-    throw new TypeError(
-      `monthIso must be a month's first instant (2026-10-01T00:00:00.000Z), got ${String(value)}`,
-    );
-  }
-  const at = new Date(value);
-  return `${MONTH_NAMES[at.getUTCMonth()]} ${at.getUTCFullYear()}, UTC`;
-}
-
 /**
  * @param {Record<string, unknown>} [data]
  * @returns {{subject: string, text: string, html: string, saved: string|null}}
@@ -261,35 +188,6 @@ export function monthlyReceiptTemplate(data = {}) {
     html_lines.push(`<p>${saved}</p>`);
   }
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, saved });
-}
-
-/**
- * @param {unknown} value
- * @param {string} name
- * @returns {number}
- */
-function requireDays(value, name) {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new TypeError(`${name} must be a whole number of days, got ${String(value)}`);
-  }
-  return value;
-}
-
-/**
- * @param {unknown} value
- * @param {string} name
- * @returns {string}
- */
-function requireDay(value, name) {
-  if (
-    typeof value !== "string" ||
-    !/^[1-9]\d? (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \(UTC\)$/.test(value)
-  ) {
-    throw new TypeError(
-      `${name} must be a short date with its zone (3 Nov (UTC)), got ${String(value)}`,
-    );
-  }
-  return value;
 }
 
 /**
@@ -650,6 +548,16 @@ function securityEventTemplate(data = {}) {
 }
 
 /**
+ * @param {Record<string, unknown>} data
+ * @returns {string|null}
+ */
+function unsubscribeLinkOf(data) {
+  return typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
+    ? data.unsubscribeUrl
+    : null;
+}
+
+/**
  * @param {Record<string, unknown>} [data] `hours` (24 or 72) and the shared footer data
  */
 function firstFileNudgeTemplate(data = {}) {
@@ -675,10 +583,7 @@ function firstFileNudgeTemplate(data = {}) {
     "<p>No computer handy? Open Files in the browser and press Upload.</p>",
     "<p>You pay only for what you store, so an empty drive costs nothing.</p>",
   ];
-  const unsubscribe =
-    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
-      ? data.unsubscribeUrl
-      : null;
+  const unsubscribe = unsubscribeLinkOf(data);
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
@@ -697,10 +602,7 @@ function runwayNoticeTemplate(data = {}) {
     `<p>${escapeHtml(runwayLine)}</p>`,
     "<p>Add to your balance when it suits you. If it runs out, uploads pause, downloads keep working and nothing is deleted.</p>",
   ];
-  const unsubscribe =
-    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
-      ? data.unsubscribeUrl
-      : null;
+  const unsubscribe = unsubscribeLinkOf(data);
   return finish({
     subject,
     lines,
@@ -727,10 +629,31 @@ function billDroppedTemplate(data = {}) {
     `<p>The biggest size your drive reached in the last 30 days has aged out, so your monthly bill went from ${escapeHtml(fromLine)} to ${escapeHtml(toLine)}.</p>`,
     "<p>Nothing to do. You pay for the biggest size in the last 30 days, so a big delete shows up in the bill once that peak is 30 days old.</p>",
   ];
-  const unsubscribe =
-    typeof data.unsubscribeUrl === "string" && data.unsubscribeUrl.startsWith("https://")
-      ? data.unsubscribeUrl
-      : null;
+  const unsubscribe = unsubscribeLinkOf(data);
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
+}
+
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function shareOpenedTemplate(data = {}) {
+  const fileName = requireText(data.fileName, "fileName");
+  const opens = Number(data.opens);
+  if (!Number.isInteger(opens) || opens < 1) {
+    throw new TypeError(`opens must be a whole number of 1 or more, got ${String(data.opens)}`);
+  }
+  const times = opens === 1 ? "once" : `${opens} times`;
+  const subject = "Your shared link was opened";
+  const lines = [
+    `Your link to ${fileName} was opened ${times} since the last time we wrote.`,
+    "",
+    "You can turn a link off any time from the Files page or with drive share --revoke.",
+  ];
+  const html_lines = [
+    `<p>Your link to ${escapeHtml(fileName)} was opened ${times} since the last time we wrote.</p>`,
+    "<p>You can turn a link off any time from the Files page or with <code>drive share --revoke</code>.</p>",
+  ];
+  const unsubscribe = unsubscribeLinkOf(data);
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
 }
 
@@ -750,9 +673,38 @@ export const EMAIL_KINDS = Object.freeze([
   "upload-arrivals",
   "security-event",
   "first-file-nudge",
+  "share-opened",
+  "monthly-story",
   "runway-notice",
   "bill-dropped",
 ]);
+
+/**
+ * @param {Record<string, unknown>} [data]
+ */
+function monthlyStoryTemplate(data = {}) {
+  const month = monthLabel(data.monthIso);
+  const peak = requireText(data.peakLine, "peakLine");
+  const spent = requireText(data.spentLine, "spentLine");
+  const addedLine = filesAddedLine(data.filesAdded);
+  const agentLine = agentSessionsLine(data.agentSessions);
+  const subject = `Your drive in ${month.replace(", UTC", "")}`;
+  const lines = [
+    `Here is your drive for ${month}.`,
+    "",
+    peak,
+    addedLine,
+    spent,
+    ...(agentLine === null ? [] : ["", agentLine]),
+  ];
+  const html_lines = [
+    `<p>Here is your drive for ${escapeHtml(month)}.</p>`,
+    `<p>${escapeHtml(peak)}<br>${addedLine}<br>${escapeHtml(spent)}</p>`,
+    ...(agentLine === null ? [] : [`<p>${escapeHtml(agentLine)}</p>`]),
+  ];
+  const unsubscribe = unsubscribeLinkOf(data);
+  return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });
+}
 
 /**
  * @type {Readonly<Record<string, (data: Record<string, unknown>) => {subject: string, text: string, html: string, saved: string|null}>>}
@@ -773,6 +725,8 @@ const TEMPLATES = Object.freeze({
   "upload-arrivals": uploadArrivalsTemplate,
   "security-event": securityEventTemplate,
   "first-file-nudge": firstFileNudgeTemplate,
+  "share-opened": shareOpenedTemplate,
+  "monthly-story": monthlyStoryTemplate,
   "runway-notice": runwayNoticeTemplate,
   "bill-dropped": billDroppedTemplate,
 });

@@ -9,6 +9,19 @@
   <link rel="manifest" href="/site.webmanifest">
   <meta name="description" content="Your drive in any browser or on your phone: browse, preview, download, upload, and put anything back from Recently deleted.">
   <meta name="robots" content="noindex">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://storagebun.com/files">
+  <meta property="og:site_name" content="Storagebun">
+  <meta property="og:title" content="Storagebun — your files">
+  <meta property="og:description" content="Your drive in any browser or on your phone: browse, preview, download, upload, and put anything back from Recently deleted.">
+  <meta property="og:image" content="https://storagebun.com/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Storagebun, a Finder drive for people and their agents">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Storagebun — your files">
+  <meta name="twitter:description" content="Your drive in any browser or on your phone: browse, preview, download, upload, and put anything back from Recently deleted.">
+  <meta name="twitter:image" content="https://storagebun.com/og.png">
   <link rel="stylesheet" href="/site.css">
   <style>
 :root {
@@ -169,6 +182,11 @@ main {
   margin: 0;
 }
 
+.toolbar #sort {
+  flex: 0 1 180px;
+  width: auto;
+}
+
 .bulk {
   display: flex;
   flex-wrap: wrap;
@@ -225,6 +243,10 @@ main {
   list-style: none;
   border-top: 1px solid var(--rule);
   min-height: calc(var(--tap) + 12px);
+}
+
+#file-list {
+  min-height: 60dvh;
 }
 
 .row.is-shell {
@@ -605,7 +627,8 @@ dialog.viewer::backdrop {
     <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
     <a href="/home">Home</a>
     <a href="/files" aria-current="page">Files</a>
-    <a href="/usage">Usage and billing</a>
+    <a href="/usage">Usage</a>
+    <a href="/billing">Billing</a>
     <a href="/devices">Devices</a>
     <a href="/webhooks">Webhooks</a>
     <span class="app-side-end">
@@ -615,8 +638,9 @@ dialog.viewer::backdrop {
   </nav>
   <header class="app-top">
     <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
-    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
-    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <a class="balance-chip" id="balance-chip" href="/billing" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <button class="btn btn-ghost palette-open" id="palette-open" type="button" aria-haspopup="dialog">Search <kbd>Ctrl K</kbd></button>
+    <a class="top-up" href="/billing#topup-form">Top up</a>
     <details class="account-menu" id="account-menu">
       <summary>Account</summary>
       <div class="account-panel">
@@ -642,9 +666,27 @@ dialog.viewer::backdrop {
     <a href="/home">Home</a>
     <a href="/files" aria-current="page">Files</a>
     <a href="/usage">Usage</a>
+    <a href="/billing">Billing</a>
     <a href="/devices">Devices</a>
     <a href="/webhooks">Hooks</a>
   </nav>
+  <dialog class="palette" id="palette" aria-label="Search and commands">
+    <input class="field" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" aria-label="Search pages, files and commands" placeholder="Jump to a page, a file or a command" autocomplete="off" spellcheck="false">
+    <div id="palette-list" role="listbox" aria-label="Results"></div>
+  </dialog>
+  <dialog class="palette" id="shortcuts" aria-labelledby="shortcuts-title">
+    <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+    <dl>
+      <dt><kbd>Ctrl</kbd> <kbd>K</kbd></dt><dd>Search and commands</dd>
+      <dt><kbd>?</kbd></dt><dd>This list</dd>
+      <dt><kbd>/</kbd></dt><dd>Filter the files in this folder</dd>
+      <dt><kbd>U</kbd></dt><dd>Upload files</dd>
+      <dt><kbd>Delete</kbd></dt><dd>Delete the picked files</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close, or clear the pick</dd>
+    </dl>
+    <button class="btn" type="button" id="shortcuts-close">Close</button>
+  </dialog>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
   <!-- /shell:app-header -->
 
 
@@ -696,6 +738,21 @@ dialog.viewer::backdrop {
       <p class="what" id="signed-out-what"></p>
     </div>
   </main>
+  <!-- shell:footer -->
+  <footer class="footer">
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
+    <p>A Finder drive for people and their agents.</p>
+    <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
+  </footer>
+  <!-- /shell:footer -->
 
   <div class="drop-hint" id="drop-hint" aria-hidden="true">Drop files to upload them here</div>
 
@@ -825,16 +882,23 @@ const tabFiles = document.getElementById("tab-files");
 const tabDeleted = document.getElementById("tab-deleted");
 const tabRewind = document.getElementById("tab-rewind");
 
-let path = "/";
+let path =
+  (typeof URLSearchParams !== "undefined" &&
+    new URLSearchParams(location.search).get("folder")) ||
+  "/";
 let view = "folder";
 let nextCursor = null;
 
 function say(message, kind) {
   statusLine.textContent = message;
   statusLine.dataset.kind = kind || "";
+  if (kind === "done" && typeof CustomEvent !== "undefined") {
+    document.dispatchEvent(new CustomEvent("toast", { detail: { text: message } }));
+  }
 }
 
 function showSignedOut(message) {
+  forgetRows();
   list.textContent = "";
   empty.hidden = true;
   signedOutWhat.textContent = message;
@@ -1444,7 +1508,7 @@ function openViewer(row) {
     fetch(src)
       .then((response) => {
         if (!response.ok) {
-          throw new Error("Could not read that file.");
+          throw new Error("Could not read that file. Pick it again.");
         }
         return response.text();
       })
@@ -1460,9 +1524,44 @@ function openViewer(row) {
 
 viewerClose.addEventListener("click", () => viewer.close());
 
+const CACHE_PREFIX = "files:";
+
+function cachedRows() {
+  try {
+    const kept = sessionStorage.getItem(`${CACHE_PREFIX}${path}`);
+    const rows = kept === null ? null : JSON.parse(kept);
+    return Array.isArray(rows) ? rows : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function keepRows(rows) {
+  try {
+    sessionStorage.setItem(`${CACHE_PREFIX}${path}`, JSON.stringify(rows));
+  } catch (_error) {}
+}
+
+function forgetRows() {
+  try {
+    for (const key of Object.keys(sessionStorage)) {
+      if (key.startsWith(CACHE_PREFIX)) {
+        sessionStorage.removeItem(key);
+      }
+    }
+  } catch (_error) {}
+}
+
 async function refresh(keepStatus) {
   if (!keepStatus) {
     say("");
+  }
+  if (view === "folder" && !keepStatus) {
+    const rows = cachedRows();
+    if (rows !== null && rows.length > 0) {
+      showSignedIn();
+      renderRows(rows);
+    }
   }
   try {
     if (view === "rewind") {
@@ -1477,6 +1576,9 @@ async function refresh(keepStatus) {
     showSignedIn();
     applyHistoryWindow(payload.historyDays);
     nextCursor = view === "folder" ? (payload.nextCursor ?? null) : null;
+    if (view === "folder") {
+      keepRows(payload.rows || []);
+    }
     renderRows(payload.rows || []);
     showMore(nextCursor);
     if (view === "folder") {
@@ -1806,6 +1908,7 @@ function showSessionNav(signedIn) {
 }
 
 async function postSignout(step) {
+  forgetRows();
   navSignout.disabled = true;
   navSignoutAll.disabled = true;
   let response;

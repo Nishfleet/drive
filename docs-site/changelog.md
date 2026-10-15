@@ -10,6 +10,8 @@ the live site.
 
 ## 2026-10-15
 
+- Billing is its own page: your balance, top-up amounts, the biggest size in the
+  last 30 days and the days it stays billed, and a PDF receipt for every top-up.
 - Home has a Get started checklist that ticks itself as you add a computer,
   your first file and an agent, and leaves when all three are done.
 - Deleting a file in the Files page now shows an Undo on the same line.

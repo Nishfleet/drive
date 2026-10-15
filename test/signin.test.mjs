@@ -2023,36 +2023,39 @@ test("the page states the spec's two promises: a card at sign-up, and the member
   assert.equal(/\d+\s*¢\s*per minute/.test(page), false, "no per-minute price on the sign-in page");
 });
 
-test("the page states the age rule and labels the age box in short (drive#781)", () => {
-  // The terms carry the rule; this page shows it once and carries the box
-  // that agrees to it. The box is optional since drive#785: the gate holds
-  // at the link for a first-time address and never re-asks an older one, so
-  // the page is the same one for both (drive#538) and the tick travels with
-  // the link.
+test("the page states the age rule once, in the consent line, and sends the attestation with the button", () => {
   const terms = readFileSync(new URL("../public/terms.html", import.meta.url), "utf8");
   assert.ok(terms.includes(SIGNIN_COPY.needAge), "the terms must carry the same age sentence");
-  assert.ok(page.includes(SIGNIN_COPY.needAge), "the page must say the age rule");
   assert.equal(
     page.split(SIGNIN_COPY.needAge).length - 1,
     1,
-    "the age sentence appears exactly once on the page",
+    "the age sentence appears exactly once on the page, as the answer to a link with no attestation",
   );
-  assert.ok(page.includes(`for="age"`), "the page carries a label for the age checkbox");
-  assert.ok(page.includes(SIGNIN_COPY.ageConsent), "the age box is labelled in short");
   assert.match(
     page,
-    /<input id="age" name="age" type="checkbox" value="on" aria-describedby="age-sentence"/,
-    "the page posts the age box the route reads",
+    /By continuing you confirm you are 18 or older and accept the <a href="\/terms">terms<\/a> and the <a href="\/privacy">privacy policy<\/a>\./,
+    "one consent line under the button carries the age rule and both policies",
   );
-  assert.equal(
-    /<input id="age" name="age"[^>]*required/.test(page),
-    false,
-    "the age box is optional: an older account must not attest again",
+  assert.doesNotMatch(
+    page,
+    /id="age"/,
+    "there is no age box: pressing the button is the attestation",
   );
+  assert.match(page, /age: true,/, "the page posts the attestation the route reads");
   assert.ok(
     page.includes('errorParam === "need-age"'),
     "the page answers an unattested link with its own age rule",
   );
+});
+
+test("the page carries a social card of its own", () => {
+  for (const tag of [
+    '<meta property="og:title" content="Sign in to Storagebun">',
+    '<meta property="og:image" content="https://storagebun.com/og.png">',
+    '<meta name="twitter:card" content="summary_large_image">',
+  ]) {
+    assert.ok(page.includes(tag), `the sign-in page carries ${tag}`);
+  }
 });
 
 test("no other shipped page posts a sign-in start (drive#781)", () => {

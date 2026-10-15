@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -7,6 +8,7 @@ import { BILLING_WEBHOOK_PATH, signWebhook, TOPUP_PURPOSE } from "../core/topup.
 import { chromeSkip, launchChrome, startSite } from "./e2e-site.mjs";
 import { TEST_BASE_URL } from "./harness.mjs";
 
+const axeSource = readFileSync(createRequire(import.meta.url).resolve("axe-core"), "utf8");
 const OPTIONS = { timeout: 180_000, skip: chromeSkip };
 
 async function browserSignIn(
@@ -18,7 +20,6 @@ async function browserSignIn(
   page.setDefaultTimeout(60_000);
   const before = site.mail.length;
   await page.goto(`${site.origin}/signin`, { waitUntil: "load" });
-  await page.click("#age");
   await page.type('input[type="email"]', email);
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => /check your email|sent/i.test(document.body.innerText));
@@ -92,7 +93,7 @@ test(
       }
     });
 
-    await page.goto(`${site.origin}/usage`, { waitUntil: "load" });
+    await page.goto(`${site.origin}/billing`, { waitUntil: "load" });
     await page.waitForSelector("#balance-body:not([hidden])");
     const [add10] = await page.$$("#topup-presets button");
     await add10.click();
@@ -141,10 +142,11 @@ test(
     const hookBody = await hook.clone().text();
     assert.match(hookBody, /"ok":true/, hookBody);
 
-    await page.goto(`${site.origin}/usage`, { waitUntil: "load" });
+    await page.goto(`${site.origin}/billing`, { waitUntil: "load" });
     await page.waitForSelector("#balance-body:not([hidden])");
-    const amount = await page.$eval("#balance-amount", (el) => el.textContent);
-    assert.equal(amount, "$10.00");
+    await page.waitForFunction(
+      () => document.getElementById("balance-amount")?.textContent === "$10.00",
+    );
     const ledger = await page.$eval("#ledger-list", (el) => el.textContent);
     assert.match(ledger ?? "", /Top-up/);
   },
@@ -256,6 +258,53 @@ test("a deleted file shows in Recently deleted and one press puts it back", OPTI
   assert.match(listed ?? "", /keep\.txt/);
 });
 
+test(
+  "Ctrl+K opens the palette on every signed-in page and a keyboard alone gets around",
+  OPTIONS,
+  async (t) => {
+    const site = await startSite();
+    t.after(() => site.close());
+    const browser = await launchChrome(site.origin);
+    t.after(() => browser.close());
+    const page = await browserSignIn(browser, site, "keys@example.com");
+
+    for (const route of ["/home", "/files", "/usage", "/devices", "/webhooks"]) {
+      await page.goto(`${site.origin}${route}`, { waitUntil: "load" });
+      await page.keyboard.down("Control");
+      await page.keyboard.press("k");
+      await page.keyboard.up("Control");
+      await page.waitForFunction(
+        () => /** @type {HTMLDialogElement} */ (document.getElementById("palette")).open,
+      );
+      assert.equal(await page.evaluate(() => document.activeElement?.id), "palette-input", route);
+      await page.keyboard.press("Escape");
+    }
+
+    await page.goto(`${site.origin}/home`, { waitUntil: "load" });
+    await page.keyboard.down("Control");
+    await page.keyboard.press("k");
+    await page.keyboard.up("Control");
+    await page.type("#palette-input", "devi");
+    const violations = await page.evaluate(async (source) => {
+      const script = document.createElement("script");
+      script.textContent = source;
+      document.head.appendChild(script);
+      const run = await /** @type {any} */ (globalThis).axe.run(document, {
+        resultTypes: ["violations"],
+      });
+      return run.violations.map((/** @type {{id: string}} */ item) => item.id);
+    }, axeSource);
+    assert.deepEqual(violations, []);
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => location.pathname === "/devices");
+
+    await page.keyboard.press("?");
+    await page.waitForFunction(
+      () => /** @type {HTMLDialogElement} */ (document.getElementById("shortcuts")).open,
+    );
+  },
+);
+
 test("dropping files on the Files page uploads them, with a bar for each", OPTIONS, async (t) => {
   const site = await startSite();
   t.after(() => site.close());
@@ -332,3 +381,90 @@ test("drag three files in, sort by size, select two, delete them, and Undo", OPT
   await page.click("#status .undo");
   await page.waitForFunction(() => document.querySelectorAll("#file-list .row .pick").length === 3);
 });
+
+test(
+  "reduced motion switches every animation and transition off on every signed-in page",
+  OPTIONS,
+  async (t) => {
+    const site = await startSite();
+    t.after(() => site.close());
+    const browser = await launchChrome(site.origin);
+    t.after(() => browser.close());
+    const page = await browserSignIn(browser, site, "calm@example.com");
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+
+    for (const route of ["/home", "/files", "/usage", "/billing", "/devices", "/webhooks"]) {
+      await page.goto(`${site.origin}${route}`, { waitUntil: "load" });
+      await page.evaluate(() => {
+        document.dispatchEvent(new CustomEvent("toast", { detail: { text: "Saved" } }));
+      });
+      await page.waitForSelector(".toast");
+      const moving = await page.evaluate(() =>
+        [...document.querySelectorAll("*")]
+          .filter((el) => {
+            const style = getComputedStyle(el);
+            return (
+              style.animationName !== "none" ||
+              style.transitionDuration.split(",").some((value) => parseFloat(value) > 0)
+            );
+          })
+          .map((el) => el.tagName.toLowerCase() + (el.id ? `#${el.id}` : "")),
+      );
+      assert.deepEqual(moving, [], `${route} still moves under reduced motion`);
+    }
+  },
+);
+
+test("without reduced motion the page fades in and a toast shows then goes", OPTIONS, async (t) => {
+  const site = await startSite();
+  t.after(() => site.close());
+  const browser = await launchChrome(site.origin);
+  t.after(() => browser.close());
+  const page = await browserSignIn(browser, site, "lively@example.com");
+  await page.goto(`${site.origin}/home`, { waitUntil: "load" });
+  assert.equal(await page.$eval("main", (el) => getComputedStyle(el).animationName), "page-in");
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent("toast", { detail: { text: "Copied" } }));
+  });
+  assert.equal(await page.$eval(".toast", (el) => el.textContent), "Copied");
+  await page.waitForFunction(() => document.querySelector(".toast") === null, { timeout: 8000 });
+});
+
+test(
+  "Files paints the last listing at once while the fresh one is still on its way",
+  OPTIONS,
+  async (t) => {
+    const site = await startSite();
+    t.after(() => site.close());
+    const browser = await launchChrome(site.origin);
+    t.after(() => browser.close());
+    const page = await browserSignIn(browser, site, "quick@example.com");
+    await page.goto(`${site.origin}/files`, { waitUntil: "load" });
+    await page.waitForSelector("#upload-button:not([disabled])");
+    await page.evaluate(() => {
+      const data = new DataTransfer();
+      data.items.add(new File(["x"], "cached.txt", { type: "text/plain" }));
+      document.dispatchEvent(new DragEvent("drop", { dataTransfer: data, cancelable: true }));
+    });
+    await page.waitForFunction(() =>
+      document.querySelector("#file-list")?.textContent?.includes("cached.txt"),
+    );
+    await page.waitForFunction(() => sessionStorage.getItem("files:/")?.includes("cached.txt"));
+
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      if (request.url().includes("/api/files?")) {
+        setTimeout(() => request.continue(), 2500);
+      } else {
+        request.continue();
+      }
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(
+      () => document.querySelector("#file-list")?.textContent?.includes("cached.txt"),
+      {
+        timeout: 2000,
+      },
+    );
+  },
+);

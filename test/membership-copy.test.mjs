@@ -87,6 +87,18 @@ function dataFor(kind) {
       replyTo: REPLY_TO,
     };
   }
+  if (kind === "share-opened") {
+    return { fileName: "report.pdf", opens: 3, replyTo: REPLY_TO };
+  }
+  if (kind === "monthly-story") {
+    return {
+      monthIso: "2026-09-01T00:00:00.000Z",
+      peakLine: "Your drive peaked at 40 GB.",
+      filesAdded: 12,
+      spentLine: "It cost $0.80.",
+      replyTo: REPLY_TO,
+    };
+  }
   if (kind === "first-file-nudge") {
     return { hours: 72, replyTo: REPLY_TO };
   }

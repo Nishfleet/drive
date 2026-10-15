@@ -31,11 +31,31 @@ const MIME = {
   ".png": "image/png",
 };
 
-/** @type {ReadonlyArray<{name: string, file: string, ready: string, scheme?: "dark"}>} */
+/** @type {ReadonlyArray<{name: string, file: string, ready: string, settle?: "load" | "networkidle0", scheme?: "dark"}>} */
 const PAGES = Object.freeze([
   { name: "home", file: "home.html", ready: "#next-step:not([hidden])" },
   { name: "files", file: "files.html", ready: "#file-list li:not(.is-shell)" },
   { name: "usage", file: "usage.html", ready: "#usage-body:not([hidden])" },
+  { name: "signin", file: "signin.html", ready: "#email-button", settle: "load" },
+  {
+    name: "billing",
+    file: "billing.html",
+    ready: "main:has(#balance-body:not([hidden])):has(#peak-body:not([hidden]))",
+  },
+  { name: "home-dark", file: "home.html", ready: "#next-step:not([hidden])", scheme: "dark" },
+  {
+    name: "files-dark",
+    file: "files.html",
+    ready: "#file-list li:not(.is-shell)",
+    scheme: "dark",
+  },
+  { name: "usage-dark", file: "usage.html", ready: "#usage-body:not([hidden])", scheme: "dark" },
+  {
+    name: "billing-dark",
+    file: "billing.html",
+    ready: "main:has(#balance-body:not([hidden])):has(#peak-body:not([hidden]))",
+    scheme: "dark",
+  },
   { name: "index", file: "index.html", ready: ".hero .chips" },
   { name: "index-dark", file: "index.html", ready: ".hero .chips", scheme: "dark" },
 ]);
@@ -229,7 +249,7 @@ test("Home, Files and Usage look the way their baselines say", {
   const judge = await browser.newPage();
   mkdirSync(BASELINES, { recursive: true });
 
-  for (const { name, file, ready, scheme } of PAGES) {
+  for (const { name, file, ready, settle, scheme } of PAGES) {
     const html = readFileSync(new URL(`../public/${file}`, import.meta.url), "utf8");
     const server = serve(html, workerFetch, env, ctx, cookie);
     await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
@@ -243,8 +263,11 @@ test("Home, Files and Usage look the way their baselines say", {
           await chrome.evaluateOnNewDocument(FREEZE_CLOCK);
           await chrome.emulateMediaFeatures([
             { name: "prefers-color-scheme", value: scheme ?? "light" },
+            { name: "prefers-reduced-motion", value: "reduce" },
           ]);
-          await chrome.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "networkidle0" });
+          await chrome.goto(`http://127.0.0.1:${address.port}/`, {
+            waitUntil: settle ?? "networkidle0",
+          });
           await chrome.waitForSelector(ready);
           await chrome.addStyleTag({ content: STILL });
           await chrome.evaluate(() => document.fonts.ready);

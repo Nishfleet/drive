@@ -32,8 +32,10 @@ import {
   reportUnbillableAccounts,
   withCronCheckIn,
 } from "./monitoring.js";
+import { runMonthlyStories } from "./monthly-story.js";
 import { runRunwayNotices } from "./runway-notice.js";
 import { indexAccounts, REINDEX_SCHEDULE, REINDEX_SEND_BATCH } from "./search.js";
+import { runShareOpenedNotices } from "./share-opened.js";
 import { purgeStaleLinks, sendArrivalDigests } from "./share-store.js";
 import { purgeExpiredSigninSends } from "./signin-send-limit.js";
 
@@ -387,6 +389,23 @@ export async function runScheduled(event, env, context, store) {
           now: event.scheduledTime,
         });
         console.log(`bill-drop: sent=${drops.sent} failed=${drops.failed}`);
+        const stories = await runMonthlyStories({
+          db: env.DRIVE_DB,
+          email: env.EMAIL,
+          mailFrom: secrets.MAIL_FROM ?? "",
+          secret: /** @type {{BETTER_AUTH_SECRET?: string}} */ (env).BETTER_AUTH_SECRET,
+          origin: new URL(absoluteUrl("/")).origin,
+          now: event.scheduledTime,
+        });
+        console.log(`monthly-story: sent=${stories.sent} failed=${stories.failed}`);
+        const opened = await runShareOpenedNotices({
+          db: env.DRIVE_DB,
+          email: env.EMAIL,
+          mailFrom: secrets.MAIL_FROM ?? "",
+          secret: /** @type {{BETTER_AUTH_SECRET?: string}} */ (env).BETTER_AUTH_SECRET,
+          origin: new URL(absoluteUrl("/")).origin,
+        });
+        console.log(`share-opened: sent=${opened.sent} failed=${opened.failed}`);
       },
       sentryFor(env),
     );
