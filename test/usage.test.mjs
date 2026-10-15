@@ -1274,7 +1274,6 @@ test("the pages' mastheads read as one navigation", () => {
   }
   for (const [name, html] of [
     ["usage.html", page],
-    ["billing.html", billingPage],
     ["files.html", filesPage],
     ["devices.html", devicesPage],
   ]) {
@@ -1291,9 +1290,13 @@ test("the pages' mastheads read as one navigation", () => {
   // The posts live in each page's own script. get-started.html is a Vite
   // entry, so its script is src/get-started.js rather than an inline block.
   const getStartedJs = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
+  assert.match(
+    billingPage,
+    /<body data-signout="shared">/,
+    "billing.html uses the shared sign-out",
+  );
   for (const [name, source] of [
     ["usage.html", page],
-    ["billing.html", billingPage],
     ["files.html", filesPage],
     ["devices.html", devicesPage],
     ["get-started.js", getStartedJs],
