@@ -576,6 +576,7 @@ export function fileRows(entries) {
       path: entry.path || "",
       kind: folder ? "folder" : entry.kind || fileKind(entry.name, entry.contentType),
       sizeLabel: folder ? "" : formatBytes(entry.size || 0),
+      sizeBytes: folder ? 0 : entry.size || 0,
       modifiedIso: entry.modified ? isoStamp(entry.modified, `the file ${entry.name}`) : "",
     };
   };

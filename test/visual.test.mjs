@@ -31,12 +31,14 @@ const MIME = {
   ".png": "image/png",
 };
 
-/** @type {ReadonlyArray<{name: string, file: string, ready: string, settle?: "load" | "networkidle0"}>} */
+/** @type {ReadonlyArray<{name: string, file: string, ready: string, settle?: "load" | "networkidle0", scheme?: "dark"}>} */
 const PAGES = Object.freeze([
   { name: "home", file: "home.html", ready: "#next-step:not([hidden])" },
   { name: "files", file: "files.html", ready: "#file-list li:not(.is-shell)" },
   { name: "usage", file: "usage.html", ready: "#usage-body:not([hidden])" },
   { name: "signin", file: "signin.html", ready: "#email-button", settle: "load" },
+  { name: "index", file: "index.html", ready: ".hero .chips" },
+  { name: "index-dark", file: "index.html", ready: ".hero .chips", scheme: "dark" },
 ]);
 const SIZES = Object.freeze([
   { name: "desktop", width: 1280, height: 900 },
@@ -228,7 +230,7 @@ test("Home, Files and Usage look the way their baselines say", {
   const judge = await browser.newPage();
   mkdirSync(BASELINES, { recursive: true });
 
-  for (const { name, file, ready, settle } of PAGES) {
+  for (const { name, file, ready, settle, scheme } of PAGES) {
     const html = readFileSync(new URL(`../public/${file}`, import.meta.url), "utf8");
     const server = serve(html, workerFetch, env, ctx, cookie);
     await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
@@ -240,6 +242,9 @@ test("Home, Files and Usage look the way their baselines say", {
           chrome.setDefaultTimeout(120_000);
           await chrome.setViewport({ width: size.width, height: size.height });
           await chrome.evaluateOnNewDocument(FREEZE_CLOCK);
+          await chrome.emulateMediaFeatures([
+            { name: "prefers-color-scheme", value: scheme ?? "light" },
+          ]);
           await chrome.goto(`http://127.0.0.1:${address.port}/`, {
             waitUntil: settle ?? "networkidle0",
           });
