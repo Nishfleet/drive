@@ -308,10 +308,10 @@ test("the rewind screen lists what the agent changed before anything is touched"
   // Attribution is on the same row the rewind reads, so the screen can say
   // whose work this is with no second store.
   assert.equal(preview.changedBy, "k-claude");
-  // The window is the drive's own 30 days, read from core/files.js rather than
+  // The window is the drive's own 3 days, read from core/files.js rather than
   // declared here, so the two promises are one number.
-  assert.equal(REWIND_WINDOW_DAYS, 30);
-  assert.equal(preview.windowDays, 30);
+  assert.equal(REWIND_WINDOW_DAYS, 3);
+  assert.equal(preview.windowDays, 3);
   assert.equal(preview.ageDays, 0);
   // The files are still exactly as they were: a preview touches nothing.
   const after = scopeStore(raw, ACCOUNT);
@@ -373,10 +373,10 @@ test("rewind refuses an unavailable snapshot before it discards the copy", async
   assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
 });
 
-test("the 30-day window is the server's, not a hidden button", async () => {
+test("the 3-day window is the server's, not a hidden button", async () => {
   // The window is enforced where the rewind happens, so a caller who ignores
-  // the page cannot rewind a branch whose old versions are gone. Day 30 is
-  // still inside; day 31 is not.
+  // the page cannot rewind a branch whose old versions are gone. Day 3 is
+  // still inside; day 4 is not.
   const { raw, db, snapshots } = await agentBranch();
   const scoped = scopeStore(raw, ACCOUNT);
   const row = await rewindBranchRowFor(db, snapshots, raw, "fix");
@@ -384,20 +384,20 @@ test("the 30-day window is the server's, not a hidden button", async () => {
   // `assert.ok` narrows the null the lookup honestly returns.
   assert.ok(row);
 
-  const inside = await rewindPreview(scoped, row, AT + 30 * DAY_MS, snapshots);
+  const inside = await rewindPreview(scoped, row, AT + 3 * DAY_MS, snapshots);
   assert.equal(inside.canRewind, true);
-  assert.equal(inside.ageDays, 30);
+  assert.equal(inside.ageDays, 3);
 
-  const outside = await rewindPreview(scoped, row, AT + 31 * DAY_MS, snapshots);
+  const outside = await rewindPreview(scoped, row, AT + 4 * DAY_MS, snapshots);
   assert.equal(outside.canRewind, false);
   assert.equal(outside.unavailableReason, "window-closed");
   // The screen still says what happened and when it stops being true, so a
   // person is not left guessing why a button vanished.
-  assert.equal(outside.windowDays, 30);
-  assert.match(outside.restorableUntil, /^2026-10-30T/);
+  assert.equal(outside.windowDays, 3);
+  assert.match(outside.restorableUntil, /^2026-10-03T/);
 
   // And the POST is refused with the message table's own sentence.
-  const refused = await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT + 31 * DAY_MS);
+  const refused = await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT + 4 * DAY_MS);
   assert.equal(failedStatus(refused), 409);
   assert.equal(
     /** @type {{error: string}} */ (refused).error,

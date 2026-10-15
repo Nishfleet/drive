@@ -92,6 +92,11 @@
     <priority>0.7</priority>
   </url>
   <url>
+    <loc>https://storagebun.com/docs/webhooks</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
     <loc>https://storagebun.com/docs/benchmarks</loc>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>

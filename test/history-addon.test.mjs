@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { monthBillCents } from "../core/billing.js";
 import { handleHistoryRequest, historyDaysFor, priceImpact } from "../core/history-addon.js";
-import { HIDDEN_VERSION_DAYS } from "../core/s3.js";
+import { createS3Client, HIDDEN_VERSION_DAYS, provisionBucket } from "../core/s3.js";
 import { createTestD1 } from "./harness.mjs";
 
 const NOW = Date.parse("2026-10-14T00:00:00Z");
@@ -106,4 +106,111 @@ test("a stranger gets a 401, and other methods a 405", async () => {
   const db = await setup();
   assert.equal((await handleHistoryRequest(req("GET"), null, db)).status, 401);
   assert.equal((await handleHistoryRequest(req("DELETE"), account, db)).status, 405);
+});
+
+/**
+ * A bucket stand-in that remembers its lifecycle rule and logs every call.
+ * @param {number} days
+ */
+function bucketWithRule(days) {
+  /** @type {string[]} */
+  const calls = [];
+  let rule = days;
+  const client = createS3Client({
+    endpoint: "https://storage.example.test",
+    region: "eu-west-3",
+    credentials: { accessKeyId: "AK", secretAccessKey: "SK" },
+    fetchImpl: async (input, init) => {
+      const signed = input instanceof Request ? input : new Request(String(input), init);
+      const query = new URL(signed.url).search;
+      calls.push(`${signed.method} ${query}`);
+      if (query === "?lifecycle=" && signed.method === "PUT") {
+        rule = Number(/<NoncurrentDays>(\d+)</.exec(await signed.clone().text())?.[1]);
+      }
+      const text =
+        query === "?lifecycle=" && signed.method === "GET"
+          ? `<LifecycleConfiguration><Rule><NoncurrentVersionExpiration><NoncurrentDays>${rule}</NoncurrentDays></NoncurrentVersionExpiration></Rule></LifecycleConfiguration>`
+          : "";
+      return new Response(text, { status: 200 });
+    },
+  });
+  return { client, calls, rule: () => rule };
+}
+
+test("a key mint never shortens a window the account chose, and a named window is exact", async () => {
+  const kept = bucketWithRule(365);
+  await provisionBucket(kept.client, { bucket: "drv-a1" });
+  assert.equal(kept.rule(), 365);
+
+  // The add-on turned off: the caller names the free window and the rule follows.
+  await provisionBucket(kept.client, { bucket: "drv-a1", hiddenVersionDays: HIDDEN_VERSION_DAYS });
+  assert.equal(kept.rule(), 3);
+
+  const fresh = bucketWithRule(0);
+  await provisionBucket(fresh.client, { bucket: "drv-b" });
+  assert.equal(fresh.rule(), 3);
+  await provisionBucket(fresh.client, { bucket: "drv-b", hiddenVersionDays: 30 });
+  assert.equal(fresh.rule(), 30);
+});
+
+test("choosing a longer window sets the bucket first, and a bucket that cannot be set bills nothing", async () => {
+  const db = await setup();
+  /** @type {number[]} */
+  const applied = [];
+  const ok = await handleHistoryRequest(
+    req("POST", { days: 30, accept_price: true }),
+    account,
+    db,
+    {
+      apply: async (days) => {
+        applied.push(days);
+        assert.equal(
+          await historyDaysFor(db, "a1"),
+          3,
+          "the bucket is set before the bill changes",
+        );
+        return true;
+      },
+    },
+  );
+  assert.equal(ok.status, 200);
+  assert.deepEqual(applied, [30]);
+  assert.equal(await historyDaysFor(db, "a1"), 30);
+
+  const noCredential = await setup();
+  const refused = await handleHistoryRequest(
+    req("POST", { days: 365, accept_price: true }),
+    account,
+    noCredential,
+    { apply: async () => false },
+  );
+  assert.equal(refused.status, 503);
+  assert.equal(await historyDaysFor(noCredential, "a1"), 3);
+
+  // Shortening saves first, then tells the bucket.
+  const back = await handleHistoryRequest(req("POST", { days: 3 }), account, db, {
+    apply: async (/** @type {number} */ days) => {
+      assert.equal(await historyDaysFor(db, "a1"), 3, "saved before the bucket is touched");
+      applied.push(days);
+      return true;
+    },
+  });
+  assert.equal(back.status, 200);
+  assert.deepEqual(applied, [30, 3]);
+});
+
+test("Recently deleted follows the account's window in the list, the restore and the nightly purge", async () => {
+  const { trashRows } = await import("../core/files-s3.js");
+  const { isRestorable, isTrashExpired, trashName } = await import("../core/files.js");
+  const deletedAt = NOW - 10 * DAY;
+  assert.equal(isRestorable(deletedAt, NOW), false);
+  assert.equal(isRestorable(deletedAt, NOW, 30), true);
+  assert.equal(isTrashExpired(deletedAt, NOW), true);
+  assert.equal(isTrashExpired(deletedAt, NOW, 30), false);
+  const entries = [{ name: trashName("/a.txt", deletedAt), path: "/a.txt", kind: "file" }];
+  assert.equal(trashRows(entries, NOW)[0]?.restorable, false);
+  const longer = trashRows(entries, NOW, 30)[0];
+  assert.equal(longer?.restorable, true);
+  assert.equal(longer?.untilIso, new Date(deletedAt + 30 * DAY).toISOString());
+  assert.match(trashRows(entries, NOW, 3)[0]?.goneLabel ?? "", /3 days/);
 });

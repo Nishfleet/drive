@@ -162,25 +162,6 @@ li {
   margin: 18px 0 0;
 }
 
-button {
-  font: inherit;
-  font-size: 15px;
-  padding: 10px 18px;
-  min-height: 44px;
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--paper);
-  cursor: pointer;
-}
-
-button:disabled {
-  border-color: var(--rule);
-  background: var(--paper-raised);
-  color: var(--ink-faint);
-  cursor: default;
-}
-
 .status {
   margin: 14px 0 0;
   padding: 14px 16px;
@@ -297,7 +278,7 @@ button:disabled {
         <a href="/signin">Sign in</a> to create the starter.
       </p>
       <div class="actions" id="starter-actions" hidden>
-        <button type="button" id="starter-button">Create the notes starter</button>
+        <button type="button" id="starter-button" class="btn btn-primary">Create the notes starter</button>
         <span id="starter-note" role="status" aria-live="polite"></span>
       </div>
       <div class="status" id="starter-status" role="status" aria-live="polite" hidden>

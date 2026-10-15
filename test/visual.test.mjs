@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
-import { Readable } from "node:stream";
 import { test } from "node:test";
 import { FILES_ENDPOINT } from "../core/files.js";
 import { createMemoryStore } from "../core/files-memory.js";
@@ -32,10 +31,13 @@ const MIME = {
   ".png": "image/png",
 };
 
+/** @type {ReadonlyArray<{name: string, file: string, ready: string, scheme?: "dark"}>} */
 const PAGES = Object.freeze([
   { name: "home", file: "home.html", ready: "#next-step:not([hidden])" },
   { name: "files", file: "files.html", ready: "#file-list li:not(.is-shell)" },
   { name: "usage", file: "usage.html", ready: "#usage-body:not([hidden])" },
+  { name: "index", file: "index.html", ready: ".hero .chips" },
+  { name: "index-dark", file: "index.html", ready: ".hero .chips", scheme: "dark" },
 ]);
 const SIZES = Object.freeze([
   { name: "desktop", width: 1280, height: 900 },
@@ -86,23 +88,28 @@ function serve(page, workerFetch, env, ctx, cookie) {
       headers.set(name, Array.isArray(value) ? value.join(", ") : (value ?? ""));
     }
     headers.set("cookie", cookie);
-    const workerRequest = new Request(`${TEST_BASE_URL}${url.pathname}${url.search}`, {
-      method: request.method,
-      headers,
-      body:
-        request.method === "GET" || request.method === "HEAD"
-          ? undefined
-          : /** @type {BodyInit} */ (Readable.toWeb(request)),
+    /** @type {Buffer[]} */
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      const hasBody = request.method !== "GET" && request.method !== "HEAD";
+      const workerRequest = new Request(`${TEST_BASE_URL}${url.pathname}${url.search}`, {
+        method: request.method,
+        headers,
+        body: hasBody ? Buffer.concat(chunks) : undefined,
+      });
+      relay(workerRequest);
     });
-    workerFetch(workerRequest, env, ctx).then(
-      async (answer) => {
-        response.writeHead(answer.status, Object.fromEntries(answer.headers));
-        response.end(Buffer.from(await answer.arrayBuffer()));
-      },
-      (error) => {
-        response.writeHead(500).end(String(error));
-      },
-    );
+    const relay = (/** @type {Request} */ workerRequest) =>
+      workerFetch(workerRequest, env, ctx).then(
+        async (answer) => {
+          response.writeHead(answer.status, Object.fromEntries(answer.headers));
+          response.end(Buffer.from(await answer.arrayBuffer()));
+        },
+        (error) => {
+          response.writeHead(500).end(String(error));
+        },
+      );
   });
 }
 
@@ -222,7 +229,7 @@ test("Home, Files and Usage look the way their baselines say", {
   const judge = await browser.newPage();
   mkdirSync(BASELINES, { recursive: true });
 
-  for (const { name, file, ready } of PAGES) {
+  for (const { name, file, ready, scheme } of PAGES) {
     const html = readFileSync(new URL(`../public/${file}`, import.meta.url), "utf8");
     const server = serve(html, workerFetch, env, ctx, cookie);
     await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
@@ -234,6 +241,9 @@ test("Home, Files and Usage look the way their baselines say", {
           chrome.setDefaultTimeout(120_000);
           await chrome.setViewport({ width: size.width, height: size.height });
           await chrome.evaluateOnNewDocument(FREEZE_CLOCK);
+          await chrome.emulateMediaFeatures([
+            { name: "prefers-color-scheme", value: scheme ?? "light" },
+          ]);
           await chrome.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "networkidle0" });
           await chrome.waitForSelector(ready);
           await chrome.addStyleTag({ content: STILL });

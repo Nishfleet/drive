@@ -548,6 +548,172 @@ a {
   animation: blink 1s steps(1) infinite;
 }
 
+.stage.demo.is-paused * {
+  animation-play-state: paused;
+}
+
+@keyframes demo-in-4 {
+  0%,
+  4% {
+    opacity: 0;
+  }
+
+  6%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-12 {
+  0%,
+  12% {
+    opacity: 0;
+  }
+
+  14%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-24 {
+  0%,
+  24% {
+    opacity: 0;
+  }
+
+  26%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-34 {
+  0%,
+  34% {
+    opacity: 0;
+  }
+
+  36%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-40 {
+  0%,
+  40% {
+    opacity: 0;
+  }
+
+  42%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-46 {
+  0%,
+  46% {
+    opacity: 0;
+  }
+
+  48%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-52 {
+  0%,
+  52% {
+    opacity: 0;
+  }
+
+  54%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-58 {
+  0%,
+  58% {
+    opacity: 0;
+  }
+
+  60%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-64 {
+  0%,
+  64% {
+    opacity: 0;
+  }
+
+  66%,
+  100% {
+    opacity: 1;
+  }
+}
+
+.stage.demo .term p:nth-child(2) {
+  animation: demo-in-4 14s linear 3;
+}
+
+.stage.demo .term p:nth-child(3) {
+  animation: demo-in-12 14s linear 3;
+}
+
+.stage.demo .term p:nth-child(4) {
+  animation: demo-in-24 14s linear 3;
+}
+
+.stage.demo .term p:nth-child(5) {
+  animation: demo-in-34 14s linear 3;
+}
+
+.stage.demo .f-body > div:last-child .f-row:nth-child(2) {
+  animation: demo-in-40 14s linear 3;
+}
+
+.stage.demo .f-body > div:last-child .f-row:nth-child(3) {
+  animation: demo-in-46 14s linear 3;
+}
+
+.stage.demo .f-body > div:last-child .f-row:nth-child(4) {
+  animation: demo-in-52 14s linear 3;
+}
+
+.stage.demo .f-body > div:last-child .f-row:nth-child(5) {
+  animation: demo-in-58 14s linear 3;
+}
+
+.stage.demo .f-body > div:last-child .f-row:nth-child(6) {
+  animation: demo-in-64 14s linear 3;
+}
+
+.demo-toggle {
+  margin: 12px 0 0 40px;
+  padding: 4px 12px;
+  border: 1px solid var(--drive-term-dim);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--drive-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .demo-toggle {
+    display: none;
+  }
+}
+
 @keyframes blink {
   50% {
     opacity: 0;
@@ -1711,6 +1877,34 @@ details p {
   color: var(--drive-term-dim);
 }
 
+.chips,
+.proof {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: 20px 0 0;
+  padding: 0;
+}
+
+.chips li {
+  border: 1.5px solid currentColor;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 14px;
+}
+
+.proof {
+  gap: 8px 24px;
+  font-size: 14px;
+}
+
+.proof b {
+  font-family: var(--font-code);
+  font-weight: 700;
+}
+
 @media (max-width: 1000px) {
   .hero-grid,
   .feat,
@@ -1926,19 +2120,25 @@ details p {
         <div>
           <p class="kicker">For Mac &amp; Linux &middot; big files &middot; AI agents</p>
           <h1 class="price-heading" id="price-heading">
-            <span class="lead">Add $10 or more.</span>
-            <span class="amount">Pay 2 cents per&nbsp;GB from your balance.</span>
+            <span class="amount">Pay 2 cents per&nbsp;GB.</span>
             <span class="unit">Never more than $15 per TB.</span>
           </h1>
-          <p class="slogan">Pay only for what you use.<br><span>No plans. Your balance never expires.</span></p>
           <p class="lede">You pay for the biggest size your drive reached in the last 30 days. A drive for your video, datasets and archives. It uses almost no disk, and your agents can read and write it. Your first file is there about 1 second after install.</p>
           <div class="cta-row">
             <a class="btn" href="#waitlist" data-waitlist-source="hero">Get drive <span aria-hidden="true">&#8594;</span></a>
             <p class="cta-note">Add $10, store 200&nbsp;GB, and it draws $4 a month.</p>
           </div>
+          <ul class="chips" aria-label="How it is billed">
+            <li>Add $10 or more</li><li>No plans</li><li>Balance never expires</li>
+          </ul>
+          <ul class="proof" aria-label="Measured numbers">
+            <li><b>274 ms</b> until a 5&nbsp;GB video plays</li>
+            <li><b>1.02 s</b> from install to first file</li>
+            <li><b>Paris</b> is where your files live</li>
+          </ul>
         </div>
 
-        <div class="stage">
+        <div class="stage demo" id="stage">
           <span class="tag t1" aria-hidden="true">38 GB in Finder</span>
           <div class="finder" role="img" aria-label="A Finder window with drive in the sidebar. It holds a 38 GB dataset, two 5 GB videos and a 212 GB archive, all online, and one folder kept offline. Almost nothing is on the local disk.">
             <div class="f-top"><span class="dots"><i></i><i></i><i></i></span><span>drive</span></div>
@@ -1963,13 +2163,14 @@ details p {
           </div>
           <span class="tag t2" aria-hidden="true">plays in 274 ms</span>
           <div class="term">
-            <div class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>zsh</span><button class="copy" type="button" data-copy="drive login&#10;drive init" aria-label="Copy the commands drive login and drive init">copy</button></div>
+            <div class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>zsh</span><button class="btn btn-sm copy" type="button" data-copy="drive login&#10;drive init" aria-label="Copy the commands drive login and drive init">copy</button></div>
             <p><span class="pr">$</span> drive login</p>
             <p class="ok">signed in &middot; storage settings written</p>
             <p><span class="pr">$</span> drive init</p>
             <p class="ok">drive mounted in Finder</p>
             <p><span class="pr">$</span> <span class="caret" aria-hidden="true"></span></p>
           </div>
+          <button class="btn btn-ghost demo-toggle" id="demo-toggle" type="button" aria-pressed="false">Pause demo</button>
         </div>
       </div>
 
@@ -2036,11 +2237,11 @@ details p {
           <p class="sub">Give Claude Code, Codex, Cursor, Gemini or Kiro the same drive you use. One command for each tool.</p>
           <fieldset class="tools">
             <legend>Pick your tool</legend>
-            <button type="button" data-agent="claude" aria-pressed="true">Claude Code</button>
-            <button type="button" data-agent="codex" aria-pressed="false">Codex</button>
-            <button type="button" data-agent="cursor" aria-pressed="false">Cursor</button>
-            <button type="button" data-agent="gemini" aria-pressed="false">Gemini</button>
-            <button type="button" data-agent="kiro" aria-pressed="false">Kiro</button>
+            <button type="button" data-agent="claude" aria-pressed="true" class="btn">Claude Code</button>
+            <button type="button" data-agent="codex" aria-pressed="false" class="btn">Codex</button>
+            <button type="button" data-agent="cursor" aria-pressed="false" class="btn">Cursor</button>
+            <button type="button" data-agent="gemini" aria-pressed="false" class="btn">Gemini</button>
+            <button type="button" data-agent="kiro" aria-pressed="false" class="btn">Kiro</button>
           </fieldset>
           <p class="never">Each tool works in its own folder, on its own key. An agent's delete is undoable for 3 days.</p>
         </div>
@@ -2068,7 +2269,7 @@ details p {
               <label for="quote-gb">How much you keep all month</label>
               <output id="quote-size" for="quote-gb">1 TB</output>
             </div>
-            <input id="quote-gb" name="gb" type="range" min="50" max="5000" step="10" value="1000" aria-describedby="quote-note">
+            <input id="quote-gb" name="gb" type="range" min="50" max="5000" step="10" value="1000" aria-describedby="quote-note" class="slider">
             <div class="ticks" aria-hidden="true"><span style="left:0">50 GB</span><span style="left:19.2%">1 TB</span><span style="left:39.4%">2 TB</span><span style="left:100%">5 TB</span></div>
             <p class="price-big"><sup>$</sup><span id="quote-bill">15</span><small>a month</small></p>
             <p class="why" id="quote-note" role="status" aria-live="polite">1 TB kept all month: $15.00 this month. Our maximum: $15.00. A usual 1 TB plan: $15.00.</p>
@@ -2077,7 +2278,7 @@ details p {
               <li data-band="flat" class="on"><span>750 GB to 1 TB</span><span>$15, flat</span></li>
               <li data-band="slope"><span>Past 1 TB</span><span>never more than $15 per TB</span></li>
             </ul>
-            <noscript><p class="form-note">Without JavaScript, <button type="submit">See the bill</button> returns the same numbers as JSON from /api/quote.</p></noscript>
+            <noscript><p class="form-note">Without JavaScript, <button type="submit" class="btn btn-primary">See the bill</button> returns the same numbers as JSON from /api/quote.</p></noscript>
           </form>
           <div class="calc-r" id="usual-plans">
             <div>
@@ -2202,9 +2403,9 @@ details p {
               <label class="field-label" for="email">Email</label>
               <div class="field-row">
                 <input id="email" name="email" type="email" required
-                       placeholder="you@example.com" autocomplete="email" spellcheck="false">
+                       placeholder="you@example.com" autocomplete="email" spellcheck="false" class="field">
                 <input type="hidden" name="source" value="pricing-page">
-                <button type="submit">Send</button>
+                <button type="submit" class="btn btn-primary">Send</button>
               </div>
               <p class="form-note">The drive is not open yet. Sign-ups on the pricing page go to a waitlist.</p>
               <p class="form-note">We use this address to send one email when sign-in opens. Send means you agree to that email. Read the <a href="/privacy">privacy policy</a>.</p>
@@ -2424,6 +2625,14 @@ for (const button of agentButtons) {
     document.getElementById("agent-name").textContent = agentNames[button.dataset.agent];
   });
 }
+
+const demoStage = document.getElementById("stage");
+const demoToggle = document.getElementById("demo-toggle");
+demoToggle.addEventListener("click", () => {
+  const paused = demoStage.classList.toggle("is-paused");
+  demoToggle.setAttribute("aria-pressed", String(paused));
+  demoToggle.textContent = paused ? "Play demo" : "Pause demo";
+});
 
 for (const button of document.querySelectorAll("[data-copy]")) {
   button.addEventListener("click", async () => {

@@ -25,11 +25,14 @@ import {
   validatePath,
 } from "./files.js";
 import { restoreVersionRequest, versionsRequest } from "./files-history.js";
+import { mountDeletedRows } from "./files-mount-deleted.js";
 import { fileRows, plain, trashRows } from "./files-s3.js";
 import { accountStorageKey, ChangedUnderUsError, etagMismatch, scopeStore } from "./files-scope.js";
+import { historyDaysFor } from "./history-addon.js";
 import { json, readJsonObject } from "./http.js";
 import { balanceCents, TOP_UP_PAGE } from "./ledger.js";
 import { failureMessage } from "./messages.js";
+import { HIDDEN_VERSION_DAYS } from "./s3.js";
 import { unauthorizedResponse } from "./status.js";
 
 /** @typedef {import("./files-s3.js").FileEntry} FileEntry */
@@ -81,8 +84,18 @@ export async function handleFilesRequest(request, store, account, now = Date.now
     }
   }
   const scoped = scopeStore(store, account);
+  // How long this account keeps deleted and replaced copies: 3 days, or what
+  // it chose with the history add-on.
+  const days = options.db ? await historyDaysFor(options.db, account.id) : HIDDEN_VERSION_DAYS;
   if (route === FILES_ENDPOINT) {
-    return listRequest(request, url, scoped, now);
+    return listRequest(
+      request,
+      url,
+      scoped,
+      now,
+      days,
+      options.db ? { db: options.db, account } : null,
+    );
   }
   if (
     route === `${FILES_ENDPOINT}/download` ||
@@ -104,13 +117,13 @@ export async function handleFilesRequest(request, store, account, now = Date.now
     return deleteRequest(request, scoped, account, now);
   }
   if (route === `${FILES_ENDPOINT}/restore`) {
-    return restoreRequest(request, scoped, account, now);
+    return restoreRequest(request, scoped, account, now, days);
   }
   if (route === `${FILES_ENDPOINT}/versions`) {
-    return versionsRequest(request, url, scoped, now, validatePath);
+    return versionsRequest(request, url, scoped, now, validatePath, days);
   }
   if (route === `${FILES_ENDPOINT}/restore-version`) {
-    return restoreVersionRequest(request, scoped, now, validatePath);
+    return restoreVersionRequest(request, scoped, now, validatePath, days);
   }
   return plain("Not found.", 404);
 }
@@ -150,18 +163,33 @@ const FILE_PAGE_SIZE = 200;
  * @param {URL} url
  * @param {FileStore} store
  * @param {number} now
+ * @param {number} days the account's history window
+ * @param {{db: D1Database, account: {id: string}}|null} mount where removals made outside the page are read from
  * @returns {Promise<Response>}
  */
-async function listRequest(request, url, store, now) {
+async function listRequest(request, url, store, now, days, mount) {
   if (request.method !== "GET") {
     return plain("Method not allowed. GET a listing.", 405);
   }
   try {
     if (url.searchParams.get("view") === "deleted") {
       const entries = await store.listAll(TRASH_PATH);
+      const parked = /** @type {Array<{path: string, deletedAt: number}>} */ (
+        trashRows(entries, now, days).filter(Boolean)
+      );
+      const outside = mount
+        ? await mountDeletedRows(
+            mount.db,
+            mount.account,
+            new Set(parked.map((row) => row.path)),
+            now,
+            days,
+          )
+        : [];
       return json({
         view: "deleted",
-        rows: trashRows(entries, now),
+        rows: [...parked, ...outside].sort((a, b) => b.deletedAt - a.deletedAt),
+        historyDays: days,
         empty: EMPTY_STATES.trash,
         line: PAGE_LINE,
       });
@@ -176,6 +204,7 @@ async function listRequest(request, url, store, now) {
     const { folders, files } = splitEntries(entries);
     return json({
       view: "folder",
+      historyDays: days,
       path: checked.path,
       rows: fileRows(entries),
       folders: folders.length,
@@ -553,9 +582,10 @@ async function deleteRequest(request, store, account, now) {
  * @param {FileStore} store
  * @param {{id: string}} account
  * @param {number} now
+ * @param {number} days the account's history window
  * @returns {Promise<Response>}
  */
-async function restoreRequest(request, store, account, now) {
+async function restoreRequest(request, store, account, now, days) {
   if (request.method !== "POST") {
     return plain("Method not allowed. POST the file to restore.", 405);
   }
@@ -590,9 +620,9 @@ async function restoreRequest(request, store, account, now) {
     if (!found) {
       return json({ error: "That file is not in Recently deleted." }, 404);
     }
-    if (!isRestorable(found.deletedAt, now)) {
+    if (!isRestorable(found.deletedAt, now, days)) {
       return json(
-        { error: "That file has been in Recently deleted for 30 days, so it is gone." },
+        { error: `That file has been in Recently deleted for ${days} days, so it is gone.` },
         410,
       );
     }

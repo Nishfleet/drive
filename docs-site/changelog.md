@@ -8,6 +8,23 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-10-15
+
+- Home has a Get started checklist that ticks itself as you add a computer,
+  your first file and an agent, and leaves when all three are done.
+- Deleting a file in the Files page now shows an Undo on the same line.
+- You get an email when your monthly bill drops because a big size aged out of
+  the last 30 days. Every nudge email has a stop link.
+
+## 2026-10-14
+
+- Earlier copies: the Files page lists the copies a delete or overwrite left
+  behind and puts one back with a tap, and `drive restore` does the same from
+  the command line.
+- Deleted and replaced copies are kept 3 days, free.
+- Home shows your balance, storage, devices, what to do next, how long your
+  balance lasts, and what your agents did last.
+
 ## 2026-10-09
 
 - Sign-in now bounds the whole account's emailed links to 5000 a minute, not
@@ -285,7 +302,7 @@ the live site.
 - `drive init` connects Claude, Codex, Gemini, Cursor and Kiro, and writes
   each tool's own instruction note.
 - These docs: Quickstart, How it works, Agents, Pricing and your bill, FAQ,
-  When something goes wrong, Limits, API reference, Benchmarks, Security and this
+  When something goes wrong, Limits, API reference, Webhooks, Benchmarks, Security and this
   changelog, each also served as Markdown.
 - The FAQ page: it publishes an answer only once the scoreboard row under it
   is a measured win, so a line we have not measured yet stays off it.

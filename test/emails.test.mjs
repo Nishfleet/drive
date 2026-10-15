@@ -1156,3 +1156,14 @@ test("the fair-use pause email uses the same sentence the usage page prints", ()
   assert.match(mail.text, /nothing extra is charged/);
   assert.match(mail.html, /No upload room left/);
 });
+
+test("the account-closed email says the files can be copied from the drive folder and that keys are made again", () => {
+  const { text } = renderEmail("account-closed", {
+    replyTo: "help@storagebun.com",
+    graceDays: 30,
+    reminderDays: 25,
+    purgeOn: "3 Nov (UTC)",
+  });
+  assert.match(text, /already in your drive folder on your computer/);
+  assert.match(text, /you make new keys for your computers/);
+});

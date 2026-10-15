@@ -102,35 +102,103 @@ th {
   flex-wrap: wrap;
   gap: 8px 18px;
 }
-  </style>
+  .add {
+  margin: 24px 0 8px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 4px 16px;
+}
+
+.add summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 12px 0;
+}
+
+.add .paths {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  padding-bottom: 16px;
+}
+
+.add h3 {
+  margin: 0 0 8px;
+}
+
+.add ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.add li {
+  margin: 8px 0;
+}
+
+.add code {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--paper-raised);
+}
+
+.add a,
+.lede a {
+  color: var(--accent);
+}
+
+.add .copy {
+  margin-left: 8px;
+}
+</style>
 </head>
 <body>
   <a class="skip-link" href="#keys-heading">Skip to your keys</a>
   <!-- shell:app-header current="/devices" -->
-  <header class="masthead">
-    <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
+  <nav class="app-side" aria-label="Main">
+    <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
     <a href="/home">Home</a>
-    <a href="/files">Your files</a>
-    <a href="/">Pricing</a>
-    <a href="/get-started">Get started</a>
+    <a href="/files">Files</a>
+    <a href="/usage">Usage and billing</a>
+    <a href="/devices" aria-current="page">Devices</a>
+    <a href="/webhooks">Webhooks</a>
+    <span class="app-side-end">
+      <a href="/get-started">Get started</a>
+      <a href="/docs/">Docs</a>
+    </span>
+  </nav>
+  <header class="app-top">
+    <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <details class="account-menu" id="account-menu">
+      <summary>Account</summary>
+      <div class="account-panel">
+        <a href="/signin" id="nav-signin">Sign in</a>
+        <noscript>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout">
+            <button class="btn btn-ghost" type="submit">Sign out</button>
+          </form>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout-all">
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
+          </form>
+        </noscript>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      </div>
+    </details>
+  </header>
+  <nav class="app-tabs" aria-label="Tab bar">
+    <a href="/home">Home</a>
+    <a href="/files">Files</a>
     <a href="/usage">Usage</a>
     <a href="/devices" aria-current="page">Devices</a>
-    <a href="/signin" id="nav-signin">Sign in</a>
-      <noscript>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout">
-          <button type="submit">Sign out</button>
-        </form>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout-all">
-          <button type="submit">Sign out everywhere</button>
-        </form>
-      </noscript>
-      <button type="button" id="nav-signout" hidden>Sign out</button>
-      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
-  </header>
+    <a href="/webhooks">Hooks</a>
+  </nav>
   <!-- /shell:app-header -->
 
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
@@ -146,12 +214,34 @@ th {
       </p>
     </section>
 
+    <details class="add" id="add-wizard">
+      <summary>Add a computer or an agent</summary>
+      <div class="paths">
+        <section aria-labelledby="add-computer">
+          <h3 id="add-computer">A computer</h3>
+          <ol>
+            <li>Install the command. <a href="/docs/quickstart#1-install-the-command">One line for your system</a>.</li>
+            <li>Run <code>drive login</code> <button type="button" class="btn btn-sm copy" data-copy="drive login">Copy</button>. It opens this site; press Approve.</li>
+            <li>Run <code>drive init</code> <button type="button" class="btn btn-sm copy" data-copy="drive init">Copy</button>. Your drive appears as a folder.</li>
+          </ol>
+        </section>
+        <section aria-labelledby="add-agent">
+          <h3 id="add-agent">An agent</h3>
+          <ol>
+            <li>On a computer that is already added, run <code>drive init</code> <button type="button" class="btn btn-sm copy" data-copy="drive init">Copy</button>. It finds your agent tools.</li>
+            <li>Or pick one yourself: <code>drive agents connect claude</code> <button type="button" class="btn btn-sm copy" data-copy="drive agents connect claude">Copy</button>.</li>
+            <li>The agent gets its own folder and its own key. It shows in the list below, and Turn off stops it at once. <a href="/docs/agents">What an agent key can do</a>.</li>
+          </ol>
+        </section>
+      </div>
+    </details>
+
     <section aria-labelledby="keys-heading">
       <h2 id="keys-heading" tabindex="-1">Keys</h2>
       <div class="status" id="devices-status" role="status" aria-live="polite" hidden>
         <p class="what"></p>
         <p class="next"></p>
-        <p><button type="button" id="devices-retry" hidden>Try again</button></p>
+        <p><button type="button" id="devices-retry" hidden class="btn">Try again</button></p>
       </div>
       <div class="empty" id="devices-empty" hidden>
         <p class="what">No devices or agents yet.</p>
@@ -195,6 +285,7 @@ const emptyEl = document.getElementById("devices-empty");
 const tableEl = document.getElementById("keys");
 const bodyEl = document.getElementById("keys-body");
 const retryEl = document.getElementById("devices-retry");
+const wizardEl = document.getElementById("add-wizard");
 const navSignin = document.getElementById("nav-signin");
 const navSignout = document.getElementById("nav-signout");
 const navSignoutAll = document.getElementById("nav-signout-all");
@@ -231,6 +322,7 @@ function keyRow(key) {
   const action = document.createElement("td");
   const button = document.createElement("button");
   button.type = "button";
+  button.className = "btn btn-sm btn-danger";
   button.textContent = REVOKE_LABEL;
   button.addEventListener("click", () => revokeKey(key.keyId, button));
   action.appendChild(button);
@@ -243,6 +335,7 @@ function render(keys) {
   bodyEl.replaceChildren(...keys.map(keyRow));
   tableEl.hidden = keys.length === 0;
   emptyEl.hidden = keys.length > 0;
+  wizardEl.open = keys.length === 0;
 }
 
 async function readKeys() {
@@ -334,6 +427,16 @@ navSignoutAll.addEventListener("click", () => {
 retryEl.addEventListener("click", () => {
   readKeys();
 });
+for (const button of document.querySelectorAll(".copy")) {
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(button.dataset.copy);
+      button.textContent = "Copied";
+    } catch (_error) {
+      button.textContent = "Select and copy";
+    }
+  });
+}
 readKeys();
   </script>
   <script type="module" src="/close-banner.js"></script>
