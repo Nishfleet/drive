@@ -1301,10 +1301,25 @@ async function removeFile(row) {
       body: JSON.stringify({ path: row.path }),
     });
     say(DELETE_COPY.done, "done");
+    offerUndo(row);
     refresh(true);
   } catch (error) {
     reportFailure(error);
   }
+}
+
+// Delete is reversible, so the line that says it happened carries the way
+// back: one press puts the file where it was.
+function offerUndo(row) {
+  const undo = document.createElement("button");
+  undo.type = "button";
+  undo.className = "undo";
+  undo.textContent = "Undo";
+  undo.addEventListener("click", () => {
+    undo.disabled = true;
+    restoreFile(row);
+  });
+  statusLine.append(" ", undo);
 }
 
 async function restoreFile(row) {
