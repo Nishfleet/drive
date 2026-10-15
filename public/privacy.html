@@ -115,9 +115,10 @@ body {
     <section>
       <h2>How long we keep it</h2>
       <ul>
-        <li>A changed or deleted file's old version is kept for one day, then the storage provider removes it.</li>
+        <li>A changed or deleted file's old version, and a file in Recently deleted, is kept for 3 days, then the storage provider removes it. If you choose 30 days or 1 year of history on the usage page, it is kept that long instead.</li>
         <li>When you close your account, every key is revoked at once. Thirty days later we delete your files, the file-name list and the version history.</li>
         <li>After that we keep the closed account's email address and its money records, so the account stays closed and the books add up.</li>
+        <li>Our databases (accounts, file names, money records and the waitlist) are copied once a week, encrypted, to GitHub's storage, and each copy is deleted after 90 days, so a removed record can stay in a backup for up to 90 days. Our servers' request logs are kept by Cloudflare for up to 7 days.</li>
       </ul>
     </section>
 

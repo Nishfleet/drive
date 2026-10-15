@@ -152,7 +152,7 @@ export default defineConfig({
     // Issue #520: failures were invisible because this key was absent — the
     // Worker shipped with observability off, so `console.error` in the cron
     // branches and `app.onError` went nowhere a human looks. Workers Logs
-    // collects every invocation's console lines for 14 days (the default
+    // collects every invocation's console lines for up to 7 days (the default
     // sampling here is 1, everything), which is the floor; the pipeline that
     // pages a human is Sentry, wired in src/monitoring.js off the
     // per-deployment SENTRY_DSN var (the docs runbook has the setup).
