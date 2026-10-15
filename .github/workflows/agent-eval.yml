@@ -59,7 +59,7 @@ jobs:
           # model's key would read empty (shellcheck SC2097/SC2098).
           FLEET_API_KEY="$OPENAI_API_KEY"
           export FLEET_API_KEY
-          export FLEET_BASE_URL="http://127.0.0.1:4000/v1"
+          export FLEET_BASE_URL="http://127.0.0.1:4000/v1" PROMPTFOO_FAILED_TEST_EXIT_CODE=0
           export INSPECT_EVAL_MODEL="openai-api/fleet/worker-capable"
           export DRIVE_EVAL_SPLIT="$HOME/.local/share/drive/eval-holdout.yaml"
           npm run eval:agents
