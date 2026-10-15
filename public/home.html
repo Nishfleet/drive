@@ -150,30 +150,50 @@ code {
 <body>
   <a class="skip-link" href="#home-heading">Skip to your drive</a>
   <!-- shell:app-header current="/home" -->
-  <header class="masthead">
-    <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
+  <nav class="app-side" aria-label="Main">
+    <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
     <a href="/home" aria-current="page">Home</a>
-    <a href="/files">Your files</a>
-    <a href="/">Pricing</a>
-    <a href="/get-started">Get started</a>
+    <a href="/files">Files</a>
+    <a href="/usage">Usage and billing</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Webhooks</a>
+    <span class="app-side-end">
+      <a href="/get-started">Get started</a>
+      <a href="/docs/">Docs</a>
+    </span>
+  </nav>
+  <header class="app-top">
+    <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <details class="account-menu" id="account-menu">
+      <summary>Account</summary>
+      <div class="account-panel">
+        <a href="/signin" id="nav-signin">Sign in</a>
+        <noscript>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout">
+            <button class="btn btn-ghost" type="submit">Sign out</button>
+          </form>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout-all">
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
+          </form>
+        </noscript>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      </div>
+    </details>
+  </header>
+  <nav class="app-tabs" aria-label="Tab bar">
+    <a href="/home" aria-current="page">Home</a>
+    <a href="/files">Files</a>
     <a href="/usage">Usage</a>
     <a href="/devices">Devices</a>
-    <a href="/signin" id="nav-signin">Sign in</a>
-      <noscript>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout">
-          <button type="submit">Sign out</button>
-        </form>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout-all">
-          <button type="submit">Sign out everywhere</button>
-        </form>
-      </noscript>
-      <button type="button" id="nav-signout" hidden>Sign out</button>
-      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
-  </header>
+    <a href="/webhooks">Hooks</a>
+  </nav>
   <!-- /shell:app-header -->
 
   <main>
@@ -184,7 +204,7 @@ code {
     <div class="status" id="home-status" role="status" aria-live="polite" hidden>
       <p class="what"></p>
       <p class="next"></p>
-      <p><button type="button" id="home-retry" hidden>Try again</button></p>
+      <p><button type="button" id="home-retry" hidden class="btn">Try again</button></p>
     </div>
 
     <div class="grid" id="home-grid" aria-busy="true">
@@ -227,6 +247,7 @@ code {
       <p class="more" id="next-line"></p>
       <p><a id="next-link" href="/files">Your files</a></p>
     </section>
+    <p class="more" id="whats-new" hidden>What's new: <span id="whats-new-text"></span> <a href="/docs/changelog">Changelog</a></p>
   </main>
   <!-- shell:footer -->
   <footer class="footer">
@@ -249,6 +270,7 @@ const USAGE_ENDPOINT = "/api/usage";
 const DEVICES_ENDPOINT = "/api/devices";
 const REWIND_ENDPOINT = "/api/rewind";
 const FILES_ENDPOINT = "/api/files";
+const WHATS_NEW_URL = "/whats-new.json";
 const SIGNIN_ENDPOINT = "/api/signin";
 const LOAD_FAILED = "We could not load your drive. Check your connection and try again.";
 const SIGNED_OUT = "Sign in to see your drive.";
@@ -350,6 +372,16 @@ async function read() {
   gridEl.setAttribute("aria-busy", "false");
   readChecklist(devices.payload.keys);
   readAgents();
+  readWhatsNew();
+}
+
+async function readWhatsNew() {
+  try {
+    const answer = await getJson(WHATS_NEW_URL);
+    if (!answer.ok || typeof answer.payload?.text !== "string") return;
+    setText("whats-new-text", answer.payload.text);
+    document.getElementById("whats-new").hidden = false;
+  } catch (_error) {}
 }
 
 // The newest agent session, in one line: who, how many files, and whether

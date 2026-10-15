@@ -26,6 +26,7 @@ import { monthStart, size30Through } from "./meter-usage.js";
 import { pauseAccountKeys } from "./prepaid-pause.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";
+import { emitEvent } from "./webhooks.js";
 
 const PREPAID_PAUSE_ON = "on";
 
@@ -630,6 +631,13 @@ async function sendLowBalanceOnce(db, accountId, balance, autoCents, row, deps, 
       .run();
     throw error;
   }
+  await emitEvent(
+    db,
+    accountId,
+    "balance.low",
+    { balance_cents: Math.max(0, balance), auto_topup_cents: autoCents },
+    { fetch: deps.fetch, now },
+  );
   return true;
 }
 

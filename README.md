@@ -8,7 +8,7 @@ write the same folder.
 - **Plain files.** Real names, opened by the apps you already use. Nothing is
   packed into a database.
 - **Version history is not in version 1.** Saving a file again replaces it. A
-  delete from the Files page is restorable for 30 days in Recently deleted.
+  delete from the Files page is restorable for 3 days in Recently deleted.
   Deleted or replaced files stay restorable for 3 days, free. The
   full list of what version 1 does not do is on the
   [Limits page](https://storagebun.com/docs/limits).
@@ -50,6 +50,8 @@ agents.
   version 1 does not do
 - [API reference](https://storagebun.com/docs/api) — every
   route behind the `drive` command, with a curl example
+- [Webhooks](https://storagebun.com/docs/webhooks) — signed
+  calls to your own server when your balance changes
 - [Benchmarks](https://storagebun.com/docs/benchmarks) —
   measured speed, including where we lose
 - [Security](https://storagebun.com/docs/security) — who

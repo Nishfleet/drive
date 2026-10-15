@@ -12,6 +12,7 @@ import {
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { provisionAccountBucket } from "../core/files-memory.js";
+import { historyDaysFor } from "../core/history-addon.js";
 import { json } from "../core/http.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { failureMessage } from "../core/messages.js";
@@ -447,7 +448,11 @@ export async function handleSigninLinkVerify(request, env) {
         console.error(`billing row for account ${account.id} did not write: ${String(cause)}`);
       }
       try {
-        await provisionAccountBucket(env, account.id);
+        await provisionAccountBucket(env, account.id, {
+          hiddenVersionDays: env.DRIVE_DB
+            ? await historyDaysFor(/** @type {D1Database} */ (env.DRIVE_DB), account.id)
+            : undefined,
+        });
       } catch (cause) {
         console.error(
           `bucket provisioning for account ${account.id} did not finish: ${String(cause)}`,

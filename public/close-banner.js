@@ -71,4 +71,38 @@
   window.setInterval(read, 60000);
 })();
 
+(() => {
+  if (typeof document === "undefined") return;
+  const chip = document.getElementById("balance-chip");
+  const amount = document.getElementById("balance-chip-amount");
+  const menu = /** @type {HTMLDetailsElement | null} */ (document.getElementById("account-menu"));
+  if (chip === null || amount === null || menu === null) return;
+  const chipEl = chip;
+  const amountEl = amount;
+
+  async function readBalance() {
+    try {
+      const response = await fetch("/api/balance", { headers: { accept: "application/json" } });
+      if (!response.ok) return;
+      const payload = await response.json();
+      if (typeof payload.balance !== "string") return;
+      amountEl.textContent = payload.balance;
+      chipEl.hidden = false;
+    } catch {}
+  }
+
+  document.addEventListener("click", (event) => {
+    if (menu.open && !menu.contains(/** @type {Node} */ (event.target))) menu.open = false;
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && menu.open) {
+      menu.open = false;
+      menu.querySelector("summary")?.focus();
+    }
+  });
+
+  void readBalance();
+})();
+
 export {};

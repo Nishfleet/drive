@@ -22,7 +22,8 @@ const TRASH_FOLDER = ".trash";
 export const TRASH_PATH = `/${TRASH_FOLDER}`;
 export const BRANCHES_FOLDER = ".branches";
 export const BRANCHES_PATH = `/${BRANCHES_FOLDER}`;
-export const RECENTLY_DELETED_DAYS = 30;
+/** How long a deleted file stays restorable (build-spec.md "Old versions"). */
+export const RECENTLY_DELETED_DAYS = 3;
 
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "bmp", "ico"];
 const VIDEO_EXTENSIONS = ["mp4", "webm", "mov", "m4v", "ogv"];
@@ -229,7 +230,7 @@ export const EMPTY_STATES = Object.freeze({
   }),
   trash: Object.freeze({
     what: "Nothing has been deleted.",
-    next: "Files you delete land here for 30 days, ready to put back.",
+    next: "Files you delete land here for 3 days, ready to put back.",
   }),
 });
 
@@ -244,7 +245,7 @@ export const UPLOAD_COPY = Object.freeze({
 
 export const DELETE_COPY = Object.freeze({
   button: "Delete",
-  confirm: "Delete this file? You can restore it from Recently deleted for 30 days.",
+  confirm: "Delete this file? You can restore it from Recently deleted for 3 days.",
   done: "Moved to Recently deleted.",
 });
 
@@ -505,10 +506,11 @@ export function findTrashName(entries, path) {
  * Whether a deleted file is still inside the window the page promises.
  * @param {number} deletedAt epoch milliseconds
  * @param {number} now epoch milliseconds
+ * @param {number} [days] the account's window; 3 unless it chose a longer history
  */
-export function isRestorable(deletedAt, now = Date.now()) {
+export function isRestorable(deletedAt, now = Date.now(), days = RECENTLY_DELETED_DAYS) {
   const age = now - deletedAt;
-  return age >= 0 && age <= RECENTLY_DELETED_DAYS * DAY_MS;
+  return age >= 0 && age <= days * DAY_MS;
 }
 
 /**
@@ -546,9 +548,10 @@ export const TRASH_PURGE_SCHEDULE = "0 5 * * *";
  * before its own window opens.
  * @param {number} deletedAt epoch milliseconds, from parseTrashName
  * @param {number} now epoch milliseconds
+ * @param {number} [days] the account's window
  */
-export function isTrashExpired(deletedAt, now = Date.now()) {
-  return now - deletedAt > RECENTLY_DELETED_DAYS * DAY_MS;
+export function isTrashExpired(deletedAt, now = Date.now(), days = RECENTLY_DELETED_DAYS) {
+  return now - deletedAt > days * DAY_MS;
 }
 
 /**

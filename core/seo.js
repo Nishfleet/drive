@@ -71,6 +71,7 @@ export const DOC_PAGES = Object.freeze([
   Object.freeze({ title: "When something goes wrong", path: "/docs/troubleshooting" }),
   Object.freeze({ title: "Limits", path: "/docs/limits" }),
   Object.freeze({ title: "API reference", path: "/docs/api" }),
+  Object.freeze({ title: "Webhooks", path: "/docs/webhooks" }),
   Object.freeze({ title: "Benchmarks", path: "/docs/benchmarks" }),
   Object.freeze({ title: "Security", path: "/docs/security" }),
   Object.freeze({ title: "Changelog", path: "/docs/changelog" }),

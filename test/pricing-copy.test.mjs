@@ -63,20 +63,12 @@ test("the headline is the issue's sentence, from config", () => {
   );
   assert.equal(PRICE.leadLine, `Add $${PREPAID.minTopUpUsd} or more.`);
   assert.equal(PRICE.headline, `${PRICE.leadLine} ${PRICE.rateLine} ${PRICE.maxLine}`);
-  // The page sets the sentence as three lines in the h1, in this order.
   const h1 = words.slice(words.indexOf("<h1"), words.indexOf("</h1>"));
-  for (const [className, line] of [
-    ["lead", PRICE.leadLine],
-    ["amount", PRICE.rateLine],
-    ["unit", PRICE.maxLine],
-  ]) {
-    assert.ok(
-      h1.includes(`<span class="${className}">${line}</span>`),
-      `the h1 must carry the .${className} line "${line}"`,
-    );
-  }
-  assert.ok(h1.indexOf(PRICE.leadLine) < h1.indexOf(PRICE.rateLine));
-  assert.ok(h1.indexOf(PRICE.rateLine) < h1.indexOf(PRICE.maxLine));
+  assert.ok(h1.includes('<span class="amount">Pay 2 cents per GB.</span>'));
+  assert.ok(h1.includes(`<span class="unit">${PRICE.maxLine}</span>`));
+  assert.ok(!h1.includes("lead"), "the hero carries one headline, not a third line");
+  const chips = words.slice(words.indexOf('<ul class="chips"'), words.indexOf("</ul>"));
+  assert.ok(chips.includes(`Add $${PREPAID.minTopUpUsd} or more`));
 });
 
 test("no plans and a balance that never expires sit under the headline", () => {

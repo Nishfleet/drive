@@ -9,6 +9,9 @@ import { diffBranch, readSnapshot, readSnapshotObject } from "./branches-snapsho
 
 export const REWIND_ENDPOINT = "/api/rewind";
 
+/** How long a rewind stays available, in days. Read from the drive's own
+ * 3-day undo window (core/files.js) rather than declared here, so the screen's
+ * promise and Recently deleted's promise are the same number. */
 export const REWIND_WINDOW_DAYS = RECENTLY_DELETED_DAYS;
 
 /**
@@ -127,7 +130,7 @@ async function rewindBranchRow(db, snapshots, store, account, name) {
 
 /**
  * The one-click rewind: the branch's copy is discarded and the original is left
- * exactly as it is. The window is checked first, so a branch past 30 days
+ * exactly as it is. The window is checked first, so a branch past 3 days
  * answers the same sentence the screen showed rather than quietly removing work
  * whose old versions are gone.
  *

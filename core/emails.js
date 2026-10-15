@@ -308,13 +308,16 @@ function accountClosedTemplate(data = {}) {
     "",
     `They will be deleted in ${graceDays} days, on ${purgeOn}. We will email you again ${left} days before they go.`,
     "",
-    "You can cancel until then: open the usage page, type your email, and choose Cancel closing.",
+    "You can cancel until then: open the usage page, type your email, and choose Cancel closing. Your files stay; you make new keys for your computers.",
+    "",
+    "If you want the files, they are already in your drive folder on your computer. Copy that folder somewhere safe before the day above.",
   ];
   const html_lines = [
     "<p>Your Storagebun account is closed.</p>",
     "<p>Every key was revoked at once. Your files stay for now.</p>",
     `<p>They will be deleted in ${graceDays} days, on ${purgeOn}. We will email you again ${left} days before they go.</p>`,
-    "<p>You can cancel until then: open the usage page, type your email, and choose Cancel closing.</p>",
+    "<p>You can cancel until then: open the usage page, type your email, and choose Cancel closing. Your files stay; you make new keys for your computers.</p>",
+    "<p>If you want the files, they are already in your drive folder on your computer. Copy that folder somewhere safe before the day above.</p>",
   ];
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, link: USAGE_LINK });
 }
