@@ -1,10 +1,19 @@
 import { DEFAULT_CAP_USD } from "./cap-default.js";
 import { emailShell } from "./email-layout.js";
-import { monthLabel, requireDay, requireDays } from "./emails-fields.js";
+import {
+  agentSessionsLine,
+  filesAddedLine,
+  monthLabel,
+  requireDay,
+  requireDays,
+  usd,
+} from "./emails-fields.js";
+import { savedLine } from "./emails-saved.js";
 import { escapeHtml } from "./escape-html.js";
 import { INSTALL_COMMAND, SIGN_IN_COMMAND, TOP_UP_PROMPT } from "./messages.js";
 import { absoluteUrl } from "./seo.js";
 
+export { SAVED_COPY, savedLine } from "./emails-saved.js";
 export { DEFAULT_CAP_USD };
 
 const PORTAL_URL = absoluteUrl("/api/billing/portal");
@@ -24,59 +33,6 @@ export const FROM_NAME = "Storagebun";
 export const REPLY_TO_LOCAL = "support";
 
 export const RATE_USD_PER_GB = 0.02;
-
-export const SAVED_COPY = Object.freeze({
-  capped: "Our price cap saved you",
-  uncapped: "You paid",
-  uncappedSuffix: "less than a flat plan",
-});
-
-/**
- * The "you saved" line for a receipt, or null when there is nothing to say.
- * Capped month: saving = metered - bill. Uncapped month: saving = ceiling -
- * bill. drive#39 fixed both baselines; the caller passes the three numbers it
- * already has, so this stays a pure comparison rather than a second bill.
- * @param {unknown} month
- * @returns {string | null}
- */
-export function savedLine(month) {
-  if (typeof month !== "object" || month === null) {
-    throw new TypeError(`savedLine needs a month object, got ${String(month)}`);
-  }
-  const fields =
-    /** @type {{meteredUsd?: unknown, billUsd?: unknown, ceilingUsd?: unknown, capped?: unknown}} */ (
-      month
-    );
-  const { meteredUsd, billUsd, ceilingUsd, capped } = fields;
-  if (typeof capped !== "boolean") {
-    throw new TypeError(`capped must be true or false, got ${String(capped)}`);
-  }
-  if (typeof meteredUsd !== "number" || !Number.isFinite(meteredUsd) || meteredUsd < 0) {
-    throw new TypeError(`meteredUsd must be 0 or more, got ${meteredUsd}`);
-  }
-  if (typeof billUsd !== "number" || !Number.isFinite(billUsd) || billUsd < 0) {
-    throw new TypeError(`billUsd must be 0 or more, got ${billUsd}`);
-  }
-  if (typeof ceilingUsd !== "number" || !Number.isFinite(ceilingUsd) || ceilingUsd < 0) {
-    throw new TypeError(`ceilingUsd must be 0 or more, got ${ceilingUsd}`);
-  }
-  const saved = capped ? meteredUsd - billUsd : ceilingUsd - billUsd;
-  if (saved <= 0) {
-    return null;
-  }
-  const dollars = usd(saved);
-  return capped
-    ? `${SAVED_COPY.capped} ${dollars}`
-    : `${SAVED_COPY.uncapped} ${dollars} ${SAVED_COPY.uncappedSuffix}`;
-}
-
-/**
- * @param {number} value
- * @returns {string}
- */
-function usd(value) {
-  return `$${value.toFixed(2)}`;
-}
 
 const SIGN_OFF = "-- Storagebun";
 
@@ -730,19 +686,21 @@ function monthlyStoryTemplate(data = {}) {
   const month = monthLabel(data.monthIso);
   const peak = requireText(data.peakLine, "peakLine");
   const spent = requireText(data.spentLine, "spentLine");
-  const added = Number(data.filesAdded);
-  if (!Number.isInteger(added) || added < 0) {
-    throw new TypeError(`filesAdded must be a whole number, got ${String(data.filesAdded)}`);
-  }
+  const addedLine = filesAddedLine(data.filesAdded);
+  const agentLine = agentSessionsLine(data.agentSessions);
   const subject = `Your drive in ${month.replace(", UTC", "")}`;
-  const addedLine =
-    added === 0
-      ? "No new files were added."
-      : `${added} ${added === 1 ? "file was" : "files were"} added.`;
-  const lines = [`Here is your drive for ${month}.`, "", peak, addedLine, spent];
+  const lines = [
+    `Here is your drive for ${month}.`,
+    "",
+    peak,
+    addedLine,
+    spent,
+    ...(agentLine === null ? [] : ["", agentLine]),
+  ];
   const html_lines = [
     `<p>Here is your drive for ${escapeHtml(month)}.</p>`,
     `<p>${escapeHtml(peak)}<br>${addedLine}<br>${escapeHtml(spent)}</p>`,
+    ...(agentLine === null ? [] : [`<p>${escapeHtml(agentLine)}</p>`]),
   ];
   const unsubscribe = unsubscribeLinkOf(data);
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });

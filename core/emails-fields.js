@@ -56,3 +56,37 @@ export function requireDay(value, name) {
   }
   return value;
 }
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function filesAddedLine(value) {
+  const added = Number(value);
+  if (!Number.isInteger(added) || added < 0) {
+    throw new TypeError(`filesAdded must be a whole number, got ${String(value)}`);
+  }
+  if (added === 0) return "No new files were added.";
+  return `${added} ${added === 1 ? "file was" : "files were"} added.`;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string | null} null when no agent worked, so the email leaves the line out
+ */
+export function agentSessionsLine(value) {
+  const sessions = value === undefined ? 0 : Number(value);
+  if (!Number.isInteger(sessions) || sessions < 0) {
+    throw new TypeError(`agentSessions must be a whole number, got ${String(value)}`);
+  }
+  if (sessions === 0) return null;
+  return `Your agents worked in your drive ${sessions === 1 ? "once" : `${sessions} times`}. Each one is under Rewind if you want it undone.`;
+}
+
+/**
+ * @param {number} value
+ * @returns {string}
+ */
+export function usd(value) {
+  return `$${value.toFixed(2)}`;
+}

@@ -5,6 +5,11 @@ import { unsubscribeUrl } from "../core/unsubscribe.js";
 
 const FIRST_DAYS = 3;
 
+/** @param {number} millis */
+function datetimeText(millis) {
+  return new Date(millis).toISOString().slice(0, 19).replace("T", " ");
+}
+
 /**
  * @param {number} now
  * @returns {{label: string, iso: string, start: number, end: number}|null}
@@ -42,13 +47,16 @@ export async function runMonthlyStories(input) {
             AND v.path NOT LIKE '%/.trash/%') AS added,
         (SELECT COALESCE(-SUM(l.amount_cents), 0) FROM balance_ledger l
           WHERE l.account_id = a.id AND l.kind = 'usage' AND l.window_start >= ?1
-            AND l.window_start < ?2) AS spent
+            AND l.window_start < ?2) AS spent,
+        (SELECT COUNT(*) FROM branches b
+          WHERE b.account_id = a.id AND b.changed_by_key_id <> ''
+            AND b.created_at >= ?4 AND b.created_at < ?5) AS agent_sessions
        FROM accounts a
       WHERE a.closed_at IS NULL AND a.nudges_off IS NULL
         AND a.email IS NOT NULL AND a.email <> ''
         AND (a.story_month IS NULL OR a.story_month <> ?3)`,
     )
-    .bind(month.start, month.end, month.label)
+    .bind(month.start, month.end, month.label, datetimeText(month.start), datetimeText(month.end))
     .all();
   let sent = 0;
   let failed = 0;
@@ -72,6 +80,7 @@ export async function runMonthlyStories(input) {
             monthIso: month.iso,
             peakLine: `Your drive peaked at ${formatBytes(peak)}.`,
             filesAdded: Number(row.added),
+            agentSessions: Number(row.agent_sessions),
             spentLine: `It cost ${formatCents(Number(row.spent))} from your balance.`,
             unsubscribeUrl:
               input.secret && input.origin

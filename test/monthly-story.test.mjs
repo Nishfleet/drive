@@ -50,6 +50,11 @@ test("an account that stored something last month gets one story in the first da
       "INSERT INTO balance_ledger (account_id, kind, amount_cents, idempotency_key, window_start, created_at) VALUES ('a', 'usage', -80, 'u1', ?1, 1)",
     )
     .run(SEP);
+  w.db.sqlite
+    .prepare(
+      "INSERT INTO branches (account_id, name, state, created_at, changed_by_key_id) VALUES ('a', 'agent-one', 'open', '2026-09-12 10:00:00', 'key-1'), ('a', 'agent-two', 'open', '2026-09-20 10:00:00', 'key-2'), ('a', 'by-hand', 'open', '2026-09-21 10:00:00', ''), ('a', 'old', 'open', '2026-08-30 10:00:00', 'key-3')",
+    )
+    .run();
   const sent = /** @type {Array<{to: string, text: string}>} */ ([]);
   const run = (/** @type {number} */ now) =>
     runMonthlyStories({
@@ -68,6 +73,7 @@ test("an account that stored something last month gets one story in the first da
   );
   assert.match(sent[0].text, /peaked at 40 GB/);
   assert.match(sent[0].text, /1 file was added/);
+  assert.match(sent[0].text, /Your agents worked in your drive 2 times/);
   assert.match(sent[0].text, /It cost \$0\.80 from your balance/);
   assert.deepEqual(await run(OCT_2 + 3_600_000), { sent: 0, failed: 0 });
 });
