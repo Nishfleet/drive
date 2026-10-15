@@ -84,7 +84,7 @@ func TestStandinMountProof(t *testing.T) {
 
 	var current *exec.Cmd
 	mount := func() *exec.Cmd {
-		cmd, _ := startStandinMount(t, home, mountDir, cfg)
+		cmd, _, _ := startStandinMount(t, home, mountDir, cfg)
 		current = cmd
 		return cmd
 	}
@@ -706,14 +706,19 @@ func storedRCAddr(t *testing.T, home string) string {
 	return auth.Addr
 }
 
-func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (*exec.Cmd, func()) {
+func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (*exec.Cmd, func(), string) {
 	t.Helper()
+	rcAddr := os.Getenv("DRIVE_RC_ADDR")
+	if rcAddr == "" {
+		rcAddr = "127.0.0.1:" + freePort(t)
+	}
 	cmd := exec.Command(driveBin(t), "mount",
 		"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
 		"--prefix", cfg.Prefix, "--foreground")
 	cmd.Env = append(os.Environ(),
 		"DRIVE_S3_ACCESS_KEY_ID="+cfg.AccessKey,
 		"DRIVE_S3_SECRET_ACCESS_KEY="+cfg.SecretKey,
+		"DRIVE_RC_ADDR="+rcAddr,
 	)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -722,11 +727,17 @@ func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (
 	stop := func() { stopStandinProcess(cmd, mountDir) }
 	if !waitForMount(t, cmd, mountDir) {
 		stop()
+		// The mount's own log is the real reason, not a guess: a reader of
+		// this skip needs to know whether the host refused FUSE or the mount
+		// had a bad argument (the same tail the conflict proof logs).
+		if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
+			t.Logf("mount log:\n%s", tailLines(string(log), 6))
+		}
 		skipNoMount(t, "this host will not bring up the mount on %s (%s): the proof needs "+
 			"an unprivileged FUSE mount on Linux and passwordless sudo for macOS's "+
 			"NFS mount", mountDir, mountSkipReason())
 	}
-	return cmd, stop
+	return cmd, stop, rcAddr
 }
 
 func mountSkipReason() string {
@@ -902,7 +913,7 @@ func TestOpenTimeColdAndWarm(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = standinEnv(t, home, cfg)
-			_, stop := startStandinMount(t, home, mountDir, cfg)
+			_, stop, _ := startStandinMount(t, home, mountDir, cfg)
 			fb, open, err := timeOpen(filepath.Join(mountDir, f.name), f.page)
 			if err != nil {
 				stop()
@@ -948,12 +959,12 @@ func TestBackgroundFillFillsThroughTheCappedCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = standinEnv(t, home, cfg)
-	_, stop := startStandinMount(t, home, mountDir, cfg)
+	_, stop, rcAddr := startStandinMount(t, home, mountDir, cfg)
 	defer stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := rcClientForTestHome(t, home, storedRCAddr(t, home), RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, rcAddr, RemoteFor(cfg))
 	before, err := c.stats(ctx)
 	if err != nil {
 		t.Fatalf("read the running mount's cache stats: %v", err)
@@ -1013,7 +1024,7 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = standinEnv(t, home, cfg)
-	_, stop := startStandinMount(t, home, mountDir, cfg)
+	_, stop, rcAddr := startStandinMount(t, home, mountDir, cfg)
 	defer stop()
 
 	openPath := filepath.Join(mountDir, openName)
@@ -1032,7 +1043,7 @@ func TestBackgroundFillDoesNotSlowAForegroundOpen(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	c := rcClientForTestHome(t, home, storedRCAddr(t, home), RemoteFor(cfg))
+	c := rcClientForTestHome(t, home, rcAddr, RemoteFor(cfg))
 	filled := make(chan error, 1)
 	go func() {
 		_, err := fillPass(ctx, c, fillTargets{root: mountDir, recent: []string{fillName}}, 0, 0)
@@ -1133,7 +1144,7 @@ func TestCacheCapHoldsThroughAReadPastIt(t *testing.T) {
 	writeCacheMax(t, home, capSize)
 	_ = standinEnv(t, home, cfg)
 	t.Setenv("DRIVE_RC_ADDR", "127.0.0.1:"+freePort(t))
-	_, stop := startStandinMount(t, home, mountDir, cfg)
+	_, stop, _ := startStandinMount(t, home, mountDir, cfg)
 	defer stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
