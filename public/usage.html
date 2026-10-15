@@ -614,6 +614,15 @@ h2 {
         <p class="hint" id="card-portal-line"><a id="card-portal-link" href="/api/billing/portal">Update your card in the billing portal</a></p>
       </section>
 
+      <section aria-labelledby="history-heading" id="history-section" hidden>
+        <h2 id="history-heading">History</h2>
+        <p class="lede" id="history-now"></p>
+        <div id="history-options" role="radiogroup" aria-label="How long to keep deleted and replaced files"></div>
+        <p class="hint" id="history-line"></p>
+        <button type="button" id="history-save" hidden>Change history</button>
+        <p class="hint" id="history-status" role="status" hidden></p>
+      </section>
+
       <section aria-labelledby="export-heading" id="export-section">
         <h2 id="export-heading">Your data</h2>
         <p class="lede" id="export-what">Download a JSON file of this account's records: the account, keys, file names and version history. Your files stay in the drive folder.</p>
@@ -1320,6 +1329,78 @@ navSignoutAll.addEventListener("click", () => {
   autoEl.addEventListener("change", () => saveAuto());
   pendingEl.hidden = new URLSearchParams(window.location.search).get("topup") !== "done";
   read();
+
+  // History (retention): how long deleted and replaced files stay restorable.
+  // The Worker words the price for each window (core/history-addon.js), so this
+  // block shows what the API says before it asks to turn anything on, and
+  // sends accept_price only for the window whose price is on screen.
+  async function history() {
+    const section = document.getElementById("history-section");
+    const optionsEl = document.getElementById("history-options");
+    const nowEl = document.getElementById("history-now");
+    const lineEl = document.getElementById("history-line");
+    const saveEl = document.getElementById("history-save");
+    const statusEl = document.getElementById("history-status");
+    if (!section || !optionsEl || !nowEl || !lineEl || !saveEl || !statusEl) return;
+    let payload;
+    try {
+      const response = await fetch("/api/history", { headers: { accept: "application/json" } });
+      payload = await response.json();
+      if (!response.ok || !Array.isArray(payload.options)) return;
+    } catch (_error) {
+      return;
+    }
+    let chosen = payload.days;
+    function paint() {
+      const current = payload.options.find((option) => option.days === payload.days);
+      nowEl.textContent = current ? current.line : "";
+      optionsEl.textContent = "";
+      for (const option of payload.options) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = "history-days";
+        input.value = String(option.days);
+        input.checked = option.days === chosen;
+        input.addEventListener("change", () => {
+          chosen = option.days;
+          paint();
+        });
+        label.append(input, ` ${option.label}${option.free ? " (free)" : ""}`);
+        optionsEl.append(label);
+      }
+      const picked = payload.options.find((option) => option.days === chosen);
+      lineEl.textContent = chosen === payload.days || !picked ? "" : picked.line;
+      saveEl.hidden = chosen === payload.days;
+      saveEl.textContent = picked && picked.free ? "Go back to the free window" : "Turn on with this price";
+    }
+    saveEl.addEventListener("click", async () => {
+      saveEl.disabled = true;
+      statusEl.hidden = true;
+      try {
+        const response = await fetch("/api/history", {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({ days: chosen, accept_price: true }),
+        });
+        const answer = await response.json().catch(() => null);
+        if (!response.ok) {
+          statusEl.textContent = answer && answer.error ? answer.error : "That did not save. Nothing was billed.";
+        } else {
+          payload.days = chosen;
+          statusEl.textContent = "Saved.";
+        }
+      } catch (_error) {
+        statusEl.textContent = "Could not reach the server. Nothing was billed.";
+      }
+      statusEl.hidden = false;
+      saveEl.disabled = false;
+      paint();
+    });
+    section.hidden = false;
+    paint();
+  }
+  history();
 })();
   </script>
   <script type="module" src="/close-banner.js"></script>

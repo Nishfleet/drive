@@ -71,9 +71,9 @@ command lists the versions that were there before. {{NOT_OPEN}} See
 ## Restore
 
 Deleting a file on the Files page does not erase it. It moves to Recently
-deleted and stays there for 30 days, the meter stops counting it the same
+deleted and stays there for 3 days, the meter stops counting it the same
 hour, and you can put it back yourself: open your drive in the browser, press
-the **Recently deleted** tab, find the file, and press **Restore**. After 30
+the **Recently deleted** tab, find the file, and press **Restore**. After 3
 days the file is removed for good.
 
 Deleted or replaced files stay restorable for 3 days, free. A file you save over keeps its earlier copy for the same 3 days: press **Earlier copies** on the file in the Files page to put it back. Those copies do not count toward your bill.

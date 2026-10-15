@@ -169,29 +169,33 @@ test("a bucket is provisioned with versioning, the 3-day rule and encryption", a
       "</ApplyServerSideEncryptionWithS3EncryptionByDefault></Rule></ServerSideEncryptionConfiguration>",
   );
   const answer = await provisionBucket(client, { bucket: "drv-a1", sse: "AES256" });
-  // The stock S3 shape, four PUTs: create the bucket, versioning, the one-day
-  // hidden-version rule, then SSE. One bucket per customer (drive#371), and the
-  // bucket is the customer's own.
-  assert.equal(s3Calls.length, 4);
+  // The stock S3 shape: create the bucket, versioning, a read of the rule the
+  // bucket has (so a longer window the account paid for is never shortened),
+  // the hidden-version rule, then SSE. One bucket per customer (drive#371), and
+  // the bucket is the customer's own.
+  assert.equal(s3Calls.length, 5);
   assert.equal(s3Calls[0].method, "PUT");
   assert.equal(s3Calls[0].url, "/drv-a1");
   // Creating the bucket is the only call with no query at all.
   assert.equal(s3Calls[0].query, "");
   assert.equal(s3Calls[1].method, "PUT");
   assert.equal(s3Calls[1].query, "?versioning=");
-  // The 3-day hidden-version rule.
+  assert.equal(s3Calls[2].method, "GET");
   assert.equal(s3Calls[2].query, "?lifecycle=");
-  assert.ok(s3Calls[2].body.includes("<NoncurrentDays>3</NoncurrentDays>"));
-  assert.ok(s3Calls[2].body.includes("ExpiredObjectDeleteMarker"));
-  assert.equal(s3Calls[3].query, "?encryption=");
-  assert.ok(s3Calls[3].body.includes("<SSEAlgorithm>AES256</SSEAlgorithm>"));
+  // The 3-day hidden-version rule.
+  assert.equal(s3Calls[3].method, "PUT");
+  assert.equal(s3Calls[3].query, "?lifecycle=");
+  assert.ok(s3Calls[3].body.includes("<NoncurrentDays>3</NoncurrentDays>"));
+  assert.ok(s3Calls[3].body.includes("ExpiredObjectDeleteMarker"));
+  assert.equal(s3Calls[4].query, "?encryption=");
+  assert.ok(s3Calls[4].body.includes("<SSEAlgorithm>AES256</SSEAlgorithm>"));
   assert.equal(answer.encryption?.status, 200);
   // Read back rather than taken from the PUT, the same rule readBucketConfig
   // follows.
   assert.equal(await readBucketEncryption(client, { bucket: "drv-a1" }), "AES256");
   // The call the read-back makes is the stock GET ?encryption on that bucket.
-  assert.equal(s3Calls[4].method, "GET");
-  assert.equal(s3Calls[4].query, "?encryption=");
+  assert.equal(s3Calls[5].method, "GET");
+  assert.equal(s3Calls[5].query, "?encryption=");
 });
 
 test("a deployment that names no encryption sends no encryption call", async () => {
@@ -200,7 +204,7 @@ test("a deployment that names no encryption sends no encryption call", async () 
   await provisionBucket(s3Stand(s3Calls, ""), { bucket: "stand-in" });
   // The stock stand-in refuses SSE-S3 without a KMS (501, measured 2026-10-01),
   // so the stand-in deployment names nothing and sends nothing.
-  assert.equal(s3Calls.length, 3);
+  assert.equal(s3Calls.length, 4);
 });
 
 test("a revoke is the vendor's remove_access_key, on the key it was handed", async () => {

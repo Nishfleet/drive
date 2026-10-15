@@ -8,7 +8,7 @@ write the same folder.
 - **Plain files.** Real names, opened by the apps you already use. Nothing is
   packed into a database.
 - **Version history is not in version 1.** Saving a file again replaces it. A
-  delete from the Files page is restorable for 30 days in Recently deleted.
+  delete from the Files page is restorable for 3 days in Recently deleted.
   Deleted or replaced files stay restorable for 3 days, free. The
   full list of what version 1 does not do is on the
   [Limits page](https://storagebun.com/docs/limits).

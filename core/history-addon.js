@@ -16,6 +16,7 @@ import { errorResponse, json, readJsonObject } from "./http.js";
 import { failureMessage } from "./messages.js";
 import { HIDDEN_VERSION_DAYS } from "./s3.js";
 import { unauthorizedResponse } from "./status.js";
+import { formatCents } from "./topup.js";
 
 /** Where the account's history window is read and changed. */
 export const HISTORY_ENDPOINT = "/api/history";
@@ -29,6 +30,29 @@ const LABELS = new Map([
   [30, "Keep history 30 days"],
   [365, "Keep history 1 year"],
 ]);
+const WORDS = new Map([
+  [HIDDEN_VERSION_DAYS, `${HIDDEN_VERSION_DAYS} days`],
+  [30, "30 days"],
+  [365, "1 year"],
+]);
+
+/**
+ * The sentence shown beside a window before it is turned on: what is kept, and
+ * the price, in the account's own numbers.
+ * @param {number} days
+ * @param {number} extraCents what the window adds to the monthly bill now
+ */
+function priceLine(days, extraCents) {
+  if (days <= HIDDEN_VERSION_DAYS) {
+    return `Deleted and replaced files stay restorable for ${WORDS.get(days)}, free.`;
+  }
+  const per100 = formatCents(monthBillCents({ size30Bytes: 100_000_000_000 }).totalCents);
+  const now =
+    extraCents > 0
+      ? `At your current rate of change that adds about ${formatCents(extraCents)} a month${days > 30 ? " (an estimate)" : ""}.`
+      : "At your current rate of change that adds nothing yet.";
+  return `Deleted and replaced files stay restorable for ${WORDS.get(days)}. Old copies count toward your size, so ${now.charAt(0).toLowerCase()}${now.slice(1)} Each 100 GB of old copies adds ${per100} a month, never more than $15 per TB.`;
+}
 
 /**
  * The days this account keeps old copies.
@@ -88,7 +112,9 @@ export function priceImpact(days, size30Bytes, oldBytes30) {
  * @param {Request} request
  * @param {{id: string}|null} account
  * @param {D1Database|undefined} db
- * @param {{now?: number, size30Bytes?: number}} [options]
+ * @param {{now?: number, size30Bytes?: number, apply?: (days: number) => Promise<boolean>}} [options]
+ *   `apply` sets the bucket's lifecycle rule to that many days and answers
+ *   false when this deployment has no storage credential to do it with
  * @returns {Promise<Response>}
  */
 export async function handleHistoryRequest(request, account, db, options = {}) {
@@ -101,13 +127,17 @@ export async function handleHistoryRequest(request, account, db, options = {}) {
     const size30Bytes = options.size30Bytes ?? 0;
     return json({
       days,
-      options: HISTORY_WINDOWS.map((window) => ({
-        days: window,
-        label: LABELS.get(window),
-        free: window === HIDDEN_VERSION_DAYS,
-        ...priceImpact(window, size30Bytes, oldBytes30),
-        estimate: window > 30,
-      })),
+      options: HISTORY_WINDOWS.map((window) => {
+        const impact = priceImpact(window, size30Bytes, oldBytes30);
+        return {
+          days: window,
+          label: LABELS.get(window),
+          free: window === HIDDEN_VERSION_DAYS,
+          ...impact,
+          estimate: window > 30,
+          line: priceLine(window, impact.extraCents),
+        };
+      }),
     });
   }
   if (request.method === "POST") {
@@ -123,12 +153,34 @@ export async function handleHistoryRequest(request, account, db, options = {}) {
         "Longer history counts old copies toward your size. Show the price and confirm it first.",
       );
     }
-    await run(
-      db,
-      "UPDATE accounts SET history_days = ?1 WHERE id = ?2",
-      days === HIDDEN_VERSION_DAYS ? null : days,
-      account.id,
-    );
+    const before = await historyDaysFor(db, account.id);
+    const save = () =>
+      run(
+        db,
+        "UPDATE accounts SET history_days = ?1 WHERE id = ?2",
+        days === HIDDEN_VERSION_DAYS ? null : days,
+        account.id,
+      );
+    // Whichever step can fail leaves the account on the side we can afford:
+    // a longer window is set on the bucket before it is billed, so a failed
+    // call never bills for history that is not kept; a shorter one is saved
+    // first, so a failed call never keeps history that is no longer billed.
+    try {
+      if (days > before) {
+        if (options.apply && !(await options.apply(days))) {
+          return errorResponse(503, "Longer history is not switched on yet. Nothing was changed.");
+        }
+        await save();
+      } else {
+        await save();
+        if (options.apply) await options.apply(days);
+      }
+    } catch {
+      return errorResponse(
+        502,
+        "The change did not finish, and nothing was billed for it. Please try once more shortly.",
+      );
+    }
     return json({ days });
   }
   return errorResponse(405, "Method not allowed.", { allow: "GET, POST" });
