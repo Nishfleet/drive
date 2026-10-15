@@ -153,7 +153,7 @@ th {
 </style>
 </head>
 <body>
-  <a class="skip-link" href="#keys-heading">Skip to your keys</a>
+  <a class="skip-link" href="#keys-heading">Skip to your devices</a>
   <!-- shell:app-header current="/devices" -->
   <nav class="app-side" aria-label="Main">
     <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
@@ -199,6 +199,7 @@ th {
     <a href="/devices" aria-current="page">Devices</a>
     <a href="/webhooks">Hooks</a>
   </nav>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
   <!-- /shell:app-header -->
 
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
@@ -237,7 +238,7 @@ th {
     </details>
 
     <section aria-labelledby="keys-heading">
-      <h2 id="keys-heading" tabindex="-1">Keys</h2>
+      <h2 id="keys-heading" tabindex="-1">Devices and agents</h2>
       <div class="status" id="devices-status" role="status" aria-live="polite" hidden>
         <p class="what"></p>
         <p class="next"></p>
@@ -257,7 +258,7 @@ th {
             <th scope="col">Turn off</th>
           </tr>
         </thead>
-        <tbody id="keys-body"></tbody>
+        <tbody id="keys-body"><tr class="is-shell" aria-hidden="true"><td colspan="4"><span class="skeleton">Loading your keys now</span></td></tr></tbody>
       </table>
     </section>
   </main>
@@ -432,6 +433,9 @@ for (const button of document.querySelectorAll(".copy")) {
     try {
       await navigator.clipboard.writeText(button.dataset.copy);
       button.textContent = "Copied";
+      if (typeof CustomEvent !== "undefined") {
+        document.dispatchEvent(new CustomEvent("toast", { detail: { text: "Copied" } }));
+      }
     } catch (_error) {
       button.textContent = "Select and copy";
     }

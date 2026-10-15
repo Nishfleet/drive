@@ -142,8 +142,9 @@ test(
 
     await page.goto(`${site.origin}/usage`, { waitUntil: "load" });
     await page.waitForSelector("#balance-body:not([hidden])");
-    const amount = await page.$eval("#balance-amount", (el) => el.textContent);
-    assert.equal(amount, "$10.00");
+    await page.waitForFunction(
+      () => document.getElementById("balance-amount")?.textContent === "$10.00",
+    );
     const ledger = await page.$eval("#ledger-list", (el) => el.textContent);
     assert.match(ledger ?? "", /Top-up/);
   },
@@ -330,4 +331,52 @@ test("drag three files in, sort by size, select two, delete them, and Undo", OPT
 
   await page.click("#status .undo");
   await page.waitForFunction(() => document.querySelectorAll("#file-list .row .pick").length === 3);
+});
+
+test(
+  "reduced motion switches every animation and transition off on every signed-in page",
+  OPTIONS,
+  async (t) => {
+    const site = await startSite();
+    t.after(() => site.close());
+    const browser = await launchChrome(site.origin);
+    t.after(() => browser.close());
+    const page = await browserSignIn(browser, site, "calm@example.com");
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+
+    for (const route of ["/home", "/files", "/usage", "/devices", "/webhooks"]) {
+      await page.goto(`${site.origin}${route}`, { waitUntil: "load" });
+      await page.evaluate(() => {
+        document.dispatchEvent(new CustomEvent("toast", { detail: { text: "Saved" } }));
+      });
+      await page.waitForSelector(".toast");
+      const moving = await page.evaluate(() =>
+        [...document.querySelectorAll("*")]
+          .filter((el) => {
+            const style = getComputedStyle(el);
+            return (
+              style.animationName !== "none" ||
+              style.transitionDuration.split(",").some((value) => parseFloat(value) > 0)
+            );
+          })
+          .map((el) => el.tagName.toLowerCase() + (el.id ? `#${el.id}` : "")),
+      );
+      assert.deepEqual(moving, [], `${route} still moves under reduced motion`);
+    }
+  },
+);
+
+test("without reduced motion the page fades in and a toast shows then goes", OPTIONS, async (t) => {
+  const site = await startSite();
+  t.after(() => site.close());
+  const browser = await launchChrome(site.origin);
+  t.after(() => browser.close());
+  const page = await browserSignIn(browser, site, "lively@example.com");
+  await page.goto(`${site.origin}/home`, { waitUntil: "load" });
+  assert.equal(await page.$eval("main", (el) => getComputedStyle(el).animationName), "page-in");
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent("toast", { detail: { text: "Copied" } }));
+  });
+  assert.equal(await page.$eval(".toast", (el) => el.textContent), "Copied");
+  await page.waitForFunction(() => document.querySelector(".toast") === null, { timeout: 8000 });
 });

@@ -244,6 +244,7 @@ test("Home, Files and Usage look the way their baselines say", {
           await chrome.evaluateOnNewDocument(FREEZE_CLOCK);
           await chrome.emulateMediaFeatures([
             { name: "prefers-color-scheme", value: scheme ?? "light" },
+            { name: "prefers-reduced-motion", value: "reduce" },
           ]);
           await chrome.goto(`http://127.0.0.1:${address.port}/`, {
             waitUntil: settle ?? "networkidle0",
