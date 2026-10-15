@@ -267,6 +267,10 @@ main {
   white-space: nowrap;
 }
 
+.row .meta a {
+  color: var(--ink);
+}
+
 .row .name:hover,
 .row .name:focus-visible {
   color: var(--accent);
@@ -449,6 +453,21 @@ dialog.viewer::backdrop {
   max-width: 30em;
   text-align: center;
   color: var(--ink-soft);
+}
+
+@media (max-width: 559px) {
+  .row {
+    flex-wrap: wrap;
+  }
+
+  .row .meta {
+    flex: 1 1 calc(100% - 44px);
+  }
+
+  .row .actions {
+    flex: 1 0 100%;
+    padding-left: 40px;
+  }
 }
 
 @media (min-width: 720px) {
