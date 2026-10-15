@@ -37,7 +37,7 @@ const MILESTONES = Object.freeze([
  * @param {string} accountId
  * @param {number} now
  */
-async function unseen(db, accountId, now) {
+export async function unseen(db, accountId, now) {
   const row = /** @type {{milestones_seen: string|null}|null} */ (
     await first(db, "SELECT milestones_seen FROM accounts WHERE id = ?1", accountId)
   );
@@ -51,6 +51,19 @@ async function unseen(db, accountId, now) {
     if (Number(answer?.hit ?? 0) === 1) fresh.push({ id: milestone.id, text: milestone.text });
   }
   return { seen, fresh };
+}
+
+/**
+ * @param {D1Database} db
+ * @param {string} accountId
+ * @param {Set<string>} seen
+ * @param {string[]} ids
+ */
+export async function markSeen(db, accountId, seen, ids) {
+  await db
+    .prepare("UPDATE accounts SET milestones_seen = ?1 WHERE id = ?2")
+    .bind([...new Set([...seen, ...ids])].join(","), accountId)
+    .run();
 }
 
 /**
@@ -72,14 +85,12 @@ export async function handleMilestonesRequest(request, account, db, options = {}
     if ("error" in read) return errorResponse(400, read.error);
     const { seen, fresh } = await unseen(db, account.id, now);
     const told = Array.isArray(read.body.ids) ? read.body.ids : [];
-    const next = new Set(seen);
-    for (const milestone of fresh) {
-      if (told.includes(milestone.id)) next.add(milestone.id);
-    }
-    await db
-      .prepare("UPDATE accounts SET milestones_seen = ?1 WHERE id = ?2")
-      .bind([...next].join(","), account.id)
-      .run();
+    await markSeen(
+      db,
+      account.id,
+      seen,
+      fresh.map((milestone) => milestone.id).filter((id) => told.includes(id)),
+    );
     return json({ ok: true });
   }
   return errorResponse(405, "Method not allowed.", { allow: "GET, POST" });
