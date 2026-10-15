@@ -109,6 +109,7 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "upload-arrivals",
     "security-event",
     "first-file-nudge",
+    "share-opened",
     "monthly-story",
     "runway-notice",
     "bill-dropped",

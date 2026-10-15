@@ -64,6 +64,8 @@ export function dataFor(kind) {
         deviceName: "office laptop",
         happenedAt: "2026-10-06T09:00:00.000Z",
       };
+    case "share-opened":
+      return { ...base, fileName: "report.pdf", opens: 3 };
     case "monthly-story":
       return {
         ...base,

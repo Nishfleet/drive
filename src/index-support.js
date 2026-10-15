@@ -26,6 +26,7 @@ import { withIndex } from "./search.js";
 import { REQUEST_ENDPOINT, SHARE_LINK_PREFIX } from "./share.js";
 import { createD1LinkStore } from "./share-store.js";
 import { SIGNIN_ENDPOINT, signinClosedBody } from "./signin.js";
+import { SIGNED_STORAGE_EVENTS_PATH } from "./storage-events.js";
 
 /**
  * The Sentry seam for one invocation, read off the environment per
@@ -77,6 +78,7 @@ export const AUTH_FAMILY = "/api/auth/*";
 export const PUBLIC_ROUTES = Object.freeze([
   "/api/waitlist",
   "/api/storage-events",
+  SIGNED_STORAGE_EVENTS_PATH,
   AUTH_FAMILY,
   SEND_EMAIL_PATH,
   HEALTH_PATH,
@@ -101,6 +103,21 @@ export function dodoEnv(env) {
   return /** @type {{DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_TOPUP_PRODUCT_ID?: string, DODO_WEBHOOK_SECRET?: string, DODO_FETCH?: typeof fetch, MAIL_FROM?: string, PREPAID_PAUSE?: string, FAIR_USE_REFUSE?: string}} */ (
     /** @type {unknown} */ (env)
   );
+}
+
+/**
+ * The secret the signed storage-event intake verifies (#831). Not a declared
+ * binding and not in cloudflare.config.ts: DODO_WEBHOOK_SECRET above is also
+ * undeclared, because a declared `bindings.secret()` that no value backs fails
+ * every deploy, and this one's live value arrives with the bucket
+ * notifications the orchestrator registers, not before. While it is unset the
+ * route answers 503 (a closed door), which is the state it ships in.
+ * @param {Env} env
+ * @returns {string|undefined}
+ */
+export function storageEventsSecret(env) {
+  return /** @type {{STORAGE_EVENTS_WEBHOOK_SECRET?: string}} */ (/** @type {unknown} */ (env))
+    .STORAGE_EVENTS_WEBHOOK_SECRET;
 }
 
 /** @param {string} pathname */
