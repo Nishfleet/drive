@@ -1,3 +1,4 @@
+import { HIDDEN_VERSION_DAYS } from "./s3.js";
 import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
 
 /**
@@ -36,6 +37,7 @@ export const MINIMUM_MINUTES_PER_VERSION = 60;
 export { BYTES_PER_GB, MINUTE_MS };
 
 export const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
 
 /**
  * The start of the UTC hour an instant falls in. UTC on purpose: `hour` is a
@@ -278,12 +280,36 @@ function hourRows(hiddenFrom, scoped) {
       WHERE ${account}hidden_at ${hiddenFrom} AND created_at < ?2 AND ${NOT_TRASH_SQL})`;
 }
 
+// The history add-on (core/history-addon.js): an account that chose 30 days or
+// 1 year keeps its old copies that long, so while the add-on is on they count
+// toward the size it is billed for, at the normal rate. Two sets, both read
+// from the few add-on accounts through `accounts_history_days`, never from
+// every account:
+//   - versions hidden before the hour's end but inside the account's window
+//     (a replaced file, or the original behind a delete), and
+//   - the account's own Recently deleted copies, which the free window leaves
+//     out of the bill because it keeps them only 3 days.
+// A free account reads neither, so its bill is exactly what it was.
+// `hidden_at >= ?2` rows are the live-at-hour-end half above, so the first set
+// stops short of it and nothing is counted twice.
+/** @param {boolean} scoped */
+function historyRows(scoped) {
+  const account = scoped ? "AND v.account_id = ?3" : "";
+  return `SELECT v.account_id, v.b2_file_id, v.size_bytes, v.created_at, v.hidden_at
+    FROM accounts a JOIN file_versions v ON v.account_id = a.id
+    WHERE a.history_days > ${HIDDEN_VERSION_DAYS} ${account} AND v.created_at < ?2
+      AND ((v.hidden_at < ?2 AND v.hidden_at > ?2 - a.history_days * ${DAY_MS} AND ${NOT_TRASH_SQL})
+        OR (v.hidden_at IS NULL AND NOT (${NOT_TRASH_SQL})))`;
+}
+
 /** @param {boolean} scoped */
 function hourStoredBytesSql(scoped) {
   return `SELECT account_id,
     SUM(size_bytes) AS stored_bytes,
     COUNT(*) AS versions
-  FROM ${hourRows(">= ?2", scoped)} AS v
+  FROM (${hourRows(">= ?2", scoped).slice(1, -1)}
+    UNION ALL
+    ${historyRows(scoped)}) AS v
   GROUP BY account_id
   ORDER BY account_id`;
 }
@@ -333,7 +359,28 @@ function hourUsageSql(scoped) {
   LEFT JOIN (
     ${hourStoredBytesSql(scoped)}
   ) AS bytes ON bytes.account_id = minutes.account_id
-  ORDER BY minutes.account_id`;
+  UNION ALL
+  ${historyOnlyUsageSql(scoped)}
+  ORDER BY 1`;
+}
+
+// An add-on account that holds nothing live, and touched nothing this hour, has
+// no GB-minutes row, yet it still stores its old copies for the whole window.
+// It gets a mark (and zero GB-minutes), so the month's peak keeps counting
+// what the account is really keeping. An account with a live or just-hidden
+// version already has its row above, with the copies added in.
+/** @param {boolean} scoped */
+function historyOnlyUsageSql(scoped) {
+  const account = scoped ? "AND l.account_id = ?3" : "";
+  return `SELECT h.account_id, 0.0 AS gb_minutes, SUM(h.size_bytes) AS stored_bytes, COUNT(*) AS versions
+  FROM (${historyRows(scoped)}) AS h
+  WHERE NOT EXISTS (
+    SELECT 1 FROM file_versions l
+    WHERE l.account_id = h.account_id ${account} AND l.created_at < ?2
+      AND (l.hidden_at IS NULL OR l.hidden_at >= ?1)
+      AND ${NOT_TRASH_SQL.replace(/\bpath\b/g, "l.path")}
+  )
+  GROUP BY h.account_id`;
 }
 
 export const HOUR_USAGE_SQL = hourUsageSql(false);
@@ -347,6 +394,8 @@ export const CLEAR_EMPTY_ACCOUNTS_SQL = `DELETE FROM usage_minutes
     UNION ALL
     SELECT account_id FROM file_versions
       WHERE hidden_at >= ?3 AND created_at < ?2 AND ${NOT_TRASH_SQL}
+    UNION ALL
+    SELECT account_id FROM (${historyRows(false)})
   )`;
 
 /**
