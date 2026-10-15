@@ -1,0 +1,20 @@
+Your drive is ready
+
+Welcome to Storagebun.
+
+Your drive is a plain folder that streams from object storage, so big files open without downloading first.
+
+Sign in, then set it up:
+
+  drive login
+  drive init
+
+Signing in opens the browser and mints this machine's key; the setup that follows makes your ~/Drive folder, starts the mount, and connects the agent tools it finds. Both are safe to run again.
+
+Set a spending cap any time. At the cap the drive goes read-only; nothing is deleted.
+
+Open your drive: https://storagebun.com/
+
+-- Storagebun
+
+Reply to this email and it reaches us: support@drive.example

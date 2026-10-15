@@ -1,0 +1,5 @@
+Your drive sign-in link
+
+Sign in to your drive: https://storagebun.com/api/signin/verify?token=abc
+
+The link is good for 10 minutes and works once. Requested from Safari on macOS at 14 Oct 2026, 12:00 UTC. If you did not ask for this, ignore it.
