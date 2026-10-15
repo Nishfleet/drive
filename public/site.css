@@ -421,3 +421,254 @@ button:active:not(:disabled) {
     scroll-behavior: auto !important;
   }
 }
+
+.app-side,
+.app-top,
+.app-tabs {
+  display: none;
+}
+
+body:has(.app-side) {
+  padding: 56px 0 72px;
+}
+
+body:has(.app-side) .app-top {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 clamp(16px, 4vw, 32px);
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+body:has(.app-side) .app-top-mark {
+  margin-right: auto;
+  color: var(--ink);
+}
+
+body:has(.app-side) .balance-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 112px;
+  justify-content: center;
+  padding: 4px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font-size: 15px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+body:has(.app-side) .balance-chip[hidden] {
+  display: inline-flex;
+  visibility: hidden;
+}
+
+body:has(.app-side) .top-up {
+  padding: 4px 14px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--paper-raised);
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+body:has(.app-side) .account-menu {
+  position: relative;
+}
+
+body:has(.app-side) .account-menu summary {
+  padding: 4px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 15px;
+  list-style: none;
+  white-space: nowrap;
+}
+
+body:has(.app-side) .account-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+body:has(.app-side) .account-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 200px;
+  padding: 8px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+  box-shadow: 0 8px 24px rgba(27, 23, 18, 0.15);
+}
+
+body:has(.app-side) .account-panel a,
+body:has(.app-side) .account-panel button {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+body:has(.app-side) .account-panel a:hover,
+body:has(.app-side) .account-panel button:hover {
+  background: var(--accent-soft);
+}
+
+body:has(.app-side) .account-panel [hidden] {
+  display: none;
+}
+
+body:has(.app-side) .app-tabs {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  display: flex;
+  height: 60px;
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+body:has(.app-side) .app-tabs a {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-soft);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+body:has(.app-side) .app-tabs a[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: inset 0 3px 0 var(--accent);
+}
+
+body:has(.app-side) main,
+body:has(.app-side) .footer,
+body:has(.app-side) .close-banner {
+  width: calc(100% - 2 * clamp(16px, 4vw, 32px));
+  max-width: 960px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+body:has(.app-side) main {
+  padding-top: 28px;
+  padding-right: 0;
+  padding-left: 0;
+}
+
+@media (max-width: 559px) {
+  body:has(.app-side) .app-top {
+    gap: 8px;
+  }
+
+  body:has(.app-side) .app-top-mark {
+    font-size: 0;
+  }
+
+  body:has(.app-side) .balance-chip {
+    min-width: 0;
+    padding: 4px 10px;
+    font-size: 14px;
+  }
+
+  body:has(.app-side) .top-up,
+  body:has(.app-side) .account-menu summary {
+    padding: 4px 10px;
+    font-size: 14px;
+  }
+}
+
+body:has(.app-side) main h1 {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-size: clamp(32px, 5vw, 48px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+@media (min-width: 900px) {
+  body:has(.app-side) {
+    padding-left: 224px;
+    padding-bottom: 40px;
+  }
+
+  body:has(.app-side) .app-side {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 224px;
+    padding: 16px 12px;
+    border-right: 1px solid var(--rule);
+    background: var(--paper);
+  }
+
+  body:has(.app-side) .app-side .wordmark {
+    margin: 4px 8px 16px;
+    color: var(--ink);
+  }
+
+  body:has(.app-side) .app-side a:not(.wordmark) {
+    padding: 8px 12px;
+    border-radius: 8px;
+    color: var(--ink-soft);
+    text-decoration: none;
+  }
+
+  body:has(.app-side) .app-side a[aria-current="page"] {
+    background: var(--accent-soft);
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  body:has(.app-side) .app-side-end {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: auto;
+  }
+
+  body:has(.app-side) .app-top {
+    left: 224px;
+    justify-content: flex-end;
+  }
+
+  body:has(.app-side) .app-top-mark,
+  body:has(.app-side) .app-tabs {
+    display: none;
+  }
+}

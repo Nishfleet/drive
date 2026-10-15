@@ -3249,51 +3249,19 @@ test("the page is a mobile-first surface with one-tap actions", () => {
   assert.match(page, /class="skip-link" href="#file-list-heading"/);
 });
 
-test("the page wears the site's header, with room for the view strip", () => {
-  // drive#425, from the new-customer walkthrough: the files page's top bar was
-  // its own — a wordmark and a static "Your drive" — so it was the one page
-  // with no way from it to Pricing or Usage. It now carries the shared
-  // masthead (public/site.css's .masthead, which test/usage.test.mjs holds to
-  // one navigation across the pages that use it), with this page's folder path
-  // under it, and the view strip given room instead of sitting cramped against
-  // the header.
-  const masthead = page.match(/<header class="masthead">[\s\S]*?<\/header>/);
-  assert.ok(masthead, "the page carries the shared masthead header");
-  // The tagline lives in the hero and the footer only (high-end gaps item 11).
-  assert.doesNotMatch(masthead[0], /class="tagline"/);
-  assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
+test("the page wears the app shell, with room for the view strip", () => {
+  assert.match(page, /<!-- shell:app-header current="\/files" -->/);
+  assert.doesNotMatch(page, /<header class="masthead">/, "the shell replaces the old masthead");
   assert.doesNotMatch(page, /<header class="topbar">/, "the page has no top bar of its own");
-  // The static label is gone, and no script is left reading it. The words are
-  // not lost either: the crumbs row's own root button says "Your drive"
-  // (crumbsForParts), which is where the walkthrough's reader saw them before.
+  assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
   assert.doesNotMatch(page, /id="account"/);
   assert.doesNotMatch(page, /getElementById\("account"\)|class="account"/);
 
-  // The rule each part of the header owns, and it owns nothing else: this
-  // page's own padding, background and sticky bar around the shared masthead
-  // (public/site.css owns the header's own metrics, its link colour and the
-  // tagline), this page's own wordmark size, and the crumbs row. A page that
-  // starts restyling a part it does not own fails here, which is what keeps the
-  // pages from drifting apart again. test/site-styles.test.mjs holds the same
-  // line for the other pages.
   /** @param {string} selector */
   const rules = (selector) =>
     [...page.matchAll(new RegExp(`(?:^|\\n)\\.${selector} \\{([^}]*)\\}`, "g"))].map(
       (rule) => rule[1],
     );
-  const mastheadRules = rules("masthead").join("");
-  for (const own of ["margin: 0;", "padding: 14px 0 12px;", "border-bottom: 0;"]) {
-    assert.ok(mastheadRules.includes(own), `the page gives the header its own ${own}`);
-  }
-  assert.ok(
-    !mastheadRules.includes("display:"),
-    "the page does not lay the header out, which the shared chrome already does",
-  );
-  assert.deepEqual(
-    rules("wordmark"),
-    ["\n  font-size: 24px;\n"],
-    "the page sets its own wordmark size and nothing else",
-  );
   assert.equal(rules("crumbs").length, 1, "the folder-path row has one rule of its own");
 
   // The strip's rule is the one that lays it out as a strip; the page has a

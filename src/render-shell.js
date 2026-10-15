@@ -20,7 +20,7 @@ function rendered(name, indent, current) {
     if (!html.includes(link)) {
       throw new Error(`shell/${name}.html has no link to ${current}`);
     }
-    html = html.replace(link, `${link} aria-current="page"`);
+    html = html.replaceAll(link, `${link} aria-current="page"`);
   }
   const body = html
     .split("\n")

@@ -23,38 +23,6 @@ body {
   z-index: 30;
 }
 
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: var(--paper);
-  border-bottom: 1px solid var(--rule);
-  display: flex;
-  flex-direction: column;
-}
-
-@media (max-width: 719px) {
-  .topbar {
-    position: static;
-  }
-}
-
-.topbar,
-.tabs {
-  padding-left: calc(max(0px, (100% - 900px) / 2) + clamp(14px, 4vw, 40px));
-  padding-right: calc(max(0px, (100% - 900px) / 2) + clamp(14px, 4vw, 40px));
-}
-
-.masthead {
-  margin: 0;
-  padding: 14px 0 12px;
-  border-bottom: 0;
-}
-
-.wordmark {
-  font-size: 24px;
-}
-
 .crumbs {
   display: flex;
   flex-wrap: wrap;
@@ -118,8 +86,7 @@ body {
 }
 
 main {
-  padding: 0 clamp(14px, 4vw, 40px) 96px;
-  max-width: 900px;
+  padding-bottom: 96px;
 }
 
 .page-line {
@@ -507,17 +474,27 @@ dialog.viewer::backdrop {
 </head>
 <body>
   <a class="skip-link" href="#file-list-heading">Skip to your files</a>
-  <div class="topbar">
-    <!-- shell:app-header current="/files" -->
-    <header class="masthead">
-      <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
-      <a href="/home">Home</a>
-      <a href="/files" aria-current="page">Your files</a>
-      <a href="/">Pricing</a>
+  <!-- shell:app-header current="/files" -->
+  <nav class="app-side" aria-label="Main">
+    <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a href="/home">Home</a>
+    <a href="/files" aria-current="page">Files</a>
+    <a href="/usage">Usage and billing</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Webhooks</a>
+    <span class="app-side-end">
       <a href="/get-started">Get started</a>
-      <a href="/usage">Usage</a>
-      <a href="/devices">Devices</a>
-      <a href="/signin" id="nav-signin">Sign in</a>
+      <a href="/docs/">Docs</a>
+    </span>
+  </nav>
+  <header class="app-top">
+    <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <details class="account-menu" id="account-menu">
+      <summary>Account</summary>
+      <div class="account-panel">
+        <a href="/signin" id="nav-signin">Sign in</a>
         <noscript>
           <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
           <form method="POST" action="/api/signin">
@@ -532,23 +509,31 @@ dialog.viewer::backdrop {
         </noscript>
         <button type="button" id="nav-signout" hidden>Sign out</button>
         <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
-    </header>
-    <!-- /shell:app-header -->
-    <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
-  </div>
+      </div>
+    </details>
+  </header>
+  <nav class="app-tabs" aria-label="Tab bar">
+    <a href="/home">Home</a>
+    <a href="/files" aria-current="page">Files</a>
+    <a href="/usage">Usage</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Hooks</a>
+  </nav>
+  <!-- /shell:app-header -->
+
 
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
     <a id="close-banner-cancel" href="/usage">Cancel closing</a>
   </div>
-  <nav class="tabs" aria-label="Views">
-    <button type="button" id="tab-files" aria-pressed="true">Files</button>
-    <button type="button" id="tab-deleted" aria-pressed="false">Recently deleted</button>
-    <button type="button" id="tab-rewind" aria-pressed="false">Rewind</button>
-  </nav>
-
   <main>
     <h1 id="file-list-heading">Your files</h1>
+    <nav class="tabs" aria-label="Views">
+      <button type="button" id="tab-files" aria-pressed="true">Files</button>
+      <button type="button" id="tab-deleted" aria-pressed="false">Recently deleted</button>
+      <button type="button" id="tab-rewind" aria-pressed="false">Rewind</button>
+    </nav>
+    <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
     <p class="page-line" id="page-line">Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.</p>
     <input class="filter" type="search" id="file-filter" aria-label="Filter this folder by name" placeholder="Filter this folder" autocomplete="off">
     <p class="filter-none" id="filter-none" hidden>No file here matches that. Clear the box to see them all.</p>

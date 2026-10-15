@@ -147,30 +147,52 @@ form.add fieldset {
 </head>
 <body>
   <a class="skip-link" href="#endpoints-heading">Skip to your endpoints</a>
-  <header class="masthead">
-    <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
-    <span class="tagline">A Finder drive for people and their agents.</span>
-    <a href="/files">Your files</a>
-    <a href="/">Pricing</a>
-    <a href="/get-started">Get started</a>
+  <!-- shell:app-header current="/webhooks" -->
+  <nav class="app-side" aria-label="Main">
+    <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a href="/home">Home</a>
+    <a href="/files">Files</a>
+    <a href="/usage">Usage and billing</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks" aria-current="page">Webhooks</a>
+    <span class="app-side-end">
+      <a href="/get-started">Get started</a>
+      <a href="/docs/">Docs</a>
+    </span>
+  </nav>
+  <header class="app-top">
+    <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <details class="account-menu" id="account-menu">
+      <summary>Account</summary>
+      <div class="account-panel">
+        <a href="/signin" id="nav-signin">Sign in</a>
+        <noscript>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout">
+            <button type="submit">Sign out</button>
+          </form>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout-all">
+            <button type="submit">Sign out everywhere</button>
+          </form>
+        </noscript>
+        <button type="button" id="nav-signout" hidden>Sign out</button>
+        <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      </div>
+    </details>
+  </header>
+  <nav class="app-tabs" aria-label="Tab bar">
+    <a href="/home">Home</a>
+    <a href="/files">Files</a>
     <a href="/usage">Usage</a>
     <a href="/devices">Devices</a>
-    <a href="/signin" id="nav-signin">Sign in</a>
-      <noscript>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout">
-          <button type="submit">Sign out</button>
-        </form>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout-all">
-          <button type="submit">Sign out everywhere</button>
-        </form>
-      </noscript>
-      <button type="button" id="nav-signout" hidden>Sign out</button>
-      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
-  </header>
+    <a href="/webhooks" aria-current="page">Hooks</a>
+  </nav>
+  <!-- /shell:app-header -->
 
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
