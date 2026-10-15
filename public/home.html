@@ -227,6 +227,7 @@ code {
       <p class="more" id="next-line"></p>
       <p><a id="next-link" href="/files">Your files</a></p>
     </section>
+    <p class="more" id="whats-new" hidden>What's new: <span id="whats-new-text"></span> <a href="/docs/changelog">Changelog</a></p>
   </main>
   <!-- shell:footer -->
   <footer class="footer">
@@ -249,6 +250,7 @@ const USAGE_ENDPOINT = "/api/usage";
 const DEVICES_ENDPOINT = "/api/devices";
 const REWIND_ENDPOINT = "/api/rewind";
 const FILES_ENDPOINT = "/api/files";
+const WHATS_NEW_URL = "/whats-new.json";
 const SIGNIN_ENDPOINT = "/api/signin";
 const LOAD_FAILED = "We could not load your drive. Check your connection and try again.";
 const SIGNED_OUT = "Sign in to see your drive.";
@@ -350,6 +352,16 @@ async function read() {
   gridEl.setAttribute("aria-busy", "false");
   readChecklist(devices.payload.keys);
   readAgents();
+  readWhatsNew();
+}
+
+async function readWhatsNew() {
+  try {
+    const answer = await getJson(WHATS_NEW_URL);
+    if (!answer.ok || typeof answer.payload?.text !== "string") return;
+    setText("whats-new-text", answer.payload.text);
+    document.getElementById("whats-new").hidden = false;
+  } catch (_error) {}
 }
 
 // The newest agent session, in one line: who, how many files, and whether
