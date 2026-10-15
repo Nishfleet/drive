@@ -595,7 +595,7 @@ h2 {
         <p class="hint" id="uploads-hint">Saves upload a few seconds after you close the file.</p>
       </section>
 
-      <section aria-labelledby="cap-heading">
+      <section aria-labelledby="cap-heading" id="cap-section">
         <h2 id="cap-heading">Your cap</h2>
         <div class="cap">
           <label for="cap-amount">Monthly cap, in whole dollars</label>
@@ -624,6 +624,7 @@ h2 {
         <h2 id="close-heading">Close your account</h2>
         <p class="lede" id="close-what">Closing revokes every key at once. Your files stay for 30 days, then they are deleted.</p>
         <p class="hint" id="close-next">Type your email to confirm. You can cancel any time in those 30 days.</p>
+        <p class="hint" id="close-alternatives">Before you go: your files are already in your drive folder, so copy it somewhere safe. Or <a href="#cap-section">pause instead</a>: set your cap to $0 and the drive goes read-only, nothing is deleted, and you can lift it any time.</p>
         <p class="hint" id="close-reminder">We email you now and again 5 days before the files go.</p>
         <p class="hint" id="close-purge-on" hidden></p>
         <p class="lede" id="close-closed-what" hidden>This account is closed. Keys are already revoked. Files are deleted 30 days after you closed it.</p>
@@ -983,6 +984,7 @@ function renderClose(status) {
   closeFormEl.hidden = closed && !pending;
   closeWhatEl.hidden = closed;
   closeNextEl.hidden = closed;
+  document.getElementById("close-alternatives").hidden = closed;
   closeClosedWhatEl.hidden = !closed;
   closeClosedNextEl.hidden = !pending;
   closePurgedNextEl.hidden = pending || !closed;
