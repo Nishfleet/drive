@@ -204,6 +204,41 @@ test("every indexable page carries a Twitter summary_large_image card", () => {
   }
 });
 
+test("every page that is not in the sitemap carries a share card that matches its own title and description", () => {
+  const cardless = new Set(["/og-card.html"]);
+  for (const page of PAGES.filter((p) => !p.indexable && !cardless.has(p.path))) {
+    const name = fileFor(page);
+    const html = readPage(name);
+    const title = meta(html, "property", "og:title");
+    const description = meta(html, "property", "og:description");
+    assert.ok(title, `${name} og:title`);
+    assert.ok(description, `${name} og:description`);
+    assert.equal(meta(html, "name", "twitter:title"), title, `${name} twitter:title`);
+    assert.equal(
+      meta(html, "name", "twitter:description"),
+      description,
+      `${name} twitter:description`,
+    );
+    assert.equal(meta(html, "name", "twitter:card"), "summary_large_image", `${name} twitter:card`);
+    assert.equal(
+      meta(html, "property", "og:image"),
+      absoluteUrl(SITE.ogImagePath),
+      `${name} og:image`,
+    );
+    assert.equal(
+      meta(html, "name", "twitter:image"),
+      absoluteUrl(SITE.ogImagePath),
+      `${name} twitter:image`,
+    );
+    assert.ok(meta(html, "property", "og:image:alt"), `${name} needs og:image:alt`);
+    assert.match(
+      meta(html, "property", "og:url") ?? "",
+      /^https:\/\/storagebun\.com\//,
+      `${name} og:url`,
+    );
+  }
+});
+
 test("every indexable page carries a JSON-LD SoftwareApplication matching the config", () => {
   for (const page of indexablePages) {
     const name = fileFor(page);
