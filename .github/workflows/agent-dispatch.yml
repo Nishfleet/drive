@@ -41,7 +41,7 @@ jobs:
       issues: write
       pull-requests: write
       contents: write
-      actions: read
+      actions: write
       checks: read
       statuses: read
     with:
