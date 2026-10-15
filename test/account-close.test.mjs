@@ -317,7 +317,7 @@ test("the one box posts cancel while a close is pending and close once it is not
   assert.equal((page.match(/<form class="close-form"/g) ?? []).length, 1);
   assert.equal((page.match(/<label for="close-email"/g) ?? []).length, 1);
   assert.match(page, /id="close-email-label">Type your email to confirm</);
-  assert.match(page, /id="close-submit">Close account</);
+  assert.match(page, /id="close-submit" class="btn btn-primary">Close account</);
   const script = page.slice(page.indexOf("<script>"));
   assert.doesNotMatch(script, /cancel-form|cancel-error|cancel-email/);
   // A close is pending while the 30-day window is open: state is closed and

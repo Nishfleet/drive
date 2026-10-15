@@ -1963,7 +1963,7 @@ details p {
           </div>
           <span class="tag t2" aria-hidden="true">plays in 274 ms</span>
           <div class="term">
-            <div class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>zsh</span><button class="copy" type="button" data-copy="drive login&#10;drive init" aria-label="Copy the commands drive login and drive init">copy</button></div>
+            <div class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>zsh</span><button class="btn btn-sm copy" type="button" data-copy="drive login&#10;drive init" aria-label="Copy the commands drive login and drive init">copy</button></div>
             <p><span class="pr">$</span> drive login</p>
             <p class="ok">signed in &middot; storage settings written</p>
             <p><span class="pr">$</span> drive init</p>
@@ -2036,11 +2036,11 @@ details p {
           <p class="sub">Give Claude Code, Codex, Cursor, Gemini or Kiro the same drive you use. One command for each tool.</p>
           <fieldset class="tools">
             <legend>Pick your tool</legend>
-            <button type="button" data-agent="claude" aria-pressed="true">Claude Code</button>
-            <button type="button" data-agent="codex" aria-pressed="false">Codex</button>
-            <button type="button" data-agent="cursor" aria-pressed="false">Cursor</button>
-            <button type="button" data-agent="gemini" aria-pressed="false">Gemini</button>
-            <button type="button" data-agent="kiro" aria-pressed="false">Kiro</button>
+            <button type="button" data-agent="claude" aria-pressed="true" class="btn">Claude Code</button>
+            <button type="button" data-agent="codex" aria-pressed="false" class="btn">Codex</button>
+            <button type="button" data-agent="cursor" aria-pressed="false" class="btn">Cursor</button>
+            <button type="button" data-agent="gemini" aria-pressed="false" class="btn">Gemini</button>
+            <button type="button" data-agent="kiro" aria-pressed="false" class="btn">Kiro</button>
           </fieldset>
           <p class="never">Each tool works in its own folder, on its own key. An agent's delete is undoable for 3 days.</p>
         </div>
@@ -2068,7 +2068,7 @@ details p {
               <label for="quote-gb">How much you keep all month</label>
               <output id="quote-size" for="quote-gb">1 TB</output>
             </div>
-            <input id="quote-gb" name="gb" type="range" min="50" max="5000" step="10" value="1000" aria-describedby="quote-note">
+            <input id="quote-gb" name="gb" type="range" min="50" max="5000" step="10" value="1000" aria-describedby="quote-note" class="slider">
             <div class="ticks" aria-hidden="true"><span style="left:0">50 GB</span><span style="left:19.2%">1 TB</span><span style="left:39.4%">2 TB</span><span style="left:100%">5 TB</span></div>
             <p class="price-big"><sup>$</sup><span id="quote-bill">15</span><small>a month</small></p>
             <p class="why" id="quote-note" role="status" aria-live="polite">1 TB kept all month: $15.00 this month. Our maximum: $15.00. A usual 1 TB plan: $15.00.</p>
@@ -2077,7 +2077,7 @@ details p {
               <li data-band="flat" class="on"><span>750 GB to 1 TB</span><span>$15, flat</span></li>
               <li data-band="slope"><span>Past 1 TB</span><span>never more than $15 per TB</span></li>
             </ul>
-            <noscript><p class="form-note">Without JavaScript, <button type="submit">See the bill</button> returns the same numbers as JSON from /api/quote.</p></noscript>
+            <noscript><p class="form-note">Without JavaScript, <button type="submit" class="btn btn-primary">See the bill</button> returns the same numbers as JSON from /api/quote.</p></noscript>
           </form>
           <div class="calc-r" id="usual-plans">
             <div>
@@ -2202,9 +2202,9 @@ details p {
               <label class="field-label" for="email">Email</label>
               <div class="field-row">
                 <input id="email" name="email" type="email" required
-                       placeholder="you@example.com" autocomplete="email" spellcheck="false">
+                       placeholder="you@example.com" autocomplete="email" spellcheck="false" class="field">
                 <input type="hidden" name="source" value="pricing-page">
-                <button type="submit">Send</button>
+                <button type="submit" class="btn btn-primary">Send</button>
               </div>
               <p class="form-note">The drive is not open yet. Sign-ups on the pricing page go to a waitlist.</p>
               <p class="form-note">We use this address to send one email when sign-in opens. Send means you agree to that email. Read the <a href="/privacy">privacy policy</a>.</p>

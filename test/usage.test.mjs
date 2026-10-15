@@ -1179,7 +1179,10 @@ test("the cap is a control, not a readout, and it saves through the api", async 
   // The slider ships usable: the signed-out state is what disables it, which
   // is the gate (drive#73) rather than a not-yet-implemented placeholder.
   assert.doesNotMatch(page.slice(page.indexOf("<body>")), /id="cap-slider"[^>]*disabled/);
-  assert.match(page, /<button type="button" id="cap-save" hidden>Save cap<\/button>/);
+  assert.match(
+    page,
+    /<button type="button" id="cap-save" hidden class="btn btn-primary">Save cap<\/button>/,
+  );
   assert.match(page, /capAmount\.addEventListener\("input"/);
   assert.match(page, /capSaveEl\.addEventListener\("click"/);
   // The write: the same body `drive cap` sends, and the answer's own sentence
@@ -1246,17 +1249,9 @@ test("the pages' mastheads read as one navigation", () => {
   ];
   // The link each page marks as the one the reader is on.
   const CURRENT = new Map([
-    ["usage.html", /<a href="\/usage" aria-current="page">Usage<\/a>/],
     ["get-started.html", /<a href="\/get-started" aria-current="page">Get started<\/a>/],
-    ["files.html", /<a href="\/files" aria-current="page">Your files<\/a>/],
-    ["devices.html", /<a href="\/devices" aria-current="page">Devices<\/a>/],
   ]);
-  for (const [name, html] of [
-    ["usage.html", page],
-    ["get-started.html", getStartedPage],
-    ["files.html", filesPage],
-    ["devices.html", devicesPage],
-  ]) {
+  for (const [name, html] of [["get-started.html", getStartedPage]]) {
     // The header's own links, and not the page's: a link elsewhere must not
     // satisfy this gate, and must not fail it either. The header is the markup
     // between its open and close tags, the same slice test/pricing-copy.test.mjs
@@ -1301,6 +1296,21 @@ test("the pages' mastheads read as one navigation", () => {
       /name="step" value="signout-all"/,
       `${name}'s form posts sign-out everywhere`,
     );
+  }
+  for (const [name, html] of [
+    ["usage.html", page],
+    ["files.html", filesPage],
+    ["devices.html", devicesPage],
+  ]) {
+    assert.match(html, /<nav class="app-side" aria-label="Main">/, `${name} carries the sidebar`);
+    assert.match(html, /id="nav-signin">Sign in<\/a>/, `${name} keeps Sign in as the default`);
+    assert.match(
+      html,
+      /id="nav-signout" hidden>/,
+      `${name} carries Sign out, hidden until signed in`,
+    );
+    assert.match(html, /id="nav-signout-all" hidden>/, `${name} carries Sign out everywhere`);
+    assert.match(html, /<noscript>/, `${name} keeps the Sign out forms for no script`);
   }
   // The posts live in each page's own script. get-started.html is a Vite
   // entry, so its script is src/get-started.js rather than an inline block.

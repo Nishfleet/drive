@@ -89,17 +89,10 @@ label {
   gap: 10px;
 }
 
-input[type="email"],
-input[type="text"] {
+.field-row .field {
   flex: 1 1 260px;
+  width: auto;
   min-width: 0;
-  padding: 11px 12px;
-  border: 1.5px solid var(--ink);
-  border-radius: 999px;
-  background: var(--paper);
-  color: var(--ink);
-  font: inherit;
-  font-size: 16px;
 }
 
 input:focus-visible,
@@ -107,28 +100,6 @@ button:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-
-button {
-  padding: 11px 18px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-size: 16px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-button.primary {
-  background: var(--ink);
-  color: var(--paper-raised);
-}
-
-button:disabled {
-  opacity: 0.55;
-  cursor: default;
 }
 
 .sent h2 {
@@ -204,12 +175,12 @@ button:disabled {
         <label for="email">Email</label>
         <div class="field-row">
           <input id="email" name="email" type="email" required
-                 placeholder="you@example.com" autocomplete="email" spellcheck="false">
-          <button class="primary" id="email-button" type="submit">Email me a link</button>
+                 placeholder="you@example.com" autocomplete="email" spellcheck="false" class="field">
+          <button class="btn btn-primary" id="email-button" type="submit">Email me a link</button>
         </div>
         <p class="hint" id="age-sentence">You must be 18 or older to open an account.</p>
         <label class="hint" for="age">
-          <input id="age" name="age" type="checkbox" value="on" aria-describedby="age-sentence">
+          <input id="age" name="age" type="checkbox" value="on" aria-describedby="age-sentence" class="check">
           I am 18 or older
         </label>
         <p class="hint">We email a link that signs you in. No password to remember.</p>
@@ -222,13 +193,13 @@ button:disabled {
         <p>We sent a sign-in link to <strong id="sent-to"></strong>. Open it on this device.</p>
         <p class="hint">The link is good for 10 minutes and works once. Nothing yet? Look in spam.</p>
         <p>
-          <button type="button" id="sent-again">Send it again</button>
-          <button type="button" id="sent-change">Use a different email</button>
+          <button type="button" id="sent-again" class="btn">Send it again</button>
+          <button type="button" id="sent-change" class="btn">Use a different email</button>
         </p>
       </div>
 
       <p id="access-signin" hidden>
-        <button class="primary" id="access-button" type="button">Continue as <span id="access-email"></span></button>
+        <button class="btn btn-primary" id="access-button" type="button">Continue as <span id="access-email"></span></button>
       </p>
 
       <p class="hint" id="device-note" hidden>Open this link on the computer you ran drive login on, or approve from any device.</p>

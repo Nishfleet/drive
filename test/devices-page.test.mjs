@@ -231,7 +231,10 @@ test("the page speaks plainly and every load failure has a Try again button (hig
   assert.match(page, /<th scope="col">Turn off<\/th>/);
   assert.match(page, /const REVOKE_LABEL = "Turn off"/);
   assert.doesNotMatch(page, /Reload the page to try again/);
-  assert.match(page, /<button type="button" id="devices-retry" hidden>Try again<\/button>/);
+  assert.match(
+    page,
+    /<button type="button" id="devices-retry" hidden class="btn">Try again<\/button>/,
+  );
   // Every call that says the load failed asks for the button.
   const sayings = page
     .split("\n")
