@@ -10,19 +10,6 @@ import (
 	"testing"
 )
 
-// Unit tests for the rclone rc client and the pause state (drive issue #100).
-// The rclone answers these decode are the real ones, measured on this host
-// 2026-10-03 with rclone v1.75.1 against a `rclone serve s3` stand-in:
-// core/bwlimit, vfs/queue and core/stats, with `eta` null when rclone cannot
-// know it and `transferring` absent when nothing is in flight.
-//
-// The client reaches rclone the way the product does — by running the rclone
-// binary (`rclone rc --rc-addr ... METHOD k=v`, fill_run.go rcClient.call) —
-// so a stand-in for the binary is a tiny shim that forwards the same call to
-// the answers below. That keeps the argument vector, the form encoding and
-// rclone's error envelope on the real code path rather than on a hand-written
-// HTTP client the product never uses.
-
 func TestPauseStatePathIsInsideTheConfigDir(t *testing.T) {
 	home := filepath.Join("home", "me")
 	if got := PauseStatePath(home); got != filepath.Join("home", "me", ".config", "drive", "paused") {
@@ -53,8 +40,6 @@ func TestPausedRateRoundTripsThroughTheMarker(t *testing.T) {
 	if Paused(home) {
 		t.Error("Paused is true after ClearPaused")
 	}
-	// Clearing a drive that was never paused is not an error: running
-	// `drive resume` twice must not fail.
 	if err := ClearPaused(home); err != nil {
 		t.Errorf("ClearPaused on an absent marker: %v", err)
 	}
@@ -66,8 +51,6 @@ func TestPausedRateJunkFailsClosed(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// "off" is rclone's full-speed word. A junk marker must not become that
-	// rate on the next mount, or a pause would resume itself.
 	if err := os.WriteFile(path, []byte("off\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -88,10 +71,6 @@ func TestRateIsPausedAcceptsBothSpellings(t *testing.T) {
 	}
 }
 
-// fakeRclone points an rcClient at answers a test chooses. rclone is
-// stateful, so the caller keeps the state the handler mutates, exactly as the
-// stand-in rclone does. The shim is written into the test's own temp
-// directory; nothing is added to the repository.
 func fakeRclone(t *testing.T, handler http.HandlerFunc) *rcClient {
 	t.Helper()
 	srv := httptest.NewServer(handler)
@@ -128,18 +107,11 @@ func fakeRclone(t *testing.T, handler http.HandlerFunc) *rcClient {
 	if err := os.WriteFile(shim, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The address the shim dials is read out of the args the client passes, so
-	// the client is pointed at the test server through the same --rc-addr the
-	// product puts on the mount.
 	return newRCClient(shim, addr, "")
 }
 
 const rcloneVersionJSON = `{"version":"v1.75.1"}`
 
-// withRCVersion answers core/version the way rclone does, then hands every
-// other call to inner. mountRCClient checks core/version before it acts
-// (drive#807), so a stand-in that only implements bwlimit/vfs/stats would
-// fail the identity check.
 func withRCVersion(inner http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "core/version") {
@@ -151,8 +123,6 @@ func withRCVersion(inner http.HandlerFunc) http.HandlerFunc {
 }
 
 func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
-	// mu guards the stand-in's state: it is written on the server's goroutine
-	// and read here once each call returns.
 	var mu sync.Mutex
 	var gotPath, gotBody string
 	seen := func() (string, string) {
@@ -160,9 +130,6 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 		defer mu.Unlock()
 		return gotPath, gotBody
 	}
-	// rclone is stateful: setting a rate, then asking with no argument, answers
-	// the rate now in force. The stand-in keeps the same state, so the test
-	// walks the same path the CLI does.
 	const rateOff = `{"bytesPerSecond":-1,"bytesPerSecondTx":-1,"bytesPerSecondRx":-1,"rate":"off"}`
 	const rate1Ki = `{"bytesPerSecond":-1,"bytesPerSecondTx":1024,"bytesPerSecondRx":-1,"rate":"1Ki:off"}`
 	inForce := rateOff
@@ -176,12 +143,9 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 		gotBody = r.Form.Encode()
 		switch r.Form.Get("rate") {
 		case "bad":
-			// rclone answers a refused call with 200 and an error key,
-			// measured on this host 2026-10-03.
 			_, _ = w.Write([]byte(`{"error": "couldn't parse rate", "input": {}, "path": "core/bwlimit", "status": 400}`))
 			return
 		case "":
-			// No argument: rclone answers the rate in force.
 			_, _ = w.Write([]byte(inForce))
 			return
 		default:
@@ -211,14 +175,12 @@ func TestRCClientDecodesTheMeasuredBwLimit(t *testing.T) {
 	if limit.BytesPerSecondTx != 1024 {
 		t.Errorf("bytesPerSecondTx = %d, want 1024: Tx is the upload half of UP:DOWN", limit.BytesPerSecondTx)
 	}
-	// Resume answers the rate that resumes, and a query answers it back.
 	if err := c.SetBwLimit(ctx, resumeRate); err != nil {
 		t.Fatalf("SetBwLimit(off): %v", err)
 	}
 	if got, err := c.BwLimit(ctx); err != nil || got.Rate != "off" {
 		t.Errorf("after resume rate = %q (err %v), want off", got.Rate, err)
 	}
-	// A refused call is a named failure, never an empty answer.
 	var reply map[string]any
 	if err := c.call(ctx, "core/bwlimit", map[string]string{"rate": "bad"}, &reply); err == nil {
 		t.Error("got no error for rclone's error envelope, want a named failure")
@@ -245,8 +207,6 @@ func TestRCClientSendsFormEncodedParams(t *testing.T) {
 }
 
 func TestRCClientNamesAnUnreachableMount(t *testing.T) {
-	// A client whose shim is not executable runs nothing, so the call fails the
-	// way a mount that never started fails: a named error, not an empty answer.
 	c := newRCClient(filepath.Join(t.TempDir(), "not-there"), "127.0.0.1:1", "")
 	ctx, cancel := rcCtx()
 	defer cancel()
@@ -285,7 +245,6 @@ func TestReadQueueAndReadStatsDecodeTheMeasuredShapes(t *testing.T) {
 	if stats.Transferring[0].Percentage != 7 {
 		t.Errorf("percentage = %d, want 7", stats.Transferring[0].Percentage)
 	}
-	// rclone's null eta is unknown, never zero.
 	if stats.Transferring[0].Eta != nil {
 		t.Errorf("eta decoded to %v, want nil for rclone's null", *stats.Transferring[0].Eta)
 	}
@@ -416,10 +375,6 @@ func TestUploadFileNameWithholdsANameThatWouldBreakTheColumn(t *testing.T) {
 	}
 }
 
-// TestMountPlanCarriesTheRemoteControl proves a freshly written mount starts
-// rclone with its remote control bound to loopback (MountPlan.RCAddr), so pause,
-// resume and the progress lines have a running mount to ask, and no second
-// listener is added.
 func TestMountPlanCarriesTheRemoteControl(t *testing.T) {
 	home := filepath.Join("home", "me")
 	plan := BuildMountPlan("linux", home, "rclone", StorageConfig{Endpoint: "http://127.0.0.1:1", Bucket: "b", Prefix: "u/me"})
@@ -432,8 +387,6 @@ func TestMountPlanCarriesTheRemoteControl(t *testing.T) {
 	if strings.Contains(joined, "--rc-no-auth") {
 		t.Errorf("mount args %q still disable remote-control auth", joined)
 	}
-	// A drive that was never paused mounts at full speed: the plan must not
-	// carry a limit that was never asked for.
 	if strings.Contains(joined, "--bwlimit") {
 		t.Errorf("mount args %q carry a bwlimit for an unpaused drive", joined)
 	}
@@ -455,10 +408,6 @@ func TestPausedMountPlanKeepsTheOverriddenRCAddr(t *testing.T) {
 	}
 }
 
-// TestMountPlanCarriesThePausedRate proves the pause survives a restart of the
-// mount: the rate is on rclone's own command line, so a mount started again
-// after `drive pause` starts already paused and no person has to pause it a
-// second time.
 func TestMountPlanCarriesThePausedRate(t *testing.T) {
 	home := t.TempDir()
 	if err := SetPaused(home); err != nil {
@@ -477,11 +426,6 @@ func TestMountPlanCarriesThePausedRate(t *testing.T) {
 	}
 }
 
-// TestStatusWordsMatchThePageWords pins the CLI's transfer words to the ones
-// the first-run page and the usage page use (core/status.js UPLOAD_LABEL). The
-// page is JavaScript and cannot import the Go, and the Go cannot import the
-// page, so this test is the join between the two copies, the same join
-// TestUploadLabelMatchesThePageWords runs for the queue words.
 func TestStatusWordsMatchThePageWords(t *testing.T) {
 	page, err := os.ReadFile(filepath.Join("..", "..", "core", "status.js"))
 	if err != nil {
@@ -495,11 +439,6 @@ func TestStatusWordsMatchThePageWords(t *testing.T) {
 	}
 }
 
-// TestRunPauseAndResumeWriteTheMarker proves the two commands leave the state
-// the next mount reads, without needing a live rclone in a unit test. Pause is
-// called with no mount (Mounted returns false on a host with no findmnt match),
-// which is the state a person pausing a stopped drive is in, and the marker is
-// still written.
 func TestRunPauseAndResumeWriteTheMarker(t *testing.T) {
 	home := t.TempDir()
 	out := captureStdout(t, func() {
@@ -513,7 +452,6 @@ func TestRunPauseAndResumeWriteTheMarker(t *testing.T) {
 	if !Paused(home) {
 		t.Error("runPause did not leave the paused marker")
 	}
-	// Running it twice is a state, not a failure.
 	if err := runPause([]string{"--home", home}); err != nil {
 		t.Fatalf("second runPause: %v", err)
 	}
@@ -523,7 +461,6 @@ func TestRunPauseAndResumeWriteTheMarker(t *testing.T) {
 	if Paused(home) {
 		t.Error("runResume did not clear the paused marker")
 	}
-	// Resuming something that is not paused is not a failure either.
 	if err := runResume([]string{"--home", home}); err != nil {
 		t.Fatalf("second runResume: %v", err)
 	}
@@ -549,8 +486,6 @@ func TestTransfersLineSaysPausedNotMountedAndRunning(t *testing.T) {
 	if got := transfersLine(home, false); got != "transfers: "+pausedLabel {
 		t.Errorf("transfersLine(paused but not mounted) = %q, want the Paused word", got)
 	}
-	// Mounted with rclone unreachable falls back to the marker, so a pause
-	// that cannot be confirmed still says Paused rather than unknown.
 	t.Setenv("DRIVE_RCLONE", filepath.Join(t.TempDir(), "no-such-rclone"))
 	if got := transfersLine(home, true); got != "transfers: "+pausedLabel {
 		t.Errorf("transfersLine(paused, rclone missing) = %q, want the Paused word", got)
@@ -588,10 +523,6 @@ func TestTransfersLineReadsPausedFromTheLiveRate(t *testing.T) {
 }
 
 func TestTransfersLineNamesALimitedRateInsteadOfGuessing(t *testing.T) {
-	// A rate rclone did not set to off is not a full-speed upload, so the line
-	// names the rate rather than reading as running. The rate comes from rclone
-	// through the mount's remote control; with no rclone reachable the line is
-	// the named unknown, never a guess.
 	home := t.TempDir()
 	t.Setenv("DRIVE_RCLONE", filepath.Join(t.TempDir(), "no-such-rclone"))
 	if got := transfersLine(home, true); !strings.Contains(got, "unknown") {
@@ -623,6 +554,5 @@ func TestFormatRCProgressShowsNamePercentAndTotalLeft(t *testing.T) {
 	}
 }
 
-// ptrFloat is a helper for the eta cases: rclone's eta is a pointer because it
-// answers null when it cannot know.
+// rclone's eta is a pointer because it answers null when it cannot know.
 func ptrFloat(v float64) *float64 { return &v }

@@ -1,13 +1,3 @@
-// Integration test for drive#522's welcome marker: the real migration file
-// under migrations/drive/, applied to a real SQLite database. A mocked binding
-// cannot see the schema, and the whole claim mechanism is a conditional write
-// against a column that only exists once the migration has run.
-//
-// Both directions are proved. WRITE — the claim lands on the row a plain
-// SELECT can find, and the release takes it back off again. READ — a second
-// store over the same database sees the marker's value, which is what stops a
-// second sign-in from sending a second welcome in another isolate.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

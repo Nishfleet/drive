@@ -1,7 +1,3 @@
-// The top-up checkout (drive#586): the request the Worker sends to Dodo, the
-// closed door while the keys are unset, and the refusals. Dodo is a recorder
-// fetch here, so nothing is charged.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DODO_TEST_BASE_URL } from "../core/dodo.js";
@@ -230,4 +226,16 @@ test("the balance answer says paused only while the pause is switched on", async
   const on = await (await handleBalanceRequest(request, ACCOUNT, db)).json();
   assert.equal(on.paused, true);
   assert.equal(on.balance_line, failureMessage("balance-empty"));
+});
+
+test("the balance answer carries a runway line only when the size is known", async () => {
+  const db = await dbWithAccount();
+  const request = new Request(`${ORIGIN}/api/balance`);
+  const none = await (await handleBalanceRequest(request, ACCOUNT, db)).json();
+  assert.equal(none.runway_line, null);
+  // An empty balance has no runway to state, however big the drive is.
+  const empty = await (
+    await handleBalanceRequest(request, ACCOUNT, db, { size30Bytes: 100_000_000_000 })
+  ).json();
+  assert.equal(empty.runway_line, null);
 });

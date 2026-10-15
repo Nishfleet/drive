@@ -1,26 +1,8 @@
-// Integration test for drive#684: the daily arrival digest and the owner's
-// display name. The real migration files under migrations/drive/ are applied
-// to a real SQLite database with the whole schema (DRIVE_SCHEMA_MIGRATIONS), so
-// the new columns are exercised against the schema the routes actually see, not
-// a mock that cannot see columns.
-//
-//   WRITE — three drops through a real upload link queue three arrivals on the
-//   real `pending_uploads` column.
-//   READ  — a second store over the same database sees them, `listPendingDigests`
-//   finds the link, one `sendArrivalDigests` run mails exactly one email that
-//   lists every file, and the second nightly run mails nothing.
-//   OWNER — `accountById` reads the display name off Better Auth's real "user"
-//   table, which is what the info route puts on the page.
-//
-// The columns are additive (expand only): `digest_at` stays nullable and
-// `pending_uploads` carries a DEFAULT, so an INSERT from the previous code
-// keeps working and a rollback of the code leaves the rows in place.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createD1DeviceStore } from "../../core/devices.js";
-import { createMemoryStore } from "../../core/files.js";
+import { createMemoryStore } from "../../core/files-memory.js";
 import { createD1LinkStore, newRequestRecord, sendArrivalDigests } from "../../src/share-store.js";
 import { handleRequestUploadRequest } from "../../src/share-upload.js";
 import { MIGRATION_FILES } from "../d1-sqlite.mjs";

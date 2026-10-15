@@ -1,9 +1,3 @@
-// Integration test for the prepaid balance, part 2 (drive#586): the meter's
-// usage draws, the pause at $0, the "$2 left" email and the auto top-up, on
-// every real migration under migrations/drive/ in a real SQLite database. The
-// provider is a recorder fetch and mail is a fake binding, so nothing is
-// charged or sent.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -15,7 +9,8 @@ import {
   size30Window,
 } from "../../core/billing.js";
 import { createD1DeviceStore } from "../../core/devices.js";
-import { createMemoryStore, handleFilesRequest } from "../../core/files.js";
+import { handleFilesRequest } from "../../core/files-handlers.js";
+import { createMemoryStore } from "../../core/files-memory.js";
 import { createMemoryStore as createKeyStore } from "../../core/keystore.js";
 import {
   appendLedgerEntry,
@@ -26,7 +21,8 @@ import {
   usageKey,
 } from "../../core/ledger.js";
 import { failureMessage } from "../../core/messages.js";
-import { BYTES_PER_GB, MINUTE_MS, recordUsage, size30Through } from "../../core/meter.js";
+import { BYTES_PER_GB, MINUTE_MS } from "../../core/meter.js";
+import { recordUsage, size30Through } from "../../core/meter-usage.js";
 import {
   AUTO_TOPUP_ENDPOINT,
   AUTO_TOPUP_RETRY_MS,

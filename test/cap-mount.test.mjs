@@ -1,19 +1,3 @@
-// Drive#241 done-when: a real capped account goes read-only with no file
-// lost, writes again once the cap is raised, and rclone keeps an upload in
-// its VFS cache while the key is swapped, then sends it once writes resume.
-//
-// The storage is the pinned MinIO stand-in (test/minio-standin.mjs). Keys are
-// minted the way the product mints them: createS3KeyProvider STS sessions,
-// swapped through handleCapRequest on the real D1 store, then written into
-// rclone's config with the session token. The mount is stock rclone with the
-// product's VFS flags. This VPS refuses an unprivileged FUSE mount, so a
-// refused first attempt re-runs inside `unshare -Urm` the same way
-// test/two-mount-sync.test.mjs does.
-//
-//   DRIVE_STANDIN_ENDPOINT / ACCESS_KEY / SECRET_KEY / BUCKET / REGION / PORT
-//   DRIVE_STANDIN_RCLONE    explicit rclone binary
-//   DRIVE_STANDIN_ENGINE    force docker or podman
-
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -30,7 +14,7 @@ import { minutesInMonth } from "../core/billing.js";
 import { dollarsToCapCents, handleCapRequest } from "../core/cap-request.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { bucketForAccount } from "../core/keyprovider.js";
-import { monthStart } from "../core/meter.js";
+import { monthStart } from "../core/meter-usage.js";
 import { createS3Client, provisionBucket } from "../core/s3.js";
 import { createS3KeyProvider } from "../core/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";

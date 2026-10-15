@@ -1,7 +1,6 @@
-// Split out of src/branches-jobs.js (drive#617) to keep it under 800 lines; behaviour is unchanged.
-
 import { PRE_CHARGE_STORAGE_LIMIT_BYTES } from "../core/abuse-guards.js";
-import { scopeStore, validatePath } from "../core/files.js";
+import { validatePath } from "../core/files.js";
+import { scopeStore } from "../core/files-scope.js";
 import { json } from "../core/http.js";
 import { checkedBranchName } from "../core/keyprovider.js";
 import { failureMessage, MAX_OPEN_BRANCHES } from "../core/messages.js";
@@ -97,13 +96,6 @@ export async function createBranch(
   } catch (error) {
     return { error: errorText(error), status: 400 };
   }
-  // Whose key branched this folder (issue #13's third comment: "we already mint
-  // one key per agent, so record the key on each change"). A branch a person
-  // made in the app carries no key, which is recorded as the empty string the
-  // column DEFAULTs to — "changed by a person", not a missing value. The
-  // caller cannot name another account's key: the key id is recorded as a label
-  // for the activity list, and every read of this row is scoped by account_id
-  // in the query itself, never by the value of this column.
   const changedBy = typeof request.changedBy === "string" ? request.changedBy : "";
   if (!snapshots) {
     return { error: failureMessage("storage-down"), status: 500 };
@@ -117,15 +109,6 @@ export async function createBranch(
   }
   const existing = await getBranch(db, snapshots, account, name);
   if (existing && BRANCH_ACTIVE_STATES.includes(existing.state)) {
-    // A copy the queue's retries used up (drive#844). The row is claimed in
-    // `creating`, its message was dead-lettered, and nothing else moves it:
-    // this 409 held the name for good, a caller had no way to say what to do
-    // when its own copy was half done, and the only way out was dropping the
-    // row. Finishing it is the same create the row already carries, started
-    // from the cursor the last batch stopped at, so the files that are left
-    // are copied and nothing is written twice. A different folder stays the
-    // 409 below, because resuming would copy the row's own source rather than
-    // the folder this create asked for.
     if (
       existing.state === "creating" &&
       existing.jobKind === "create" &&
@@ -150,21 +133,12 @@ export async function createBranch(
           progress: { kind: "create", done: existing.jobDone, total: existing.jobTotal },
         };
       }
-      // No queue bound, or the send failed: the batches that are left run
-      // here, which is what this route has always answered with for a job it
-      // cannot hand out.
       return publicJobResult(await runBranchJobToEnd(db, snapshots, store, account, existing.id));
     }
     return { error: failureMessage("branch-exists"), status: 409 };
   }
-  // The 1 TB pre-charge check: branch copies skip the file index, so the store
-  // listing is what counts (drive#553). A charged account is lifted (drive#464).
-  // The open-branch cap is the claim INSERT's WHERE, so a race cannot land 11.
   const listed = await listFiles(store, folderPath);
   const incomingBytes = bytesOf(listed.values());
-  // No row to exclude: this create has no claim yet, so every other queued
-  // row's reservation belongs in the sum, and this folder's own bytes are the
-  // `incomingBytes` being measured here for the first time (drive#801).
   const blocked = await branchCopyBlocked(db, store, account, incomingBytes, NO_RESERVATION_YET);
   if (blocked !== null) {
     return { error: blocked, status: 403 };
@@ -172,21 +146,6 @@ export async function createBranch(
   const branchPrefix = `${BRANCHES_ROOT}/${name}`;
   const createdAt = new Date(now()).toISOString();
   const snapKey = snapshotKey(account, name);
-  // Claim the name before touching the store. The partial unique index on
-  // (account_id, name) over the in-flight states (migrations/drive/0030) then
-  // makes this the one create that may copy into the prefix: two creates of a
-  // name in the same moment can no longer both walk and clear
-  // /.branches/<name>/ and overwrite each other's copies, because the loser
-  // fails this INSERT before it copies anything. The snapshot lands after the
-  // copy, so a row that is claimed but interrupted is closed by the catch
-  // below rather than left open on an empty prefix. The leftover `snapshot`
-  // column is omitted (drive#329) and takes its own `DEFAULT '{}'`.
-  // The cap is the same INSERT's WHERE (branches_account_created_idx, migration 0015),
-  // and the claim carries the byte total the guard just measured in
-  // `reserved_bytes` (migration 0040), so a create queued behind this one is
-  // measured against the bytes this one is about to write. The reservation is
-  // released by the state itself: a row that leaves 'creating' has copied bytes
-  // the store walk can see.
   let claimId;
   try {
     const claimed = await db
@@ -197,16 +156,6 @@ export async function createBranch(
           "SELECT ?1,?2,?3,?4,?5,0,'creating',?6,?7,'create',?9 " +
           "WHERE (SELECT COUNT(*) FROM branches WHERE account_id = ?1 AND state IN " +
           `(${ACTIVE_STATE_LIST})) < ?8` +
-          // The reservation sum rides this same statement, the way the cap's
-          // count already does, so D1 serializes the two: two creates that both
-          // read a stale sum cannot both land a reservation the third create
-          // would then measure against (drive#801 in-run review). The sum is
-          // what the database can measure - the file index and the store walk
-          // are both outside this statement, and the copy job re-checks those
-          // before its first batch.
-          // A first charge lifts the limit (drive#464), inside the statement as
-          // well as outside it, or a charged account's claim would still be
-          // refused by a rule it has paid to be free of.
           " AND ((SELECT first_charged_at FROM accounts WHERE id = ?1) IS NOT NULL" +
           " OR (SELECT COALESCE(SUM(reserved_bytes), 0) FROM branches " +
           "WHERE account_id = ?1 AND state = 'creating') + " +
@@ -230,11 +179,6 @@ export async function createBranch(
       return { error: failureMessage("unexpected"), status: 500 };
     }
     if (claimed.meta.changes === 0) {
-      // The statement's WHERE now refuses on the cap OR on the byte limit, so
-      // zero changed rows does not say which. The refusal is read back from the
-      // same live state rather than guessed, because the two answer different
-      // sentences: the cap is a 409 about branches, the limit a 403 about
-      // storage (drive#801 in-run review).
       const atCap = (await accountActiveBranchCount(db, account.id)) >= MAX_OPEN_BRANCHES;
       if (!atCap) {
         const reraced = await branchCopyBlocked(
@@ -253,10 +197,6 @@ export async function createBranch(
       return { error: failureMessage("unexpected"), status: 500 };
     }
   } catch (error) {
-    // The open-name index refused a second branch of a name that is already
-    // open (a concurrent create that won, or one this process did not see).
-    // Re-read to tell that race (409) from a real database failure (500); the
-    // INSERT is the only write that can report either.
     const oversize = /too (big|large)|string or blob/i.test(errorText(error));
     console.error?.(`branch claim failed for ${account.id}/${name}: ${errorText(error)}`);
     if (oversize) {
@@ -268,12 +208,6 @@ export async function createBranch(
     }
     return { error: failureMessage("unexpected"), status: 500 };
   }
-  // Only this row's id is the claim; a later open branch of the same name is
-  // a different row and these writes must not move it. The close reports
-  // whether it landed, because a claim that stays open is not a cosmetic
-  // problem: the open-name index then answers 409 to every later branch of
-  // that name, so the caller hears about the failure instead of a clean answer
-  // over a leaked claim (`drive discard <name>` is what clears it).
   const abandonClaim = async () => {
     const attempt = async () => {
       try {
@@ -294,18 +228,9 @@ export async function createBranch(
     }
     return await attempt();
   };
-  // The frozen marker only means anything while a copy runs. Every path that
-  // gives the claim up — a listing that failed, an enqueue that failed, a run
-  // that threw or reported an error — takes it with, so a marker never outlives
-  // the claim it froze for: it would otherwise sit in KV pointing at a snapshot
-  // a later row of the same name now owns, and that row's copy would skip
-  // whatever the source gained before it ran.
   const dropFrozenMarker = async () => {
     try {
       await clearScratch(snapshots, frozenSnapshotKey(snapKey));
-      // The windows are the size of the whole listing, so a claim that gave up
-      // takes them with it rather than leaving a second copy of every
-      // fingerprint it measured in the namespace (drive#842).
       await clearFrozenListing(snapshots, snapKey);
     } catch (error) {
       console.error?.(
@@ -313,15 +238,6 @@ export async function createBranch(
       );
     }
   };
-  // Freeze what the copy will write, before the claim is handed out (drive#802).
-  // The copy itself is queued and runs later (drive#563), and between these two
-  // moments the source folder can grow: a copy that walks the source as it is
-  // then writes files the claim never measured, so a branch lands bytes nothing
-  // reserved. The listing taken here is the branch's snapshot — the source's
-  // paths, sizes and fingerprints as of this instant — stored under the pointer
-  // the row already carries, so the row names what it reserved without a second
-  // column. The create job copies exactly this list, so a folder that grows
-  // after the claim is simply not in the branch until the next one.
   try {
     const frozen = fingerprintMapToObject(listed);
     const saved = await saveSnapshot(db, claimId, frozen, snapshots, snapKey);
@@ -331,16 +247,7 @@ export async function createBranch(
       }
       return { error: failureMessage("unexpected"), status: 500 };
     }
-    // The same listing, split into one window per copy batch (drive#842). A
-    // batch reads only its own window, so copying a branch never reads the whole
-    // listing twice: without the windows every one of the 1,250 batches of a
-    // 100,000-file branch would read the ~11 MiB snapshot the claim just wrote.
-    // They are written under the claim's own key and swept when the copy ends.
     await writeFrozenWindows(snapshots, snapKey, frozen);
-    // Marked after the snapshot lands, never before: a marker whose listing
-    // failed to write would send the copy after bytes the claim never measured,
-    // which is the leak this issue closes. A claim that fails here abandons, so
-    // no row is ever left claimed with a frozen listing nobody copies.
     await snapshots.put(frozenSnapshotKey(snapKey), JSON.stringify({ frozen: true }));
   } catch (error) {
     console.error?.(`branch listing failed for ${account.id}/${name}: ${errorText(error)}`);
@@ -500,11 +407,6 @@ export async function approveBranch(db, snapshots, store, account, name, queue =
     return { error: failureMessage("branch-not-open"), status: 409 };
   }
   if ((await readSnapshotObject(snapshots, branch.snapshotKey)) === null) {
-    // drive#329: the snapshot has one source. An empty pointer, a missing KV
-    // value, or JSON that is not an object would make every copy file look
-    // added. Refuse before anything is copied. `unexpected` is the closest
-    // word in core/messages.js: this is a programmer/data fault, not
-    // storage-down (the namespace is bound) and not branch-not-found.
     console.error?.(`approve refused unavailable snapshot for row ${branch.id}`);
     return { error: failureMessage("unexpected"), status: 500 };
   }
@@ -565,16 +467,6 @@ export async function discardBranch(db, snapshots, store, account, name, options
   if (branch.state === "approving") {
     return { error: failureMessage("branch-not-open"), status: 409 };
   }
-  // A row the queue's retries left claimed by a removal, finished by this
-  // call rather than refused (drive#844). It is the row's own job, picked up
-  // from the cursor the lost batch stopped at, so a second call continues the
-  // removal instead of listing the prefix again from the top. A cancel of a
-  // stuck rewind is the same door: what a discard does and what the stuck
-  // rewind started are one removal on one prefix - this branch's own copies -
-  // and both kinds close the row `discarded`, so the name comes back either
-  // way. A rewind does not take another job's row through this door: a rewind that
-  // is already running is finished before this point, and the rewind route's
-  // own state check refuses every other state (drive#844).
   const finishesClaimedRemoval =
     (branch.state === jobState && branch.jobKind === jobKind) ||
     (jobKind === "discard" && branch.state === "rewinding" && branch.jobKind === "rewind");
@@ -616,16 +508,6 @@ export async function discardBranch(db, snapshots, store, account, name, options
   return publicJobResult(await runBranchJobToEnd(db, snapshots, store, account, branch.id));
 }
 
-// ---------------------------------------------------------------- the route
-
-// The /api/branches* handlers. The account gate is in front of it
-// (src/index.js): no account is a 401 with no data, before the store or the
-// database is touched. The routes are:
-//   GET    /api/branches              list this account's branches
-//   POST   /api/branches              {folder, name} — make a branch
-//   GET    /api/branches/<name>       the branch's diff
-//   POST   /api/branches/<name>/approve   copy it back
-//   POST   /api/branches/<name>/discard   throw it away
 /**
  * @param {Request} request
  * @param {unknown} db
@@ -644,9 +526,6 @@ export async function handleBranchesRequest(request, db, snapshots, store, accou
     return json({ error: failureMessage("unexpected") }, 503);
   }
   if (!snapshots) {
-    // The snapshot is the whole of a branch's diff and there is no second
-    // source for it any more, so this is the same "a dependency the drive
-    // cannot serve without" answer the 503 above is, not an empty branch list.
     console.error?.("branches: BRANCH_SNAPSHOTS is not bound");
     return json({ error: failureMessage("storage-down") }, 503);
   }
@@ -701,14 +580,9 @@ export async function handleBranchesRequest(request, db, snapshots, store, accou
       allow: "GET, POST",
     });
   }
-  // A branch name is decoded here where a malformed escape is a 400 rather
-  // than an uncaught URIError (the same rule the api Worker's router follows,
-  // docs/api.md).
   let name;
   const tail = rest.replace(/^\//, "");
   const [rawName, action, ...extra] = tail.split("/");
-  // A third segment is a URL this route family does not have (an approve is
-  // /api/branches/<name>/approve), never a way to act anyway.
   if (extra.length > 0) {
     return json({ error: failureMessage("branch-path-unknown") }, 404);
   }
@@ -725,11 +599,6 @@ export async function handleBranchesRequest(request, db, snapshots, store, accou
     if (!branch) {
       return json({ error: failureMessage("branch-not-found") }, 404);
     }
-    // A closed branch has had its copies applied back (approve) or removed
-    // (discard), so diffing its now-empty prefix against the snapshot would
-    // report every file as removed — a wrong answer where the honest one is
-    // that there is nothing pending. Open branches diff as before; the state
-    // is always in the answer so the caller can tell.
     const diff =
       branch.state === "open"
         ? await diffBranch(scoped, branch)

@@ -1,22 +1,9 @@
-// Integration test for the Dodo push schema (drive issue #51): the real
-// migration files under migrations/drive/, applied to a real SQLite database,
-// with the push's statements run against it and the rows read back out.
-//
-// A unit-test fake can only assert the JSON the ingest call sends; it cannot
-// see the schema. This file applies every migration in the drive database's
-// directory verbatim and proves both directions of billing_pushes:
-//   WRITE - a successful ingest lands a row a plain SELECT can find;
-//   READ  - a retried hour finds that row and does not insert a second one.
-//
-// Every assertion below reads the rows back with plain node:sqlite, off the
-// adapter the push was handed, so a row the adapter remembered and the schema
-// never got could not pass.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { billingEventId, pushBillingHours } from "../../core/dodo.js";
-import { BYTES_PER_GB, MINUTE_MS, recordUsage } from "../../core/meter.js";
+import { BYTES_PER_GB, MINUTE_MS } from "../../core/meter.js";
+import { recordUsage } from "../../core/meter-usage.js";
 import { MIGRATION_FILES, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 const HOUR_MS = 60 * MINUTE_MS;

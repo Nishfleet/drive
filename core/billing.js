@@ -1,69 +1,15 @@
-// The month's money, worked out in one place (drive issues #7 and #53, build
-// step 6).
-//
-// Plain data and pure functions: no Worker, no D1, no clock. The api Worker
-// reads size30 and calls these; the usage page and `drive usage` / `drive cap`
-// read the same numbers, so the invoice, the page and the CLI cannot disagree.
-// The one fetch handler at the bottom serves GET /api/usage with the standard
-// Response, which node --test provides.
-//
-// The rule (drive#642, Nish 2026-10-05: pay for the biggest size in 30 days):
-//
-//     size30_GB    = the largest stored size in the trailing 30 days
-//     storage      = min(rate x size30_GB, maxPerTb x max(1, size30_GB / 1000))
-//                    rate 2¢/GB-month, maxPerTb $15, the same for everyone
-//     downloads    = 1¢/GB above 3x size30
-//     monthly_bill = storage + downloads
-//     daily_draw   = monthly_bill / 30, remainder carried in millicents
-//
-// So you pay 2¢ per GB until the bill reaches $15 (at 750 GB), a flat $15 from
-// there to 1 TB, and above 1 TB never more than $15 for each TB, prorated to
-// the GB (1.5 TB is $22.50, 4 TB is $60). A file uploaded and deleted the next
-// day still sets size30 for 30 days. An empty drive that was empty for 30 days
-// pays nothing.
-//
-// monthBillCents() is the one function that returns this bill, in integer
-// millicents (and whole cents for the cent fields), so the invoice, the usage
-// page and the cap all read the same number. The numbers come from
-// core/pricing.js (PRICE), the one price source.
-//
-// The cap line (`drive status`'s cap, and the usage response's `capLine`) is
-// in this file too, because it is the money's words: it reads the same
-// capStatus() number the CLI and the page do, and it takes its capped-drive
-// sentence from the one message table (core/messages.js) rather than carrying a
-// second copy of it.
-//
-// The finished labels `usageSummary()` carries are formatted here for the same
-// reason: one place formats each number, so the usage page and `drive usage`
-// cannot print the same money two different ways.
-
 import { DEFAULT_CAP_USD } from "./cap-default.js";
-// The price's numbers come from core/pricing.js, the one price source: the
-// metered rate and the maximum per TB are declared there
-// once, so this file's arithmetic and the page's copy cannot disagree. What is
-// added here is operational: the default cap and the download allowance.
 import { PAYMENT_FEE_BPS, PRICE, usualPlanMonthlyUsd } from "./pricing.js";
 import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
 
 export { BYTES_PER_GB, MINUTE_MS };
 
-// The month's average divides by the minutes in that UTC calendar month
-// (drive#531): 40,320 for a 28-day February up to 44,640 for a 31-day month.
-// A fixed 43,800-minute "average month" read 1 TB held all of October as
-// 1.019 TB, which broke "never more than $10 per TB" (the maximum then; it is $15 now). So
-// there is no month constant: every function below takes the month's length
-// as input, and minutesInMonth() is the one place it is worked out.
 const VALID_MONTH_MINUTES = Object.freeze([28, 29, 30, 31].map((days) => days * 1440));
-// Exported so a docs example and an invoice example cannot disagree about
-// what a TB is.
 export const GB_PER_TB = 1000;
 export const BYTES_PER_TB = GB_PER_TB * BYTES_PER_GB;
 
-/** 1/1000 of a cent: 10 MB a month is 20 millicents ($0.0002). */
 export const MILLICENTS_PER_CENT = 1000;
-/** Trailing window and the daily divisor: monthly millicents / 30. */
 export const DRAW_DAYS = 30;
-/** Trailing 30 days in milliseconds, the size30 window. */
 export const SIZE30_MS = DRAW_DAYS * 24 * 60 * 60 * 1000;
 
 /**
@@ -74,19 +20,10 @@ export const SIZE30_MS = DRAW_DAYS * 24 * 60 * 60 * 1000;
  */
 export function billingConfigFor(price) {
   return Object.freeze({
-    // From the one price source: the metered rate, in dollars per GB-month,
-    // billed on the biggest size in the last 30 days.
     rateUsdPerGbMonth: price.rateUsdPerGbMonth,
-    // The maximum: maxUsdPerTb for each TB of size30, never less than one TB's
-    // worth. One config value (drive#642).
     maxUsdPerTb: price.maxUsdPerTb,
-    // Kept for the card-less write cap until every account has a card (#387).
     freeMonthlyUsd: price.freeMonthlyUsd,
-    // The default spending cap (drive#464), from core/cap-default.js. The
-    // customer's own guardrail, not the price maximum: the cap counts
-    // min(metered so far, maximum), so it cannot pass what the invoice will be.
     defaultCapUsd: DEFAULT_CAP_USD,
-    // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
     freeDownloadMultiplier: 3,
     downloadRateUsdPerGb: 0.01,
   });
@@ -121,34 +58,15 @@ export function billingConfig(config) {
   return /** @type {BillingConfig} */ (config);
 }
 
-// The usage read's route (drive issue #53): the one path the api Worker routes
-// to handleUsageRequest. Exported so index.js, the page and the tests cannot
-// each spell it their own way.
 export const USAGE_ENDPOINT = "/api/usage";
 
-// The one size a "you saved" line may be quoted at or above: a usual plan
-// charges the same $15 a TB our maximum does from 1 TB up, so a cheaper-than
-// comparison is false from there. Declared from PRICE.usualPlan.includedTb
-// rather than typed, so a plan that moves the included size moves this floor
-// with it (drive#642).
 const USUAL_PLAN_TB = PRICE.usualPlan.includedTb;
 
-// The public savings calculator (drive issue #14): a size in, this month's
-// bill, our maximum and the usual 1 TB plan out. Public on purpose — it quotes
-// the price, not an account — and monthBillCents() is the only arithmetic, so
-// the page cannot drift from the invoice.
 export const QUOTE_ENDPOINT = "/api/quote";
 const QUOTE_MAX_TB = 10000;
 
-// The stored-GB line chart's window (build-spec.md "Screens", Usage: "stored
-// GB (line chart, last 30 days)"). The summary keeps at most this many days,
-// oldest first, and the page's chart heading counts the same number.
 export const USAGE_HISTORY_DAYS = 30;
 
-// The "you saved" sentences (drive#463: against the maximum and against the
-// usual 1 TB plan), as templates, so the copy has one source: savedLine fills
-// {amount} from the computed saving, and the usage page renders the finished
-// sentence from the endpoint instead of carrying its own money copy.
 export const SAVED_COPY = Object.freeze({
   capped: "Our maximum saved you {amount}.",
   uncapped: "You saved {amount} against our maximum.",
@@ -320,9 +238,6 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
   }
   const bill = monthlyBillForStoredTb(size, config);
   const planUsd = usualPlanMonthlyUsd(size);
-  // drive#642: no saving is quoted for 1 TB and above. The usual plan is $15
-  // for 1 TB and $6 for each extra 500 GB, so at $15 a TB we are dearer than a
-  // plan from 1.5 TB up; a saving there is a cheaper-than claim that is false.
   const savedUsd = savingAllowed(size30BytesFromTb(size))
     ? Math.max(0, Math.round((planUsd - bill.billUsd) * 100) / 100)
     : 0;
@@ -341,10 +256,6 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
   });
 }
 
-// Fields the bill no longer reads (drive#642). A caller still passing one is
-// on the old per-minute average rule, so it is refused rather than silently
-// ignored. gbMinutes/monthMinutes were the average; peakGb/peakBytes were
-// already retired by #463; the membership's first-month discount is gone.
 const RETIRED_MONTH_FIELDS = Object.freeze([
   "gbMinutes",
   "monthMinutes",
@@ -354,9 +265,6 @@ const RETIRED_MONTH_FIELDS = Object.freeze([
   "monthNumber",
   "averageStoredGb",
 ]);
-// Founding pricing is gone (drive#586, Nish 2026-10-05): everyone pays the one
-// rate. A caller still passing a founding field is refused, never ignored, so
-// nothing can believe it is halving a bill that is no longer halved.
 const FOUNDING_MONTH_FIELDS = Object.freeze([
   "foundingMember",
   "payingAccountNumber",
@@ -606,9 +514,6 @@ export function monthBillCents(month) {
   if (!Number.isSafeInteger(downloadBytes)) {
     throw new TypeError(`month.downloadBytes must be 0 or more whole bytes, got ${downloadBytes}`);
   }
-  // An empty or missing size30 has no free-download allowance, so any download
-  // would be billed in full. Refuse it: a bill is never guessed from a window
-  // that read as empty while transfer bytes exist (drive#642).
   if (downloadBytes > 0 && size30Bytes === 0n) {
     throw new TypeError(
       "month.downloadBytes needs month.size30Bytes above 0: a month with downloads cannot have an empty size30 window",
@@ -754,9 +659,6 @@ export function downloadCostUsd(downloadBytes, averageStoredGb, config = BILLING
  * @returns {string}
  */
 export function formatUsd(usd) {
-  // Two decimals, so $12.80 reads as $12.80 and not $12.8: Nish's 1.6 TB
-  // example is $12.80, so the cents always show. A non-finite value is a
-  // broken config, not a price, and fails here instead of printing $NaN.
   if (!Number.isFinite(usd)) {
     throw new TypeError(`formatUsd needs a finite number, got ${String(usd)}`);
   }

@@ -1,18 +1,9 @@
-// Integration test for the reindex staging table (drive#566): the real
-// migration files under migrations/drive/, applied to a real SQLite database.
-// A mocked binding cannot see the schema. This proves both directions of the
-// new table:
-//   WRITE — a rebuild fills file_index_staging, then one batch swaps it into
-//           file_index;
-//   READ  — a walk that throws before the swap leaves the previous live rows
-//           searchable, which is the crash the staging table exists to survive.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { eventIndexStatement } from "../../core/file-index.js";
-import { createMemoryStore } from "../../core/files.js";
-import { recordEvent, validateEvent } from "../../core/meter.js";
+import { createMemoryStore } from "../../core/files-memory.js";
+import { recordEvent, validateEvent } from "../../core/meter-events.js";
 import { reconcileIndex, searchDrive } from "../../src/search.js";
 import { MIGRATION_FILES, makeMeteredDB } from "../d1-sqlite.mjs";
 

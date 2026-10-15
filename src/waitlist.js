@@ -1,6 +1,3 @@
-// Waitlist sign-up: validation and D1 access, kept free of Worker-only imports
-// so node --test can exercise every branch without a running runtime.
-
 import isEmail from "validator/lib/isEmail.js";
 import { isSameOriginRequest } from "../core/email-send.js";
 import { BodyTooLargeError, json, readLimitedBody } from "../core/http.js";
@@ -87,8 +84,6 @@ export async function recordSignup(db, signup) {
     .bind(signup.email)
     .first();
   if (!existing) {
-    // The conflict fired but the row is gone: concurrent delete, or a schema
-    // that does not match. Fail loud rather than pretend the sign-up landed.
     throw new Error(`waitlist insert reported a conflict for ${signup.email} but no row exists`);
   }
   return { already: true, row: row(existing) };
@@ -108,9 +103,6 @@ async function readSignupRequest(request) {
       return { error: "The request body is not valid JSON." };
     }
   }
-  // The no-JavaScript form post lands here. The cast only says what the
-  // runtime already accepts: a Uint8Array is a valid Response body, and the
-  // DOM lib's BodyInit is written against a non-shared ArrayBuffer.
   const form = await new Response(/** @type {BodyInit} */ (bytes), {
     headers: { "content-type": contentType },
   }).formData();
@@ -135,19 +127,9 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
   }
 
   if (!isSameOriginRequest(request)) {
-    // Checked before the limiter: a cross-site POST is rejected without
-    // reading a body or touching D1, so it does no work and must not spend
-    // the caller's quota (drive#28 review).
     return json({ error: "Sign-ups are only accepted from the drive page." }, 403);
   }
 
-  // Rate limit next: it bounds the work that actually costs something (a body
-  // parse and a D1 write), so it runs before both. One shared helper
-  // (core/rate-limit.js) owns the client-IP key, the fail-closed answer and the
-  // 429, so the waitlist, the sign-in route (drive issue #147) and the api
-  // Worker's device routes cannot state two different limits or two different
-  // refusals. Unchanged behaviour: a missing binding, a failed call and a
-  // refusal are exactly the three answers this used to give.
   const limited = await enforceEdgeLimits(
     [
       {
@@ -163,9 +145,6 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
   }
 
   if (!db) {
-    // The binding is missing on this deployment: an operator problem, so it
-    // goes to the log by name and the visitor gets the table's storage-down
-    // words, never a binding name or a stack.
     console.error("waitlist: WAITLIST_DB binding is not configured");
     return json({ error: failureMessage("storage-down") }, 503);
   }
@@ -177,26 +156,18 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
     if (error instanceof BodyTooLargeError) {
       return json({ error: failureMessage("body-too-large") }, 413);
     }
-    // request.formData() or JSON.parse() throws on a malformed body. The
-    // raw parser error is useful in the log and is never shown to the visitor.
     console.error("waitlist: could not read the request body", error);
     return json({ error: failureMessage("unexpected") }, 400);
   }
   if (signup.error) {
     return json({ error: signup.error }, 400);
   }
-  // The guard just proved the accepted shape; the union's other arm is gone,
-  // and this is the one name the write path reads.
   const accepted = /** @type {{email: string, source: string}} */ (signup);
 
   try {
     await recordSignup(db, accepted);
-    // The response is identical whether the address was already on the list
-    // or not — no enumeration oracle, no echo of stored data.
     return json({ ok: true }, 200);
   } catch (error) {
-    // Storage failure is the table's storage-down message with the reason in
-    // the log only: the raw error text never reaches the visitor.
     console.error("waitlist: could not save the signup", error);
     return json({ error: failureMessage("storage-down") }, 503);
   }

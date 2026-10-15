@@ -1,4 +1,6 @@
-import { etagMatches, previewContentType, previewDisposition, scopeStore } from "../core/files.js";
+import { previewContentType, previewDisposition } from "../core/files.js";
+import { etagMatches } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { json, readJsonObject } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
@@ -78,10 +80,6 @@ export async function handleShareRequest(request, files, links, account, options
     return json({ shares: rows });
   }
   if (request.method === "POST") {
-    // The mint route's own edge limit (drive issue #549): a script cannot
-    // spin the token-minting endpoint, on top of the per-account cap below.
-    // The binding is required, so a deployment missing it is the same
-    // fail-closed 503 every other guarded route gives.
     const limited = await enforceEdgeLimits(
       [
         {
@@ -95,15 +93,6 @@ export async function handleShareRequest(request, files, links, account, options
     if (limited) {
       return limited;
     }
-    // The mint's known-bad half reads the list through options.db (drive
-    // issue #826). The GET and LIST branches need no database, but a mint
-    // without one would hash nothing and share anything, so undefined is a
-    // thrown TypeError here, not a silent half-check: null is the deliberate
-    // no-database call, undefined is a bug. The route pins db in
-    // test/share.test.mjs too, but the pin reads src/index.js only, and a
-    // mint served through another wrapper must fail just as loud. The
-    // limiter is answered first, so a request that cannot reach the mint
-    // keeps its 429 even on a half-configured deployment.
     if (options.db === undefined) {
       throw new TypeError(
         "handleShareRequest's mint is missing options.db (a wiring TypeError, not a runtime failure); pass null when a call has no database",
@@ -111,8 +100,6 @@ export async function handleShareRequest(request, files, links, account, options
     }
     const read = await readJsonObject(request);
     if ("error" in read) {
-      // The `if` is the narrowing: the error arm is the only one with a
-      // sentence, and the reader (drive#618) already wrote it.
       return json({ error: read.error }, 400);
     }
     const { body } = read;
@@ -120,9 +107,6 @@ export async function handleShareRequest(request, files, links, account, options
     if (checked.error) {
       return json({ error: checked.error }, 400);
     }
-    // The per-account cap (drive issue #549): 50 open share links. The check
-    // is at mint time, so a script cannot walk the token space by minting
-    // links it never uses. An owner at the cap revokes one to make room.
     if ((await store.countOpen(account.id, now)) >= MAX_OPEN_LINKS) {
       return json({ error: failureMessage("too-many-links") }, 403);
     }
@@ -130,39 +114,19 @@ export async function handleShareRequest(request, files, links, account, options
     try {
       object = await scoped.read(checked.path);
     } catch (cause) {
-      // The store's own message never reaches the caller: a failure that is
-      // not "the file is gone" is the table's generic words, and the cause is
-      // the thing the log keeps. A share route is anonymous, so its error
-      // text is read by strangers.
       return serverFailure(`minting a share: ${String(cause)}`);
     }
     if (!object) {
       return json({ error: failureMessage("file-not-found") }, 404);
     }
-    // Hashing copies the body into this isolate. A file larger than the
-    // public-upload cap (the size this Worker already buffers on a drop)
-    // is still pinned by etag; the stream is cancelled so a multi-GB
-    // object is not pulled in to be hashed.
     const tooLarge = Number.isFinite(object.size) && object.size > REQUEST_FILE_MAX_BYTES;
     if (tooLarge) {
-      // The bytes are never read, so there is no hash to check and no
-      // signature to run the body through. The etag is what pins the version
-      // the link serves, so a file this large stays pinned exactly as before;
-      // the known-bad check covers the bodies a mint does read. See the pin
-      // in test/share.test.mjs, which proves all three: the body cancelled,
-      // the hash skipped, the etag stored.
       if (object.body) {
         await object.body.cancel();
       }
     } else if (object.body && (await isMalwareBody(options.db, object.body))) {
-      // The known-bad refusal also tells the owner (drive issue #826): the
-      // file is already on a stock public list, so the account that tried to
-      // share it is the one thing a notification can act on.
       const ownerEmail = typeof account.email === "string" ? account.email : "";
       if (ownerEmail === "") {
-        // The same loud line the drop half logs (src/share.js's upload
-        // refusal): a mint that cannot notify otherwise notifies nobody,
-        // and a silenced mint is as invisible as a silenced drop.
         console.error(
           `drive share: no owner address to notify for a refused mint of ${checked.path}`,
         );
@@ -200,8 +164,6 @@ export async function handleShareRequest(request, files, links, account, options
   if (request.method === "DELETE") {
     const read = await readJsonObject(request);
     if ("error" in read) {
-      // The `if` is the narrowing: the error arm is the only one with a
-      // sentence, and the reader (drive#618) already wrote it.
       return json({ error: read.error }, 400);
     }
     const { body } = read;
@@ -258,8 +220,6 @@ export async function admitShareLink(request, files, links, options = {}) {
   if (record === null || !linkIsOpen(record, now)) {
     return plain(failureMessage("link-not-found"), 404);
   }
-  // The one scoping place: the share row names the owner, so the row is what
-  // the read is scoped to, not whatever the request carried.
   return {
     record,
     token: checked.token,
@@ -331,16 +291,11 @@ export async function handleShareFileRequest(request, files, links, options = {}
   const range = request.headers.get("range");
   const ifNoneMatch = request.headers.get("if-none-match");
 
-  // A HEAD answer needs the headers, not the bytes (drive#570): storage is
-  // asked with a HEAD, and the whole object is never fetched to be dropped.
   if (request.method === "HEAD") {
     const stat = await liveShareObject(scoped, record);
     if (stat instanceof Response) {
       return stat;
     }
-    // An open is counted, no bytes: the same rule the old HEAD path kept.
-    // A link that has served its byte cap is refused instead (issue #549),
-    // so an open cannot outrun the owner's limit.
     const counted = await links.shares.addDownload(token, 0);
     if (!counted) {
       return plain(failureMessage("download-link-cap"), 429);
@@ -367,8 +322,6 @@ export async function handleShareFileRequest(request, files, links, options = {}
     return plain(failureMessage("share-changed"), 409);
   }
   const status = object.status ?? 200;
-  // The client's own validator, still good: no byte moves, no download is
-  // counted, and the etag rides back so the client keeps its cached copy.
   if (status === 304 || (ifNoneMatch && etagMatches(ifNoneMatch, object.etag))) {
     return new Response(null, {
       status: 304,
@@ -378,20 +331,11 @@ export async function handleShareFileRequest(request, files, links, options = {}
       }),
     });
   }
-  // Count the download the way this route can honestly count it: the bytes
-  // THIS response is about to carry — the whole object on a 200, the one
-  // slice on a 206 (drive#570). A client that stops mid-stream still holds a
-  // working link; the dl Worker's byte rollup (#58) is what measures the
-  // bytes actually served.
   const served = object.contentLength ?? object.size;
   const counted = await links.shares.addDownload(token, served);
   if (!counted) {
-    // The reservation and the cap are the same statement (issue #549), so a
-    // full link refuses here instead of serving more bytes it cannot count.
     return plain(failureMessage("download-link-cap"), 429);
   }
-  // The bytes leave our storage on the owner's behalf, so they go on the
-  // owner's month (drive#517), the same total the dl Worker adds to.
   if (options.recordDownload) {
     await options.recordDownload(record.accountId, served);
   }
@@ -437,10 +381,6 @@ function shareHeaders(path, contentType, extra = {}) {
     "cache-control": "private, no-store",
     "x-content-type-options": "nosniff",
     "content-security-policy": "sandbox",
-    // The token is in the URL, so a page opened from a link must not hand
-    // the address bar's contents to whatever it loads next: no-referrer is
-    // the one header that keeps a capability URL from leaking sideways
-    // through Referer.
     "referrer-policy": "no-referrer",
     "accept-ranges": "bytes",
   };
@@ -452,8 +392,7 @@ function shareHeaders(path, contentType, extra = {}) {
       headers["content-range"] = extra.contentRange;
     }
   }
-  // The etag rides on every answer, the 304 included: RFC 9110 says a 304
-  // carries the validators the 200 would have, so the client keeps using it.
+  // RFC 9110: a 304 carries the validators the 200 would have (https://www.rfc-editor.org/rfc/rfc9110#section-15.4.5).
   if (extra.etag) {
     headers.etag = extra.etag;
   }
@@ -492,8 +431,6 @@ export async function handleRequestRequest(request, files, links, account, optio
     return json({ requests: rows });
   }
   if (request.method === "POST") {
-    // The mint route's own edge limit (drive issue #549): a script cannot
-    // spin the upload-page minting endpoint, on top of the per-account cap.
     const limited = await enforceEdgeLimits(
       [
         {
@@ -509,8 +446,6 @@ export async function handleRequestRequest(request, files, links, account, optio
     }
     const read = await readJsonObject(request);
     if ("error" in read) {
-      // The `if` is the narrowing: the error arm is the only one with a
-      // sentence, and the reader (drive#618) already wrote it.
       return json({ error: read.error }, 400);
     }
     const { body } = read;
@@ -522,7 +457,6 @@ export async function handleRequestRequest(request, files, links, account, optio
     if (sized.error) {
       return json({ error: sized.error }, 400);
     }
-    // The per-account cap (drive issue #549): 50 open upload pages.
     if ((await store.countOpen(account.id, now)) >= MAX_OPEN_LINKS) {
       return json({ error: failureMessage("too-many-links") }, 403);
     }
@@ -556,8 +490,6 @@ export async function handleRequestRequest(request, files, links, account, optio
   if (request.method === "DELETE") {
     const read = await readJsonObject(request);
     if ("error" in read) {
-      // The `if` is the narrowing: the error arm is the only one with a
-      // sentence, and the reader (drive#618) already wrote it.
       return json({ error: read.error }, 400);
     }
     const { body } = read;

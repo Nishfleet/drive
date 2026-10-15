@@ -1,39 +1,15 @@
-// Integration test for the meter's D1 schema (drive issue #6): the real
-// migration files under migrations/drive/, applied to a real SQLite database,
-// with the meter's statements run against it and the rows read back out.
-//
-// A unit-test fake can only assert the SQL the meter sends; it cannot see the
-// schema. This file applies every migration in the drive database's directory
-// verbatim (read from disk, the files that ship) and proves both directions of
-// the new tables:
-//   WRITE - the dedup batch (events_seen + file_versions upsert) and the
-//           rollup upsert land rows a plain SELECT can find;
-//   READ  - the rollup's SELECT finds exactly the versions an hour needs, and
-//           re-running the rollup overwrites rather than duplicates.
-//
-// The D1-shaped adapter is the one test/d1-sqlite.mjs shares with the unit
-// tests: it runs the meter's real SQL on the real schema through node:sqlite,
-// so nothing here re-implements an upsert, a MIN() or a half-open window in
-// JS. Every assertion below reads the rows back with plain node:sqlite
-// statements, independently of the adapter the meter was handed, so a row the
-// adapter remembered and the schema never got could not pass this file.
-// node:sqlite is in the standard library, so the repo needs no new dependency
-// to test its migrations.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { MINUTE_MS, rollupHour } from "../../core/meter.js";
 import {
-  listMeteredAccounts,
-  MINUTE_MS,
-  pruneHiddenVersions,
   recordEvent,
-  recordNightlySizes,
-  rollupHour,
   runMeterCron,
   VERSION_RETENTION_DAYS,
   validateEvent,
-} from "../../core/meter.js";
+} from "../../core/meter-events.js";
+import { pruneHiddenVersions, recordNightlySizes } from "../../core/meter-fair-use.js";
+import { listMeteredAccounts } from "../../core/meter-usage.js";
 import { at, GB, MIGRATION_FILES, makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
 // Migration files and order come from test/d1-sqlite.mjs (`MIGRATION_FILES`),

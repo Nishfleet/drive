@@ -1,21 +1,3 @@
-// The docs, the FAQ, llms.txt, the README and the home page state the same
-// two facts (drive#418). The walkthrough of 2026-10-04 found the README
-// promising "Every save keeps a version" while every docs page said version
-// history is not in version 1, and the pricing page selling a waitlist beside
-// a sign-in that lets anyone in.
-//
-// Two tests, one per way a surface can drift:
-//
-//   1. no surface may promise a feature src/release-state.js rules out —
-//      this is the bullet the issue names, and it is what caught the README;
-//   2. every surface the issue names must state the facts it is about, read
-//      from the BUILT docs pages, so a page that renders but ships the wrong
-//      words fails here rather than in a browser.
-//
-// drive#776 added two more, one per drift the walkthrough found on the same
-// surfaces: a platform the spec left out of v1 offered as an install, and an
-// access path in llms.txt that no command mints a key for.
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";

@@ -1,21 +1,3 @@
-// Drive issue #524: sign-in safety — the second factor (TOTP + passkeys +
-// recovery codes). Tests the REAL better-auth plugin set over the REAL
-// SQLite D1 shim, so the shape this code relies on (the enable call,
-// verifyTOTP/verifyBackupCode, session rotation, and the storage schema)
-// is proven on real records — a mock of the plugin would miss the
-// schema mismatch that the production D1 deployment would hit.
-//
-// Probes:
-//   1. Enrollment: the one-shot recovery codes, encrypted storage, flag.
-//   2. Passkeys: the stock endpoints answer with the expected origin.
-//   3. The armed page shows the second-factor field; the unarmed one
-//      does not — and the second factor holds the approval.
-//   4. Wrong / missing / recovery / correct codes: approve nothing,
-//      approve once, reuse refused.
-//   5. The site worker: CSRF blocks a cross-site post; the mounted
-//      /api/auth/* route is classified public so the account gate passes.
-//   6. Arm has no effect on the email sign-in itself (documented choice).
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AUTH_COOKIE_PREFIX } from "../core/auth.js";

@@ -1,18 +1,3 @@
-// The welcome email, sent once, at account creation (drive issue #522).
-//
-// Four customer templates had no caller at all, so a person could sign up, be
-// charged, hit their cap and never hear from us. The welcome is the one of
-// those that does not wait on a billing decision, so it is the one that ships
-// here; `test/email-callers.test.mjs` is the gate that keeps the other three
-// from silently falling out of the same shape.
-//
-// "Once" is a property of the row, not of this function. The seam this is
-// called from is a sign-in, and people sign in repeatedly, so a module-level
-// "have I sent it" flag would be wrong the moment a second isolate ran. The
-// claim is a single UPDATE that only matches while the column is still NULL,
-// so two concurrent sign-ins cannot both win it — the loser sees no rows
-// changed and sends nothing.
-
 import { sendEmail } from "../core/email-send.js";
 
 /**
@@ -52,15 +37,11 @@ export async function sendWelcomeOnce(input) {
   const claimedAt = Math.floor(input.now / 1000);
   const claimed = await input.devices.claim(account.id, claimedAt);
   if (!claimed) {
-    // Either this account already has its welcome, or a concurrent sign-in
-    // took the claim first. Both are the same answer: send nothing.
     return { sent: false, reason: "already-sent" };
   }
   try {
     await sendEmail(input.email, { to, from: input.mailFrom, kind: "welcome", data: {} });
   } catch (error) {
-    // Give the claim back, so the next sign-in retries rather than treating a
-    // failed welcome as a sent one.
     await input.devices.release(account.id, claimedAt);
     console.error(
       "welcome: the email to account %s failed and will be retried on the next sign-in",
@@ -98,9 +79,6 @@ export function createWelcomeStore(db) {
     if (typeof meta === "object" && meta !== null && "changes" in meta) {
       return Number(meta.changes) > 0;
     }
-    // D1 always answers with meta.changes, but a test double or a future
-    // binding might not. Treating "cannot tell" as "not won" keeps the
-    // failure mode a missing welcome rather than a duplicate one.
     return false;
   }
 

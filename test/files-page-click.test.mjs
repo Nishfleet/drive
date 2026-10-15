@@ -1,16 +1,3 @@
-// The Web Files page in a real browser (drive issue #416). The page's own
-// string gates live in test/files.test.mjs; this file drives the shipped
-// public/files.html in a Chrome the test drives itself, over the real site
-// Worker and a real signed-in session, so the click on a file name is proven
-// rather than read.
-//
-// The bug (new-customer walkthrough, 2026-10-04, item 2): a file's name was a
-// link to the folder listing's URL, and the click handler opened the viewer
-// without stopping the browser following it, so the page navigated away to the
-// listing's raw JSON. The route this proves is three clicks: a text file opens
-// the preview in the viewer, a picture opens in the viewer, and a file with no
-// viewer downloads — and none of the three leaves the page.
-
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -18,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { createMemoryStore, FILES_EMBED_ENDPOINT, FILES_ENDPOINT } from "../core/files.js";
+import { FILES_EMBED_ENDPOINT, FILES_ENDPOINT } from "../core/files.js";
+import { createMemoryStore } from "../core/files-memory.js";
 import worker from "../src/index.js";
 import { TEST_FILES_STORE } from "../src/index-support.js";
 import { SIGNIN_COPY } from "../src/signin.js";

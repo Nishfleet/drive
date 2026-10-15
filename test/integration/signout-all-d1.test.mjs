@@ -1,24 +1,3 @@
-// Sign out of every device, over the real D1 schema (drive#34, slice
-// drive#236, the decision the issue carries).
-//
-// The unit proof (workers/api/test/key-revoke.test.js) runs the route over the
-// in-memory stand-in. Two claims the stand-in cannot make by construction:
-//
-//   1. The store methods are one UPDATE over ROWS, not a loop over a Map, so the
-//      account's rows really go dead for the next request -- and the count the
-//      route would get is the number of rows the statement changed. A bulk
-//      revoke that lost one row and reported 0 would pass a Map-based test
-//      while failing in production.
-//   2. Another account's rows are untouched. Two accounts, each with a key and
-//      a device token, so a filter that was accidentally wider than the account
-//      id would kill both and fail here rather than silently revoking a
-//      customer's credentials.
-//
-// The proof reads the rows back with plain node:sqlite off the same engine the
-// D1 adapter runs on (test/harness.mjs `createTestD1` applies the real
-// migrations/drive/ files), so nothing in this file asserts against the store's
-// own answer.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 

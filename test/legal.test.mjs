@@ -1,16 +1,3 @@
-// The legal and trust pages (drive#523, drive#882): terms, privacy, refunds,
-// acceptable use and support. This file pins what the issue's finish line
-// asks for: the pages ship and are in the sitemap, every footer and the
-// sign-in page link them, the two remaining owner facts (payee name, postal
-// address) stay marked placeholders in one place each, the refund rule and
-// the VAT line are the owner's published defaults, the pages state the real
-// price and the real storage provider, and security.txt points at the
-// support page.
-//
-// drive#584 adds the accessibility and status pages to the same list, plus the
-// three operator runbooks, the site's own 5xx page, and the sub-processor list
-// on the security page. Those are pinned at the end of this file.
-
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -257,7 +244,7 @@ test("the privacy policy names every company that handles data, with the storage
   assert.match(privacy, /bytes stored and bytes transferred/);
   assert.match(privacy, /card fingerprint/);
   assert.match(readRepo("core/devices-rows.js"), /name: String\(r\.name/);
-  assert.match(readRepo("core/meter.js"), /downloadBytes/);
+  assert.match(readRepo("core/meter-usage.js"), /downloadBytes/);
   assert.match(readRepo("core/ledger.js"), /fingerprint/);
 });
 
@@ -346,9 +333,9 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
   /** @type {readonly [runbook: string, source: string, ...symbols: string[]][]} */
   const claims = [
     ["incident.md", "src/health.js", "REQUIRED_BINDINGS"],
-    ["restore.md", "core/files.js", "purgeExpiredTrash"],
+    ["restore.md", "core/files-scope.js", "purgeExpiredTrash"],
     ["restore.md", "core/files.js", "TRASH_PURGE_SCHEDULE"],
-    ["secrets-rotation.md", "core/meter.js", "METER_EVENT_TOKEN"],
+    ["secrets-rotation.md", "core/meter-events.js", "METER_EVENT_TOKEN"],
     ["secrets-rotation.md", "core/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
     ["secrets-rotation.md", "workers/api/cloudflare.config.ts", "IDRIVE_E2_API_TOKEN"],
   ];

@@ -1,11 +1,3 @@
-// Real-schema proof for the account-close columns (drive#235, drive#565).
-//
-// The unit tests in test/account-close.test.mjs exercise the close, cancel
-// and purge paths. This file is the D1 expand/contract gate: the new
-// columns exist because the migrations ran, a WRITE lands on the real
-// table, and a second store instance (the next Worker isolate) READs the
-// same values. A mocked Map would leave these tables empty and fail here.
-
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { test } from "node:test";

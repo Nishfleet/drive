@@ -91,6 +91,7 @@ export default defineConfig({
       { text: "FAQ", link: "/faq" },
       { text: "When something goes wrong", link: "/troubleshooting" },
       { text: "Limits", link: "/limits" },
+      { text: "API reference", link: "/api" },
       { text: "Benchmarks", link: "/benchmarks" },
       { text: "Security", link: "/security" },
       { text: "Changelog", link: "/changelog" },

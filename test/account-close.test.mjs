@@ -1,17 +1,11 @@
-// Account close: keys revoked at once, files after 30 days, mail at day 0
-// and day 25 (drive#235, docs/build-spec.md "Keys and safety"). The person
-// confirms by typing their email and can cancel inside the grace window.
-//
-// Tests cover the stand-in (real SQLite migrations + the in-memory file
-// store). Nothing here talks to production D1.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createD1DeviceStore } from "../core/devices.js";
 import { replyToFor } from "../core/email-send.js";
 import { EMAIL_KINDS, renderEmail } from "../core/emails.js";
-import { createMemoryStore as createFileStore, scopeStore } from "../core/files.js";
+import { createMemoryStore as createFileStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { createMemoryStore as createKeyStore } from "../core/keystore.js";
 import {
   CLOSE_CANCEL_ENDPOINT,

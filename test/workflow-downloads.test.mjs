@@ -1,11 +1,3 @@
-// Every release asset a workflow downloads is checked against a pinned
-// SHA-256 digest before it runs (drive#581). This fails on a workflow step
-// that downloads a file with curl, wget or Invoke-WebRequest and does not
-// compare each download with a pinned *_SHA256 value in that same step, so a
-// new unpinned download cannot reach main unseen.
-// A curl that only reads a status code (`-o /dev/null`) downloads nothing to
-// run, so it is not a download here. docs/security.md lists each pin.
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";

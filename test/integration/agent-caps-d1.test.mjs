@@ -1,22 +1,3 @@
-// The per-agent cap over the real D1 schema (drive issue #171).
-//
-// The pure rule is proved in test/agent-caps.test.mjs and the account cap's own
-// swap in test/integration/cap-store-d1.test.mjs. What neither can prove is the
-// claim that made issue #171: the cap has to sit on the key store the Worker
-// authenticates through, so the request that passes a ceiling is refused on
-// every path. So these tests go through `storageWriteRoute`, which calls
-// `store.authenticate` exactly as the Worker does, over the shipped
-// migrations applied by `makeMeteredDB`, and read every row back with plain
-// node:sqlite statements — a store that answered from a Map would leave these
-// tables empty and fail here.
-//
-// The monthly half reads `usage_minutes`, the meter the invoice is worked out
-// from, so its number is the invoice's. The two columns migration 0004 wrote
-// for a spend ledger (`month_key`, `month_spend_cents`) are dropped by
-// migrations 0017 and 0018 (drive issue #401), which `makeMeteredDB` applies
-// too, so a second ledger cannot even be written beside the meter: the
-// statement that tried fails at SQL, and the column checks in this file name
-// them gone.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";

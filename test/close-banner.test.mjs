@@ -1,27 +1,3 @@
-// The pending-close banner (drive issue #424). While an account is waiting to
-// close, every signed-in page says so on screen: the date the files are
-// deleted, and a Cancel link next to the sentence.
-//
-// Why a shared asset and not five inline scripts. The signed-in pages in
-// public/ are static assets (cloudflare.config.ts), so they load the one file
-// as a module. get-started.html is already a Vite module and the Lighthouse
-// budget allows only one script resource, so that page imports the same file
-// into its bundle. This test fails CI when a signed-in page drops the banner
-// or when the shared script stops reading the endpoint's own words.
-//
-// What the gate proves, in order:
-//   1. The banner's words are the module's (src/account-close.js), and the one
-//      placeholder is the date the endpoint computes, so the page cannot show
-//      a day count worked out in the browser.
-//   2. Every signed-in page carries the banner element and loads the one
-//      shared script — the list is walked the way test/seo.test.mjs walks the
-//      site's pages, so a signed-in page added later fails here until it is in
-//      the set.
-//   3. The shared script is a real, served file: the copy in public/ is what
-//      the pages load by that URL, so a rename that left a 404 fails.
-//   4. The banner's date and cancel link are the endpoint's, rendered from one
-//      payload, and the banner stays hidden for an account that is not closing.
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";

@@ -27,16 +27,11 @@ func configOnlyHome(t *testing.T) string {
 	return home
 }
 
-// testRevoker is the key store stand-in every logout test that has a config
-// file needs, keyed to the pair configOnlyHome writes.
 func testRevoker(t *testing.T, home string) *keyServer {
 	t.Helper()
 	return newKeyServer(t, home, testStorage().AccessKey, testStorage().SecretKey)
 }
 
-// storageWithKey returns a copy of the test storage config carrying a specific
-// access key id and secret, so a test can write a device's config and stand up
-// a key server for that exact pair.
 func storageWithKey(accessKey, secret string) StorageConfig {
 	c := testStorage()
 	c.AccessKey = accessKey
@@ -44,8 +39,6 @@ func storageWithKey(accessKey, secret string) StorageConfig {
 	return c
 }
 
-// writeDeviceKey puts a key pair into a home the way a sign-in would, with the
-// 0600 mode the CLI itself writes.
 func writeDeviceKey(t *testing.T, home, accessKey, secret string) {
 	t.Helper()
 	if err := WriteFileAtomic(RcloneConfigPath(home), []byte(RcloneConfig(storageWithKey(accessKey, secret))), 0o600); err != nil {
@@ -110,8 +103,6 @@ func TestLogoutIsSafeToRunTwice(t *testing.T) {
 	if err := Logout("linux", home, false, nil, ks); err != nil {
 		t.Fatal(err)
 	}
-	// The key is gone, so the second run has nothing to revoke and needs no
-	// server: a nil revoker must not turn "nothing to revoke" into a failure.
 	if err := Logout("linux", home, false, nil, nil); err != nil {
 		t.Fatalf("second logout: %v", err)
 	}
@@ -120,10 +111,6 @@ func TestLogoutIsSafeToRunTwice(t *testing.T) {
 	}
 }
 
-// The headline finding of issue #75: the key must be turned off on the server
-// before the local copy is deleted. The stand-in server records whether the
-// config file still existed when the revoke arrived, which is the ordering
-// proof, not a hope.
 func TestLogoutRevokesTheKeyOnTheServerBeforeDeletingIt(t *testing.T) {
 	home := configOnlyHome(t)
 	ks := testRevoker(t, home)
@@ -142,19 +129,10 @@ func TestLogoutRevokesTheKeyOnTheServerBeforeDeletingIt(t *testing.T) {
 	}
 }
 
-// liveKeyRetry is the next step the key-still-live entry names, so the three
-// logout tests assert one sentence instead of three copies of it. The error a
-// caller reads carries it behind the table's "Next: " prefix and the built
-// binary prints it behind printFailure's lowercase "next: ", so the call
-// sites keep their own prefixes and share the sentence.
-//
-// It reads the table entry, the same way revokeWarning does, so a wording
-// change in one place cannot leave the test asserting a sentence nobody sees.
 var liveKeyRetry = messageTable["key-still-live"][1]
 
 func TestLogoutSaysTheKeyIsStillLiveWhenTheServerIsUnreachable(t *testing.T) {
 	home := configOnlyHome(t)
-	// Port 1 on loopback refuses; the revoke cannot get there.
 	unreachable := &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}
 
 	err := Logout("linux", home, false, nil, unreachable)
@@ -170,20 +148,11 @@ func TestLogoutSaysTheKeyIsStillLiveWhenTheServerIsUnreachable(t *testing.T) {
 	if strings.Contains(err.Error(), testStorage().SecretKey) {
 		t.Errorf("error %q carries the secret", err)
 	}
-	// "keeps nothing secret on disk": the local copy still goes.
 	if _, statErr := os.Stat(RcloneConfigPath(home)); !os.IsNotExist(statErr) {
 		t.Error("the local key must be deleted even when the revoke fails, so nothing secret stays on disk")
 	}
 }
 
-// With no api Worker address anywhere -- no --api, no DRIVE_API_URL and no
-// sign-in that saved one -- logout cannot reach the server to turn the key off.
-// The next step it names is `drive login`, not `--api`: signing in is what
-// writes the address into the credentials file (drive#557), and every later
-// logout reads it from there, so it is the one instruction that leaves the
-// device able to sign itself out again. Before this, the sentence asked for
-// `--api` or DRIVE_API_URL, which is advice a person who signs in normally
-// does not have a way to act on.
 func TestLogoutWithNoAPIConfiguredNamesThatAndStillCleansUp(t *testing.T) {
 	home := configOnlyHome(t)
 
@@ -249,8 +218,6 @@ func TestLogoutAfterExpiredSignInStillRevokesTheStorageKey(t *testing.T) {
 	}
 }
 
-// A malformed config is not a silent "no key": logout must not claim the key
-// is gone when it never learned which key it held.
 func TestLogoutNamesAnUnreadableConfigInsteadOfSkippingTheRevoke(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
@@ -298,8 +265,6 @@ func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(DefaultCacheDir(home), "vfsMeta")); statErr != nil {
 		t.Errorf("the refusal must not delete the queued file: %v", statErr)
 	}
-	// The refusal comes first: a key that stays on disk must not be revoked
-	// server-side, or the person would be locked out when the upload resumes.
 	if got := ks.count(); got != 0 {
 		t.Errorf("revoke attempts = %d, want 0 when logout refuses", got)
 	}
@@ -315,8 +280,6 @@ func TestLogoutRefusesToDeleteAQueueThatHasNotGoneUp(t *testing.T) {
 	}
 }
 
-// The exit code is part of the acceptance: the honest message alone is not
-// enough, the shell must see the failure. This runs the built CLI.
 func TestLogoutBinaryExitsNonZeroWhenTheKeyCannotBeRevoked(t *testing.T) {
 	home := configOnlyHome(t)
 	cmd := exec.Command(driveBin(t), "logout", "--home", home)
@@ -352,16 +315,7 @@ func TestLogoutBinaryExitsZeroWhenTheServerRevokesTheKey(t *testing.T) {
 	}
 }
 
-// TestLogoutStopsALiveMount is the end-to-end proof: a real rclone mount, a
-// file written and uploaded, then `drive logout` — after which the mount is
-// down, the key is revoked on the stand-in key server and the config is gone.
-// Under CI=true a refused FUSE mount is a failure (drive#501). A local -short
-// run still skips it. The worker App cannot add a workflow step, so CI runs
-// this proof inside the go job's -short unit tests.
 func TestLogoutStopsALiveMount(t *testing.T) {
-	// The worker App cannot add a workflow step (drive#392), so this proof
-	// runs in the go job's -short unit tests when CI is set, instead of as its
-	// own named step. A local -short run still skips it, and CI=false is not CI.
 	if testing.Short() && os.Getenv("CI") != "true" {
 		t.Skip("live-mount proof skipped in -short mode")
 	}
@@ -382,9 +336,6 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 		"--auth-key", accessKey+","+secretKey,
 		"--log-level", "INFO")
 
-	// Seed the stand-in so there is something in the drive to read. The seed
-	// runs after the server is up and writes through the rclone config the
-	// CLI wrote, exactly as the mount proof seeds its own.
 	if err := writePatternFile(filepath.Join(dataDir, "seed.bin"), 1<<20); err != nil {
 		t.Fatal(err)
 	}
@@ -409,10 +360,6 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Start the mount in the foreground so there's no login item to manage;
-	// Logout's stopMount will catch and unmount it. The mount uses the default
-	// 5s write-back so a write lands quickly. The keys go to the child through
-	// the environment, never argv (a command line is world-readable in `ps`).
 	cmd := exec.Command(driveBin(t), "mount",
 		"--home", home, "--endpoint", cfg.Endpoint, "--bucket", cfg.Bucket,
 		"--prefix", cfg.Prefix, "--foreground")
@@ -443,10 +390,6 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 			"run the proof in a user namespace: unshare -Urm go test ./cmd/drive -run TestLogoutStopsALiveMount", mountDir)
 	}
 
-	// Write a file and wait out the 5s write-back so the upload lands. The
-	// queue being empty afterwards is what lets `drive logout` refuse
-	// nothing; the proof is that a real, finished upload leaves no Dirty
-	// metadata behind.
 	if err := os.WriteFile(filepath.Join(mountDir, "file.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -457,10 +400,6 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 		t.Fatalf("the upload did not finish inside the write-back: %d file(s) still queued", q.Files)
 	}
 
-	// Now run `drive logout` against the same home, with the key store
-	// stand-in as the revoke endpoint. The mount is a foreground rclone
-	// process with no login item; Unmount will no-op and stopMount will
-	// fusermount it down.
 	ks := newKeyServer(t, home, accessKey, secretKey)
 	if err := Logout("linux", home, false, nil, ks); err != nil {
 		t.Fatalf("logout: %v", err)
@@ -469,7 +408,6 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 		t.Errorf("revoke attempts = %d, want 1: logout must turn the key off on the server", got)
 	}
 
-	// The mount must be down and the config gone.
 	if on, _ := Mounted("linux", home); on {
 		t.Fatal("mount still up after logout")
 	}
@@ -479,13 +417,6 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 	t.Logf("logout revoked the key, stopped the mount and deleted %s", RcloneConfigPath(home))
 }
 
-// The issue's own advice is "run drive logout again when online". This proves
-// what that run does now: it cannot revoke (the secret went with the key), so
-// it must keep saying the key is live and must never print a clean sign-out
-// over it. A later logout that does have a key clears the receipt. The
-// sentence it keeps saying is revokeWarning, which is read straight out of
-// the message table so this test cannot pass on a wording the table no longer
-// carries.
 func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 	home := configOnlyHome(t)
 	unreachable := &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}
@@ -502,7 +433,6 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 		t.Fatalf("a failed revoke must leave a receipt, or the next run cannot know a key is live (ids=%v, err=%v)", ids, err)
 	}
 
-	// The retry, offline or not: no key on this device, so nothing to revoke.
 	err := Logout("linux", home, false, nil, nil)
 	if err == nil {
 		t.Fatal("a retry with a live key and no way to revoke it must not succeed")
@@ -517,9 +447,6 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 		t.Errorf("the receipt must survive the retry so the state is not forgotten (ids=%v, err=%v)", ids, err)
 	}
 
-	// A device that signs in again and logs out for real clears it. The key it
-	// signs in with is the one the first run left live, so revoking it settles
-	// the receipt.
 	writeDeviceKey(t, home, testStorage().AccessKey, testStorage().SecretKey)
 	if err := Logout("linux", home, false, nil, testRevoker(t, home)); err != nil {
 		t.Fatalf("logout with a fresh key: %v", err)
@@ -529,12 +456,6 @@ func TestLogoutAfterAFailedRevokeNeverClaimsSuccess(t *testing.T) {
 	}
 }
 
-// The receipt names ONE key. Someone whose revoke failed signs in again, which
-// gives them a different key, and logs out: that logout revokes the new key and
-// settles nothing about the old one, which is still live. The warning has to
-// survive it, and the run that revokes the new key must not print a clean
-// sign-out either — or the next run reads that success over a live key, the
-// exact failure the receipt exists to prevent.
 func TestLogoutKeepsTheReceiptWhenTheRevokedKeyIsNotTheOneItNames(t *testing.T) {
 	const (
 		oldAccess, oldSecret = "OLDACCESSKEY", "oldsecretkey"
@@ -543,7 +464,6 @@ func TestLogoutKeepsTheReceiptWhenTheRevokedKeyIsNotTheOneItNames(t *testing.T) 
 	home := t.TempDir()
 	writeDeviceKey(t, home, oldAccess, oldSecret)
 
-	// The revoke of the old key cannot reach the server.
 	if err := Logout("linux", home, false, nil, &APIKeyRevoker{BaseURL: "http://127.0.0.1:1"}); err == nil {
 		t.Fatal("the first logout must fail when the key cannot be revoked")
 	}
@@ -552,15 +472,12 @@ func TestLogoutKeepsTheReceiptWhenTheRevokedKeyIsNotTheOneItNames(t *testing.T) 
 		t.Fatalf("receipt after the failed revoke = %v, want the one live id %q (err=%v)", ids, oldAccess, err)
 	}
 
-	// The person signs in again: a new key, and a key server that revokes it.
 	writeDeviceKey(t, home, newAccess, newSecret)
 	ks := newKeyServer(t, home, newAccess, newSecret)
 	err = Logout("linux", home, false, nil, ks)
 	if got := ks.count(); got != 1 {
 		t.Fatalf("revoke attempts = %d, want 1", got)
 	}
-	// This run did revoke its own key, so the old one is still live and the
-	// person must be told so rather than be shown a clean sign-out.
 	if err == nil {
 		t.Fatal("revoking this device's key does not revoke an older live one: the run must not report success")
 	}
@@ -572,7 +489,6 @@ func TestLogoutKeepsTheReceiptWhenTheRevokedKeyIsNotTheOneItNames(t *testing.T) 
 		t.Errorf("the old key is still live, so its receipt must survive a revoke of a different key (ids=%v err=%v)", ids, err)
 	}
 
-	// And the run after that must still refuse to call it a clean sign-out.
 	if err := Logout("linux", home, false, nil, nil); err == nil {
 		t.Fatal("a logout with an older key still live must not succeed")
 	} else if !strings.Contains(err.Error(), revokePendingWarning) {
@@ -580,10 +496,6 @@ func TestLogoutKeepsTheReceiptWhenTheRevokedKeyIsNotTheOneItNames(t *testing.T) 
 	}
 }
 
-// Two failures, two live keys. The receipt is a list for this reason: a revoke
-// that failed, a sign-in that issued a new key, and a second revoke that failed
-// leaves two live, and remembering only the newest would silently forget the
-// first.
 func TestRevokePendingKeepsEveryKeyThatIsStillLive(t *testing.T) {
 	const (
 		firstAccess  = "FIRSTACCESSKEY"
@@ -613,8 +525,6 @@ func TestRevokePendingKeepsEveryKeyThatIsStillLive(t *testing.T) {
 	}
 }
 
-// A receipt is 0600 and holds access key ids and nothing else. The secret is
-// never in it, and an id alone cannot be replayed against storage.
 func TestRevokePendingHoldsOnlyTheAccessKeyID(t *testing.T) {
 	home := t.TempDir()
 	if ids, err := PendingRevoke(home); err != nil || len(ids) != 0 {
@@ -644,23 +554,16 @@ func TestRevokePendingHoldsOnlyTheAccessKeyID(t *testing.T) {
 	if strings.Contains(string(data), "drivetestsecret") {
 		t.Error("the receipt carries key material")
 	}
-	// The receipt outlives the config dir logout deletes, so it must not live
-	// inside it.
 	if filepath.Dir(pendingRevokePath(home)) == DefaultConfigDir(home) {
 		t.Error("the receipt must not live inside the config dir logout deletes")
 	}
 }
 
-// A key this device cannot name is still live, and the receipt says so with an
-// empty id rather than staying silent. A receipt that cannot be counted must
-// never read as a receipt that is empty.
 func TestRevokePendingRecordsAKeyThatCouldNotBeNamed(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(DefaultConfigDir(home), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A config that is there and unreadable: a key is live, and this device
-	// cannot say which.
 	if err := os.WriteFile(RcloneConfigPath(home), []byte("not a config at all\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +577,6 @@ func TestRevokePendingRecordsAKeyThatCouldNotBeNamed(t *testing.T) {
 	if len(ids) != 1 || ids[0] != "" {
 		t.Errorf("receipt ids = %q, want one unnamed entry for a key that could not be named", ids)
 	}
-	// And the next run must still not succeed over it.
 	if err := Logout("linux", home, false, nil, nil); err == nil {
 		t.Fatal("an unnamed live key must not read as a clean sign-out on the next run either")
 	} else if !strings.Contains(err.Error(), revokePendingWarning) {
@@ -682,8 +584,6 @@ func TestRevokePendingRecordsAKeyThatCouldNotBeNamed(t *testing.T) {
 	}
 }
 
-// A receipt the run cannot read is a key the run cannot prove is off, so it
-// is reported rather than treated as absent.
 func TestRevokePendingReportsAnUnreadableReceipt(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads any file, so the unreadable-receipt case cannot be staged")
@@ -692,7 +592,6 @@ func TestRevokePendingReportsAnUnreadableReceipt(t *testing.T) {
 	if err := WriteRevokePending(home, "DRIVETESTACCESSKEY"); err != nil {
 		t.Fatal(err)
 	}
-	// Make the receipt a directory: readable as a path, unreadable as a file.
 	if err := os.Remove(pendingRevokePath(home)); err != nil {
 		t.Fatal(err)
 	}
@@ -704,10 +603,6 @@ func TestRevokePendingReportsAnUnreadableReceipt(t *testing.T) {
 	}
 }
 
-// The failed-revoke record must have a way out for the realistic case: the
-// person revokes the key from the devices page, and the CLI cannot re-check a
-// key it no longer holds the secret for. Without this, every later logout fails
-// forever with no escape but deleting the file by hand.
 func TestLogoutForgetPendingClearsTheRecordAndSaysSo(t *testing.T) {
 	home := t.TempDir()
 	writeDeviceKey(t, home, "OLDACCESSKEY", "oldsecretkey")
@@ -718,7 +613,6 @@ func TestLogoutForgetPendingClearsTheRecordAndSaysSo(t *testing.T) {
 		t.Fatalf("receipt after the failed revoke = %v (err=%v), want one live key", ids, err)
 	}
 
-	// The CLI must name the escape hatch in the failure it reports.
 	err := Logout("linux", home, false, nil, nil)
 	if err == nil {
 		t.Fatal("a live key must still fail before the record is cleared")
@@ -727,8 +621,6 @@ func TestLogoutForgetPendingClearsTheRecordAndSaysSo(t *testing.T) {
 		t.Errorf("failure %q does not name the way out", err)
 	}
 
-	// The escape hatch itself: it clears the record, prints the ids it cleared,
-	// and does not touch the mount or anything else.
 	out := captureStdout(t, func() {
 		if err := runLogout([]string{"--home", home, "--forget-pending"}); err != nil {
 			t.Errorf("logout --forget-pending: %v", err)
@@ -740,20 +632,15 @@ func TestLogoutForgetPendingClearsTheRecordAndSaysSo(t *testing.T) {
 	if ids, err := PendingRevoke(home); err != nil || len(ids) != 0 {
 		t.Errorf("receipt after --forget-pending = %v (err=%v), want it cleared", ids, err)
 	}
-	// And with the record cleared, a logout with no key at all is a clean
-	// sign-out again.
 	if err := Logout("linux", home, false, nil, nil); err != nil {
 		t.Errorf("logout after the record is cleared: %v", err)
 	}
 
-	// Running it with nothing recorded is not an error.
 	if err := runLogout([]string{"--home", home, "--forget-pending"}); err != nil {
 		t.Errorf("logout --forget-pending with no record: %v", err)
 	}
 }
 
-// With no key at all, the success line must not be mistakable for a
-// revocation: there was nothing to turn off.
 func TestLogoutWithoutAKeyDoesNotClaimARevocation(t *testing.T) {
 	home := t.TempDir()
 	out := captureStdout(t, func() {
@@ -769,9 +656,6 @@ func TestLogoutWithoutAKeyDoesNotClaimARevocation(t *testing.T) {
 	}
 }
 
-// fakeTokenRevoker records whether RevokeDeviceToken was called, and what
-// error it returned. It is the test's stand-in for the api Worker's DELETE
-// /v1/device/token route.
 type fakeTokenRevoker struct {
 	err    error
 	called bool
@@ -782,9 +666,6 @@ func (f *fakeTokenRevoker) RevokeDeviceToken() error {
 	return f.err
 }
 
-// orderedRevoker wraps a fakeTokenRevoker and asserts the credentials file is
-// still on disk when the revoke is invoked, proving the server-side revoke
-// happens before the local credentials are removed.
 type orderedRevoker struct {
 	fake *fakeTokenRevoker
 	home string
@@ -799,13 +680,6 @@ func (o *orderedRevoker) RevokeDeviceToken() error {
 	return o.fake.RevokeDeviceToken()
 }
 
-// TestLogoutRevokesTheDeviceTokenServerSideBeforeTheFileGoes proves the
-// three behaviours issue #176 asks for: (1) logout calls the api Worker to
-// revoke the device token before it deletes the local credentials file, (2) a
-// token that is already dead (401) is a note, not a failure, and (3) a real
-// failure leaves the local files intact so the person can retry. Each run also
-// carries a key revoker, so what is under test here is the token and not the
-// storage key this issue (drive#75) is about.
 func TestLogoutRevokesTheDeviceTokenServerSideBeforeTheFileGoes(t *testing.T) {
 	writeCreds := func(t *testing.T, home string) {
 		creds := Credentials{APIBase: "https://api.test", DeviceToken: "test-token"}
@@ -815,8 +689,6 @@ func TestLogoutRevokesTheDeviceTokenServerSideBeforeTheFileGoes(t *testing.T) {
 		}
 	}
 
-	// 1. Success: revoke runs while the credentials file is still present,
-	// then the files are removed.
 	home := configOnlyHome(t)
 	writeCreds(t, home)
 	revoker := &fakeTokenRevoker{}
@@ -838,8 +710,6 @@ func TestLogoutRevokesTheDeviceTokenServerSideBeforeTheFileGoes(t *testing.T) {
 		}
 	}
 
-	// 2. A 401 (already dead) is a note, not a failure: build a real client
-	// against a tiny server so the client's own 401 handling is exercised.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete || r.URL.Path != "/v1/device/token" {
 			http.Error(w, "not the revoke route", http.StatusBadRequest)
@@ -875,8 +745,6 @@ func TestLogoutRevokesTheDeviceTokenServerSideBeforeTheFileGoes(t *testing.T) {
 		}
 	}
 
-	// 3. A real error (not 401) stops logout and leaves the local files,
-	// so the person can retry.
 	home3 := configOnlyHome(t)
 	writeCreds(t, home3)
 	revoker3 := &fakeTokenRevoker{err: fmt.Errorf("500 Internal Server Error")}
@@ -895,23 +763,11 @@ func TestLogoutRevokesTheDeviceTokenServerSideBeforeTheFileGoes(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// drive logout --all: sign every device signed in to this account out
-// (drive#236, the standalone action #34's owner resolved: sign out every
-// device, separate from closing the account).
-// ---------------------------------------------------------------------------
-
-// fakeAccountRevoker stands in for the api Worker's DELETE /v1/keys route. It
-// records what the CLI asked and, when it is told to, fails — the two states
-// the account-wide half has to tell apart.
 type fakeAccountRevoker struct {
 	err   error
 	calls int
-	// home is checked at call time: the account-wide revoke has to run while the
-	// credentials file that holds the token is still on disk, because that
-	// token IS the credential the route authenticates with.
-	home string
-	t    *testing.T
+	home  string
+	t     *testing.T
 }
 
 func (f *fakeAccountRevoker) RevokeAllKeys() error {
@@ -925,9 +781,6 @@ func (f *fakeAccountRevoker) RevokeAllKeys() error {
 	return f.err
 }
 
-// signedInDeviceHome is a home with both halves of a signed-in device: the rclone
-// config holding the storage key, and the credentials file holding the api
-// base and the device token that DELETE /v1/keys authenticates with.
 func signedInDeviceHome(t *testing.T) string {
 	t.Helper()
 	home := configOnlyHome(t)
@@ -938,10 +791,6 @@ func signedInDeviceHome(t *testing.T) string {
 	return home
 }
 
-// The confirm step is the acceptance: `--all` on its own says what it would do
-// and changes nothing. Without this gate an account-wide revoke is one flag
-// away on the way to an ordinary logout, and the cost of running it by accident
-// is every other signed-in machine needing to sign in again.
 func TestLogoutAllAsksToConfirmAndChangesNothingWithoutYes(t *testing.T) {
 	home := signedInDeviceHome(t)
 	account := &fakeAccountRevoker{home: home, t: t}
@@ -960,21 +809,16 @@ func TestLogoutAllAsksToConfirmAndChangesNothingWithoutYes(t *testing.T) {
 	if account.calls != 0 {
 		t.Errorf("the account was revoked %d time(s) without --yes; the confirm step must gate the call, not just warn about it", account.calls)
 	}
-	// The warning names the whole thing, not just this device, because that is
-	// the part a person cannot undo by signing in again.
 	for _, want := range []string{"EVERY device", "every other one"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the warning does not say %q:\n%s", want, out)
 		}
 	}
-	// And the device is untouched: nothing was revoked and nothing deleted.
 	if _, err := os.Stat(RcloneConfigPath(home)); err != nil {
 		t.Errorf("the local key was deleted by an unconfirmed --all: %v", err)
 	}
 }
 
-// The confirmed run: the account goes first, while the token that proves which
-// account it is still exists, and this device's own local sign-out follows.
 func TestLogoutAllRevokesTheAccountThenSignsThisDeviceOut(t *testing.T) {
 	home := signedInDeviceHome(t)
 	account := &fakeAccountRevoker{home: home, t: t}
@@ -986,9 +830,6 @@ func TestLogoutAllRevokesTheAccountThenSignsThisDeviceOut(t *testing.T) {
 	if account.calls != 1 {
 		t.Errorf("account-wide revokes = %d, want exactly 1", account.calls)
 	}
-	// The storage key was still revoked the ordinary way afterwards, because
-	// the account-wide route already turned it off and this device's own
-	// logout asks about its own key anyway. One call, no second guess.
 	if got := ks.count(); got != 1 {
 		t.Errorf("this device's key revoke attempts = %d, want 1", got)
 	}
@@ -1003,9 +844,6 @@ func TestLogoutAllRevokesTheAccountThenSignsThisDeviceOut(t *testing.T) {
 	}
 }
 
-// An account-wide revoke that fails must not be followed by the local
-// sign-out: the account is unchanged, so signing this machine out would print
-// a clean logout over an account that is still signed in everywhere else.
 func TestLogoutAllStopsBeforeTheLocalSignOutWhenTheAccountRevokeFails(t *testing.T) {
 	home := signedInDeviceHome(t)
 	account := &fakeAccountRevoker{err: errors.New("the api Worker answered 503"), home: home, t: t}
@@ -1020,7 +858,6 @@ func TestLogoutAllStopsBeforeTheLocalSignOutWhenTheAccountRevokeFails(t *testing
 	if !strings.Contains(err.Error(), "No device was signed out") {
 		t.Errorf("the failure does not say what was left alone: %v", err)
 	}
-	// The device is exactly as it was, so the person can simply run it again.
 	if _, err := os.Stat(RcloneConfigPath(home)); err != nil {
 		t.Errorf("the local key was deleted after a failed account-wide revoke: %v", err)
 	}
@@ -1029,11 +866,6 @@ func TestLogoutAllStopsBeforeTheLocalSignOutWhenTheAccountRevokeFails(t *testing
 	}
 }
 
-// The ordering the whole function exists for. The account-wide revoke takes
-// this device's key with it like any other, so the upload queue has to be
-// checked FIRST: asking afterwards would leave a person with files still queued
-// on a machine that can no longer upload them, and a command that then refuses
-// to clear the queue.
 func TestLogoutAllRefusesQueuedUploadsBeforeItRevokesTheAccount(t *testing.T) {
 	home := signedInDeviceHome(t)
 	writeMeta(t, DefaultCacheDir(home), "queued.bin", queuedMeta)
@@ -1053,8 +885,6 @@ func TestLogoutAllRefusesQueuedUploadsBeforeItRevokesTheAccount(t *testing.T) {
 		t.Errorf("the local key was deleted over a queued upload: %v", err)
 	}
 
-	// --force is the person's call to discard the queue, exactly as in a plain
-	// logout, and once it is given the account-wide revoke proceeds.
 	account2 := &fakeAccountRevoker{home: home, t: t}
 	if err := LogoutEveryDevice("linux", home, true, &fakeTokenRevoker{}, testRevoker(t, home), account2); err != nil {
 		t.Fatalf("drive logout --all --force: %v", err)
@@ -1064,9 +894,6 @@ func TestLogoutAllRefusesQueuedUploadsBeforeItRevokesTheAccount(t *testing.T) {
 	}
 }
 
-// No signed-in account on this device is not a reason to sign this machine out
-// on its own: that is what `drive logout` is for, and running it here would
-// leave every other device live — the opposite of what --all means.
 func TestLogoutAllRefusesWhenNoAccountIsSignedInHere(t *testing.T) {
 	home := configOnlyHome(t)
 
@@ -1082,9 +909,6 @@ func TestLogoutAllRefusesWhenNoAccountIsSignedInHere(t *testing.T) {
 	}
 }
 
-// --yes is the answer to --all's confirm step. Given on its own it is a
-// question about nothing, and saying so beats quietly ignoring a flag a person
-// typed on purpose.
 func TestYesWithoutAllIsRefused(t *testing.T) {
 	home := signedInDeviceHome(t)
 
@@ -1100,9 +924,6 @@ func TestYesWithoutAllIsRefused(t *testing.T) {
 	}
 }
 
-// RevokeAllKeys has to hit the collection route with the device token, because
-// the token is the only thing that says which account gets signed out: the
-// route takes no id that could name another account.
 func TestRevokeAllKeysUsesTheCollectionRouteAndTheBearerToken(t *testing.T) {
 	var gotMethod, gotPath, gotAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1129,10 +950,6 @@ func TestRevokeAllKeysUsesTheCollectionRouteAndTheBearerToken(t *testing.T) {
 	}
 }
 
-// A 401 is NOT the state this call wants. RevokeDeviceToken reads it as "this
-// token is already dead", which is right there and wrong here: a dead token
-// means the account was never signed out, so a 401 must be a failure that stops
-// the local half rather than a clean "already done".
 func TestRevokeAllKeysDoesNotReadA401AsSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

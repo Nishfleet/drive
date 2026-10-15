@@ -1,40 +1,7 @@
-// Where a branch's snapshot lives, and why (drive#252, the phase 2 of #157).
-//
-// Phase 1 measured the problem and made it legible: a branch records one
-// `{size, etag, modified}` entry per file, as JSON in the
-// `branches.snapshot` column, and D1's row limit is 1 MiB. A 100,000-file
-// branch averages ~117 bytes an entry and comes to ~11 MiB — twelve
-// row-limits — so the write was refused and the person was told
-// `snapshot-bound` (core/messages.js). The boundary is the file count, not the
-// branch's byte size: a 10 GB branch of one file is one entry.
-//
-// Phase 2, this file's other half: the snapshot moved out of the row into the
-// BRANCH_SNAPSHOTS KV namespace, and the row now carries a pointer to the key
-// and the value's byte length (migrations/drive/0012_branch_snapshot_kv.sql).
-// A 100,000-file branch therefore lands. The measurements below are kept
-// because they are still the truth the design rests on: the same entries the
-// branch walk writes, put through the same INSERT the Worker runs, against the
-// shipped migrations on a real SQLite engine (D1 is SQLite; a SQLite-backed D1
-// with no compile-time override has no row limit of its own, so the pinned MiB
-// number is the product rule and this test pins the snapshot the product
-// produces).
-//
-// What changed, and what each test below proves:
-//   * the ladder still measures the same numbers — the column is unchanged and
-//     a row written before the migration still carries its JSON there;
-//   * `this lands` — a branch whose snapshot is 12 row-limits big is created,
-//     listed, diffed and approved, and the row stays small while the value
-//     goes to the namespace;
-//   * an empty pointer is not filled from that leftover column (drive#329):
-//     the reader has one source, the namespace, so a pre-namespace row reads
-//     empty;
-//   * a failure that is not the row limit is still the generic failure, and a
-//     namespace that cannot be written is `storage-down` with the copy cleaned
-//     up, not a 201 for a half-made branch.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMemoryStore, scopeStore } from "../core/files.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { failureMessage } from "../core/messages.js";
 import { createKvSnapshotStore, snapshotKey } from "../src/branches.js";
 import { createBranch, listBranches } from "../src/branches-routes.js";
@@ -659,7 +626,7 @@ test("a name with characters outside the basic plane survives the split", async 
   // boundary scan is exercised against each of the character's four bytes.
   const kv = createTestKv();
   const snapshots = createKvSnapshotStore(kv, { chunkBytes: 64 });
-  const emoji = "\u{1F43D}"; // a pig snout, four bytes in UTF-8
+  const emoji = "\u{1F43D}";
   /** @type {Record<string, {size: number, etag: string, modified: number}>} */
   const entries = {};
   for (let pad = 0; pad < 8; pad += 1) {

@@ -1,17 +1,3 @@
-// "Continue as <email>": sign-in on the live test address without email
-// (drive#342). The site is behind Cloudflare Access until drive has a domain,
-// and email sign-in needs that domain (drive#199), so the test address signs a
-// person in with the identity Access proved (src/access.js) and nothing else.
-//
-//   GET  /api/signin/access   -> 200 {email, hasAccount} for a verified identity
-//   POST /api/signin/access   -> the session cookie, then the drive
-//
-// Off unless ACCESS_AUD and ACCESS_TEAM_DOMAIN are set: with either missing the
-// route answers exactly what an unknown /api path answers (404 "Not found."),
-// so a deployment without them has no such route. Access has already proved
-// the address, so a first sign-in creates the account, the same as the email
-// link's first follow.
-
 import { AFTER_SIGNIN_PATH, authFor } from "../core/auth.js";
 import { isSameOriginRequest } from "../core/email-send.js";
 import { failureMessage } from "../core/messages.js";
@@ -21,7 +7,6 @@ import { signinClosedBody } from "./signin.js";
 
 /** @typedef {import("./signin.js").SigninEnv & {ACCESS_AUD?: string, ACCESS_TEAM_DOMAIN?: string}} AccessSigninEnv */
 
-/** The route, under the public sign-in prefix. */
 export const ACCESS_SIGNIN_PATH = "/api/signin/access";
 
 const JSON_HEADERS = Object.freeze({
@@ -42,12 +27,10 @@ function json(body, status, cookies = []) {
   return new Response(JSON.stringify(body), { status, headers });
 }
 
-/** What an unknown /api path answers (src/index.js notFound). */
 function notFound() {
   return json({ error: "Not found." }, 404);
 }
 
-/** A request with no verified Access identity: the account gate's words. */
 function notSignedIn() {
   return json({ error: failureMessage("unauthorized") }, 401);
 }
@@ -92,7 +75,6 @@ export async function handleAccessSignin(request, env) {
     return json({ error: failureMessage("cross-site") }, 403);
   }
   if (request.method === "POST") {
-    // The email path's own edge limits, so the two sign-ins share one bucket.
     const limited = await enforceEdgeLimits(
       [
         {
@@ -129,8 +111,6 @@ export async function handleAccessSignin(request, env) {
   );
   let signedIn;
   try {
-    // The endpoint declares no body schema (it is server-only and its caller
-    // passes the verified address), so its typed body is `undefined`.
     signedIn = await /** @type {any} */ (auth.api).signInWithAccess({
       body: { email: identity.email },
       headers: request.headers,

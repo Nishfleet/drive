@@ -1,14 +1,3 @@
-// The one HTML escaper every render of store-provided text goes through
-// (drive#518 review): the device approval page and the transactional emails
-// both put store-provided strings into HTML, and a second escaper with a
-// different character set would let one surface miss a character the other
-// catches. The apostrophe is escaped even though these renders are text
-// content today, so the same function stays correct if a caller later moves a
-// value into an attribute.
-//
-// Plain data and pure renderers only -- no Worker or DOM imports -- so both
-// the email module and the device routes can import it without dragging a
-// runtime into the email render's load order.
 const HTML_ESCAPES = Object.freeze({
   "&": "&amp;",
   "<": "&lt;",

@@ -1,14 +1,5 @@
-// The file-index row writers (drive#566). Search owns the table (`file_index`,
-// migration 0002) and the row shape; this module is the one INSERT both feeds
-// go through, so a file a desktop mount wrote and a file the web upload wrote
-// land as the same row. It lives in core/ because the metered storage-event
-// intake (core/meter.js) writes the create's row in the same batch as the
-// version row, and core/ cannot import the site Worker's src/ (drive#616).
-//
-// Plain data and functions, no Worker-only import: node --test exercises the
-// statements against a real SQLite engine (test/d1-sqlite.mjs).
-
-import { drivePathFromKey, TRASH_PATH, validatePath } from "./files.js";
+import { TRASH_PATH, validatePath } from "./files.js";
+import { drivePathFromKey } from "./files-scope.js";
 
 /** One row of the file index, as it is written to D1.
  * @typedef {{account_id: string, path: string, name: string, parent: string,
@@ -26,9 +17,6 @@ export function locate(path) {
   };
 }
 
-/** Epoch milliseconds `Date#toISOString` can format. Outside this range the
- * Date is Invalid and `toISOString` throws RangeError — a finite check is
- * not enough (`1e300` is finite). */
 const MAX_DATE_MS = 8.64e15;
 
 /**
@@ -77,10 +65,8 @@ const UPSERT_UPDATE =
   "name = excluded.name, parent = excluded.parent, " +
   "size_bytes = excluded.size_bytes, modified_at = excluded.modified_at, " +
   "indexed_at = excluded.indexed_at";
-// Seven placeholders a row, reused row by row inside one statement.
 const ROW_PLACEHOLDERS = `(${Array.from({ length: 7 }, (_, i) => `?${i + 1}`).join(", ")})`;
-/** Rows per multi-value INSERT. Seven bound columns a row keeps the statement
- * under D1's 100-bound-parameter ceiling (14 x 7 = 98). */
+// D1 caps a statement at 100 bound parameters (https://developers.cloudflare.com/d1/platform/limits/).
 const ROWS_PER_STATEMENT = 14;
 
 /** The prepared statements that write a chunk of rows. Exported so the test

@@ -1,28 +1,3 @@
-// The device sign-in store (RFC 8628): the pending code the CLI asks for, the
-// short user code the person types on the approval page, and the device token
-// the CLI picks up when a signed-in person approves it.
-//
-// Build step 4 (drive#55) first kept this in a per-isolate `Map`
-// (core/keystore.js), which the midnight review of #122 found
-// unsafe: a Worker has many instances, so a code started on one was lost on
-// another and every in-flight sign-in died with the isolate (drive issue
-// #136 finding 1). This module is the real store: a D1-backed implementation
-// (`createD1DeviceSigninStore`) whose row is written by `/v1/device/code`,
-// moved to `approved` by the signed-in approval page, and consumed by
-// `/v1/device/token`, across instances and restarts. The in-memory
-// implementation is kept for the tests and a deployment with no database —
-// the same memory-stand-in/real-adapter split core/files.js uses.
-//
-// The device code and the minted token are secrets, so both are stored only as
-// SHA-256 digests (`core/db.js` sha256Hex), the same rule the key
-// store follows. The short user code is written as-typed because the approval
-// page looks the row up by it; it is not a credential alone, because approval
-// also requires a signed-in account (drive issue #136 finding 2).
-//
-// `account` is the signed-in account the approval page passes in
-// (`{id, name, email}`, resolved by the core/status.js `signedInAccount` gate);
-// its fields are copied onto the code row, so a poll on another instance can
-// name the owner without this module holding an accounts table of its own.
 import { batch, first, newId, nowSeconds, run, sha256Hex } from "./db.js";
 import { DAY_MS } from "./units.js";
 
@@ -91,40 +66,11 @@ import { DAY_MS } from "./units.js";
  * @typedef {{revoked: number}} RevokeAllResult
  */
 
-// How long a device code is good for, and how often the CLI may poll
-// (RFC 8628's device_code and interval). Fifteen minutes (drive#558): long
-// enough that a code still works after the sign-in it waits on is fetched and
-// read on a second device — the mail round trip no longer has to fit inside
-// the same room as the terminal — and still short enough that a code left on
-// a screen dies. The CLI reads the TTL off the server's answer
-// (cmd/drive/api.go polls until the code's own expiry), so a change here is
-// the whole change.
 export const DEVICE_CODE_TTL_SECONDS = 15 * 60;
 export const DEVICE_CODE_INTERVAL_SECONDS = 5;
 
-// How long a minted device token is good for. A device token is the CLI's whole
-// credential for the account gate, so a token that never dies is a credential a
-// leak keeps: the store would hold it until the person deleted their account,
-// and the only way to kill it would be to delete that account's keys. Thirty
-// days is the session TTL core/auth.js already chose, and for the same reason
-// ("the drive is reached on every visit, so signing in every week would be a
-// support ticket, not a security win"): a month bounds what a leak is worth
-// without asking a person to approve a code every few days. keystore.test.js
-// pins this to the session TTL, so they cannot drift into two different months.
 export const DEVICE_TOKEN_TTL_SECONDS = (30 * DAY_MS) / 1000;
 
-/**
- * How close to its expiry a device token has to be before a request restarts
- * its window. This is the web session's own refresh age (src/auth.js `session
- * updateAge`), and for the same reason: a person who uses the drive every day
- * should never be signed out mid-month, while an abandoned machine's token
- * still dies on its own (drive#557).
- *
- * It is a refresh age and not a per-request write, so a command that calls an
- * account route in a loop writes the row once a day, not once a call. The
- * bound it keeps is the same one the fixed TTL kept: a token nothing uses is
- * dead at most TTL + REFRESH after it was minted.
- */
 export const DEVICE_TOKEN_REFRESH_SECONDS = DAY_MS / 1000;
 
 /**
@@ -154,9 +100,6 @@ export function renewDeviceTokenWindow(expiresAt, at) {
   return Math.max(expiresAt, at + DEVICE_TOKEN_TTL_SECONDS);
 }
 
-// The user code a person types on the approval page. The alphabet leaves out
-// vowels (so a code cannot spell a word) and the look-alike 0/O and 1/I/L
-// (so a code read aloud cannot be mistyped into another valid one).
 const USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
 const USER_CODE_LENGTH = 8;
 
@@ -173,8 +116,6 @@ function newUserCode(randomBytes) {
   for (let i = 0; i < USER_CODE_LENGTH; i++) {
     let byte = bytes[i];
     while (byte >= limit) {
-      // Reached only when the injected generator returns a high byte; the
-      // platform generator (crypto.getRandomValues) feeds it fresh bytes.
       byte = randomBytes()[0];
     }
     out += USER_CODE_ALPHABET[byte % USER_CODE_ALPHABET.length];
@@ -249,9 +190,6 @@ export function createMemoryDeviceSigninStore(options = {}) {
   }
 
   return {
-    /** Every account this stand-in holds, so a test can model a row that is
-     * gone (the store restored from a backup) the way the real account store
-     * can lose one. */
     accounts,
     /**
      * Start a device sign-in: a code the CLI polls with, and a short code the
@@ -325,9 +263,6 @@ export function createMemoryDeviceSigninStore(options = {}) {
         return { error: "expired-code" };
       }
       if (code.status === "approved") {
-        // The same rule as the D1 store above: a code that already names an
-        // account is spent, so a second pair of hands cannot attach itself to
-        // somebody else's approved sign-in.
         return { error: "approved-code" };
       }
       const own =
@@ -396,10 +331,6 @@ export function createMemoryDeviceSigninStore(options = {}) {
       }
       const token = newId("dtok");
       const minted = nowSeconds(now());
-      // Minting is the only moment a new token row appears, so it is where the
-      // dead ones go: a row that can no longer authenticate is not worth
-      // holding, and this stand-in would otherwise grow one per sign-in for
-      // the life of the isolate.
       sweepTokens(minted);
       const expiresAt = minted + DEVICE_TOKEN_TTL_SECONDS;
       tokens.set(await sha256Hex(token), {
@@ -556,13 +487,6 @@ export function createD1DeviceSigninStore(db, options = {}) {
       const deviceCode = newId("dev");
       const userCode = newUserCode(randomBytes);
       const createdAt = nowSeconds(now());
-      // The row and the sweep of the rows that are past their TTL are one
-      // transaction: `/v1/device/code` is public (the CLI holds no credential
-      // before it asks for one), so without the sweep an anonymous caller
-      // could grow the table one dead row per request, forever. The sweep
-      // deletes only rows already expired at this instant, never the row being
-      // inserted, and the edge rate limit on the route (device-routes.js) caps
-      // how fast either can happen.
       await batch(db, [
         {
           sql: "DELETE FROM device_codes WHERE expires_at <= ?1",
@@ -626,10 +550,6 @@ export function createD1DeviceSigninStore(db, options = {}) {
      * @returns {Promise<ApproveResult>}
      */
     async approveDeviceCode(userCode, account) {
-      // The approve route is an account route, so a real call always carries
-      // the signed-in account. The in-memory stand-in can name one from the
-      // device, but this store cannot: with no account there is nobody to
-      // attach, so it refuses without reading or writing the row.
       if (account === undefined) {
         return { error: "unknown-code" };
       }
@@ -651,13 +571,6 @@ export function createD1DeviceSigninStore(db, options = {}) {
       }
       if (row.status !== "approved") {
         const fields = accountFields(account);
-        // Conditional on `pending` and on the code still being inside its TTL,
-        // so two tabs approving at once cannot attach two accounts (the second
-        // update changes nothing and the row keeps the first account) and a
-        // code that expired between the read above and this write is not
-        // approved by a request that started while it was alive. The re-read
-        // below is the authority: it is the row as it is now, not the
-        // predicate's guess.
         await run(
           db,
           `UPDATE device_codes
@@ -677,23 +590,16 @@ export function createD1DeviceSigninStore(db, options = {}) {
           ),
         );
         if (stored === null) {
-          // The row vanished between the update and this read.
           return { error: "unknown-code" };
         }
         if (stored.expiresAt < nowSeconds(now())) {
           return { error: "expired-code" };
         }
         if (stored.account.id === "") {
-          // The update did not attach an account; say so rather than
-          // dereferencing null.
           return { error: "unknown-code" };
         }
         return { accountId: stored.account.id, name: stored.account.name };
       }
-      // Already approved. Somebody else may have got here first, and a code
-      // that already names one account must not be handed to a second one by
-      // the idempotent path below, so the row is reported as spent rather than
-      // re-attached.
       return { error: "approved-code" };
     },
 
@@ -750,32 +656,10 @@ export function createD1DeviceSigninStore(db, options = {}) {
         return { status: "expired" };
       }
       const token = newId("dtok");
-      // Consume the code and write the token in one transaction, so a failure
-      // between the two cannot lose a sign-in someone already approved: either
-      // both statements land or the code stays `approved` for the next poll.
-      // The update is conditional on the row still being `approved` and still
-      // inside its TTL, so a poll that crosses the boundary cannot mint a
-      // token for a code that expired, and it stamps `consumed_by` with this
-      // poll's own nonce.
-      //
-      // The insert is that nonce's guard: `INSERT ... SELECT ... WHERE EXISTS`
-      // fires only while the row still carries this poll's nonce, and a poll
-      // that lost the race neither changed the nonce nor matches it, so it
-      // inserts nothing. The two racing polls therefore mint exactly one token
-      // row between them — the loser leaves no inert credential behind, which
-      // is what a plain batch (whose statements run either way) would.
       const nonce = newId("claim");
-      // One clock read for the whole mint: the row's created_at and its
-      // expires_at are then exactly one TTL apart, which is the same claim the
-      // in-memory store makes (and the answer the CLI stores).
       const minted = nowSeconds(now());
       await batch(db, [
         {
-          // The numbered placeholders are written in ascending order (`?1`,
-          // `?2`, `?3`) and bound in that order: `?1` is this poll's nonce,
-          // `?2` the code hash, `?3` the clock. D1 binds `?N` by position, and
-          // the test harness's SQLite adapter rewrites them positionally too,
-          // so the two agree only while the written order is the bound order.
           sql: "UPDATE device_codes SET status = 'used', consumed_by = ?1 WHERE device_code_hash = ?2 AND status = 'approved' AND consumed_by = '' AND expires_at > ?3",
           params: [nonce, hash, minted],
         },
@@ -795,8 +679,6 @@ export function createD1DeviceSigninStore(db, options = {}) {
           ],
         },
       ]);
-      // The nonce is the authority on who won, not the statement's row count:
-      // the row the update left behind says which poll holds this code.
       const consumed = await first(
         db,
         "SELECT consumed_by FROM device_codes WHERE device_code_hash = ?1",
@@ -825,17 +707,6 @@ export function createD1DeviceSigninStore(db, options = {}) {
       }
       const hash = await sha256Hex(token);
       const at = nowSeconds(now());
-      // The expiry and the revocation are the WHERE clause, not a check the
-      // caller could forget: a dead row is the same answer as a row that was
-      // never written, so there is one way for a token to fail and one place it
-      // can happen.
-      //
-      // The close state is joined in for the same reason: a token minted
-      // before the account closed must stop signing the CLI in the moment the
-      // account closes (drive#497), and the accounts row is where close is
-      // written. It is a LEFT JOIN because a person can hold a device token
-      // with no accounts row yet — the site Worker's sign-in mints the Better
-      // Auth user first — and that state is not closed.
       const row = await first(
         db,
         `SELECT t.account_id, t.account_name, t.account_email, t.expires_at, a.state AS account_state
@@ -849,26 +720,12 @@ export function createD1DeviceSigninStore(db, options = {}) {
         return null;
       }
       const r = /** @type {Record<string, unknown>} */ (row);
-      // A closed account is refused before the renewal, so its token row is
-      // never given a longer window than the one it already had.
       if (r.account_state === "closed") {
         return null;
       }
-      // A row that got here is live, so this is where its window is renewed
-      // (drive#557): the same drive reached every day should not be signed out
-      // on a fixed calendar. The rule is the one exported above, and it runs
-      // after the WHERE clause above has already refused the dead rows, so no
-      // write here can revive one. A row with room left on its window is not
-      // written at all, which is what keeps a loop of account calls to one
-      // write a day.
       const held = Number(r.expires_at);
       const renewed = renewDeviceTokenWindow(held, at);
       if (renewed !== held) {
-        // `MAX` keeps the later of the two expiries, so two requests that read
-        // the same row and renew in either order cannot pull the window back to
-        // the earlier value. The `revoked_at IS NULL` guard repeats the read
-        // above: a row revoked between the two statements is not renewed by
-        // this one.
         await run(
           db,
           "UPDATE device_tokens SET expires_at = MAX(expires_at, ?1) WHERE token_hash = ?2 AND revoked_at IS NULL",

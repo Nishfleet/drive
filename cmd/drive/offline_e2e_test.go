@@ -10,11 +10,6 @@ import (
 	"time"
 )
 
-// TestStandinOfflineProof is the drive issue #115 finish line, against a
-// local `rclone serve s3` stand-in. It keeps a folder offline with the real
-// command, cuts the network, opens and edits a file, restores the network,
-// and checks the edit arrives with a matching checksum. A new file written
-// into that folder is kept offline too.
 func TestStandinOfflineProof(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stand-in proof skipped in -short mode")
@@ -33,11 +28,6 @@ func TestStandinOfflineProof(t *testing.T) {
 	if err := env.restart.stop(); err != nil {
 		t.Fatal(err)
 	}
-	// Issue #541: wait more than five minutes after the cut (the floor the
-	// issue named, and longer than the old 5s window). rclone has no
-	// stale-on-error (rclone#1963), so --dir-cache-time is 24h and this
-	// wait stays inside it; a wait past the cache itself cannot succeed
-	// on stock rclone.
 	offlineWait := 5*time.Minute + 2*time.Second
 	dirCache, err := time.ParseDuration(vfsDirCacheTimeValue)
 	if err != nil {
@@ -113,11 +103,6 @@ func TestStandinOfflineProof(t *testing.T) {
 	}
 }
 
-// TestOfflineKeptFilesSurviveAFullCache proves the eviction half of #115 on
-// stock rclone: a kept-offline file is re-read so rclone's own last-access
-// order drops everything else when `--vfs-cache-max-size` is exceeded. The
-// product mount's cap is 20G and is not overridable (TestVFSArgsPinsTheSafetyFlags);
-// this proof uses rclone's own flag at 2M so the fill can actually cross it.
 func TestOfflineKeptFilesSurviveAFullCache(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stand-in proof skipped in -short mode")
@@ -152,8 +137,6 @@ func TestOfflineKeptFilesSurviveAFullCache(t *testing.T) {
 		"--dir-cache-time", vfsDirCacheTimeValue,
 		"--cache-dir", cacheDir,
 		"--rc", "--rc-addr", rcAddr, "--rc-no-auth")
-	// RcloneConfig never writes secret_access_key (drive#498). The secret
-	// reaches rclone the same way seedStandin already does: seedEnv.
 	cmd.Env = seedEnv
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {

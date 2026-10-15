@@ -1,15 +1,7 @@
-// drive#870: storagebun.com must not serve the pre-launch site to a stranger.
-// Cloudflare Access is dashboard config, not Worker config, so this file is
-// the executable guard: a 200 from the hostname is the site itself.
-//
-// Nameservers are still at the registrar, so the host may redirect to a
-// parking page. That is not the Worker. A 302 to the Access team host is
-// the wall. workers.dev must keep answering that 302 until launch.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const ACCESS_LOGIN = /^https:\/\/nish345\.cloudflareaccess\.com\//;
+const ACCESS_LOGIN = /^https:\/\/(nish345|storagebun)\.cloudflareaccess\.com\//;
 const WORKERS_DEV = "https://drive-pricing.nishant345.workers.dev/";
 const CUSTOM = "https://storagebun.com/";
 

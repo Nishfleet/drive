@@ -1,21 +1,13 @@
-// Unit tests for file-name search (drive issue #18), run against a real
-// SQLite engine — D1 is SQLite, so the numbers the issue asks for are
-// measured on the same SQL the Worker runs, with the shipped migrations
-// applied (the whole drive schema, via test/d1-sqlite.mjs, so `accounts`,
-// `file_index` and the reindex's staging table all exist).
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileRow, upsertStatements } from "../core/file-index.js";
-import {
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-  TRASH_PURGE_SCHEDULE,
-} from "../core/files.js";
-import { METER_CRON, METER_RECONCILE_SCHEDULE } from "../core/meter.js";
+import { FILES_ENDPOINT, TRASH_PURGE_SCHEDULE } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
+import { METER_CRON } from "../core/meter-events.js";
+import { METER_RECONCILE_SCHEDULE } from "../core/meter-fair-use.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import { BRANCH_QUEUE_KINDS } from "../src/branch-jobs.js";
 import worker from "../src/index.js";

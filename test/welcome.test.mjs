@@ -1,11 +1,3 @@
-// The welcome email is sent once, and only after the claim is won (drive#522).
-//
-// These prove the two properties the sign-in seam depends on. The claim has to
-// be a conditional write, because a sign-in runs in whatever isolate happens
-// to serve it and two of them can run at once. And a send that fails has to
-// give the claim back, or a single mail outage costs that customer their one
-// welcome permanently.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createWelcomeStore, sendWelcomeOnce } from "../src/welcome.js";

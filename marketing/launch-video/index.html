@@ -86,10 +86,6 @@
         object-position: top center;
       }
 
-      /* These two captures put their point low on the page: the agent key's
-         "cannot: delete" line, and the calculator's drive bar with both bar
-         labels. Cropped from the top, the band hid them and left a lone,
-         unlabelled "$15" beside "1 TB" (drive#651). */
       #shot-s3,
       #shot-s4 {
         object-position: bottom center;
@@ -290,7 +286,6 @@
         drive
       </div>
 
-      <!-- scene: intro -->
       <div id="intro-bg" class="clip intro-bg" data-start="0" data-duration="6" data-track-index="1"></div>
       <div id="intro-wordmark" class="clip intro-wordmark" data-start="0" data-duration="6" data-track-index="2">
         drive
@@ -305,7 +300,6 @@
         Plain files in object storage, opened by the apps you already use.
       </div>
 
-      <!-- scene 1: homepage hero -->
       <img
         id="shot-s1"
         class="clip shot"
@@ -323,7 +317,6 @@
         Plain files, opened by the apps you already use.
       </div>
 
-      <!-- scene 2: huge files -->
       <img
         id="shot-s2"
         class="clip shot"
@@ -341,7 +334,6 @@
         A 5 GB video starts without a 5 GB download.
       </div>
 
-      <!-- scene 3: agents -->
       <img
         id="shot-s3"
         class="clip shot"
@@ -359,7 +351,6 @@
         Agent keys can list, read and write. They can never delete.
       </div>
 
-      <!-- scene 4: price -->
       <img
         id="shot-s4"
         class="clip shot"
@@ -377,7 +368,6 @@
         2&cent; per GB a month. Never more than $15 per TB.
       </div>
 
-      <!-- scene 5: cap -->
       <img
         id="shot-s5"
         class="clip shot"
@@ -395,7 +385,6 @@
         At the cap, writes stop. Every file stays.
       </div>
 
-      <!-- scene: cta -->
       <div id="cta-bg" class="clip cta-bg" data-start="64" data-duration="11" data-track-index="70"></div>
       <div id="cta-wordmark" class="clip cta-wordmark" data-start="64" data-duration="11" data-track-index="71">
         drive
@@ -406,32 +395,21 @@
       <div id="cta-body" class="clip cta-body" data-start="64" data-duration="11" data-track-index="73">
         The drive is not open yet. Sign-ups go to the waitlist.
       </div>
-      <!-- No host is printed here. The live site sits behind Cloudflare Access,
-           so a printed URL sends every viewer to a login page instead of the
-           waitlist (drive#651). The video says where to go in words instead. -->
       <div id="cta-url" class="clip cta-url" data-start="64" data-duration="11" data-track-index="74">
         Join the waitlist on the drive site.
       </div>
     </div>
 
-    <!-- GSAP 3.14.2, vendored under assets/ so the render needs no network and
-         no CDN. The bytes are the ones jsdelivr served for
-         `gsap@3.14.2/dist/gsap.min.js`; sha256
-         c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280,
-         sha384 sG0Hv1tP1lZCk9KQmrIbY/XNwi+OY84GQqhMscbnsoBFqAz8KNCil1kvfL3Hbbk2. -->
     <script src="assets/gsap-3.14.2.min.js"></script>
     <script>
       const tl = gsap.timeline({ paused: true });
 
-      // intro: text is up from frame 0, then a slow drift
       tl.fromTo("#intro-bg", { scale: 1 }, { scale: 1.04, duration: 6, ease: "none" }, 0);
       tl.fromTo("#intro-wordmark", { y: 14 }, { y: 0, duration: 0.8, ease: "power2.out" }, 0);
       tl.fromTo("#intro-kick", { y: 10 }, { y: 0, duration: 0.8, ease: "power2.out" }, 0.05);
       tl.fromTo("#intro-head", { y: 12 }, { y: 0, duration: 0.9, ease: "power2.out" }, 0.1);
       tl.fromTo("#intro-sub", { y: 10 }, { y: 0, duration: 0.9, ease: "power2.out" }, 0.2);
 
-      // One source of truth: each shot's own data-start/data-duration, so a
-      // timing edit in the markup can never drift from the animation timeline.
       const scenes = [...document.querySelectorAll("[id^='shot-s']")].map((shot) => {
         const start = Number(shot.dataset.start);
         return [shot.id.slice("shot-".length), start, start + Number(shot.dataset.duration)];
