@@ -310,22 +310,22 @@ test("the newest parked copy of a path is the one restore finds", () => {
   assert.equal(findTrashName(entries, "/c.txt"), null);
 });
 
-test("a deleted file is restorable for 30 days and not one day later", () => {
+test("a deleted file is restorable for 3 days and not one day later", () => {
   const day = 24 * 60 * 60 * 1000;
-  assert.equal(RECENTLY_DELETED_DAYS, 30);
-  assert.equal(isRestorable(now - 29 * day, now), true);
-  assert.equal(isRestorable(now - 30 * day, now), true);
-  assert.equal(isRestorable(now - 31 * day, now), false);
+  assert.equal(RECENTLY_DELETED_DAYS, 3);
+  assert.equal(isRestorable(now - 2 * day, now), true);
+  assert.equal(isRestorable(now - 3 * day, now), true);
+  assert.equal(isRestorable(now - 4 * day, now), false);
   // A clock that went backwards is not a file from the future.
   assert.equal(isRestorable(now + day, now), false);
 });
 
-test("a file past the 30 days has no Restore button and says why", () => {
+test("a file past the 3 days has no Restore button and says why", () => {
   const day = 24 * 60 * 60 * 1000;
   const [fresh, stale] = trashRows(
     /** @type {import("../core/files.js").FileEntry[]} */ ([
       { name: trashName("/fresh.md", now - day), path: "/fresh.md", kind: "file" },
-      { name: trashName("/stale.md", now - 31 * day), path: "/stale.md", kind: "file" },
+      { name: trashName("/stale.md", now - 4 * day), path: "/stale.md", kind: "file" },
     ]),
     now,
   );
@@ -333,11 +333,11 @@ test("a file past the 30 days has no Restore button and says why", () => {
   assert.equal(fresh.restorable, true);
   assert.equal(fresh.restoreLabel, "Restore");
   assert.equal(fresh.goneLabel, "");
-  // The promise is 30 days, so past it the page does not offer what it cannot do.
+  // The promise is 3 days, so past it the page does not offer what it cannot do.
   assert.ok(stale);
   assert.equal(stale.restorable, false);
   assert.notEqual(stale.restoreLabel, "Restore");
-  assert.match(stale.goneLabel, /30 days/);
+  assert.match(stale.goneLabel, /3 days/);
 });
 
 test("the trash folder is hidden in the drive root, not deeper in it", () => {
@@ -1362,12 +1362,12 @@ test("restore: a file that is not in Recently deleted says so", async () => {
   assert.match((await response.json()).error, /not in Recently deleted/);
 });
 
-test("restore: a file past the 30 days is gone, and the Worker says so", async () => {
+test("restore: a file past the 3 days is gone, and the Worker says so", async () => {
   const { store, upload } = drive();
   const day = 24 * 60 * 60 * 1000;
   await upload("/", "old.md", "from a month ago", "text/markdown");
-  // Deleted 31 days before the clock this test reads.
-  const deletedAt = now - 31 * day;
+  // Deleted 4 days before the clock this test reads.
+  const deletedAt = now - 4 * day;
   /** @param {number} clock */
   const at = (clock) => /** @param {Request} request */ (request) =>
     handleFilesRequest(request, store, account, clock);
@@ -1389,7 +1389,7 @@ test("restore: a file past the 30 days is gone, and the Worker says so", async (
     }),
   );
   assert.equal(response.status, 410);
-  assert.match((await response.json()).error, /30 days/);
+  assert.match((await response.json()).error, /3 days/);
 });
 
 // ---------------------------------------------------------------- a move the storage makes
@@ -3249,51 +3249,19 @@ test("the page is a mobile-first surface with one-tap actions", () => {
   assert.match(page, /class="skip-link" href="#file-list-heading"/);
 });
 
-test("the page wears the site's header, with room for the view strip", () => {
-  // drive#425, from the new-customer walkthrough: the files page's top bar was
-  // its own — a wordmark and a static "Your drive" — so it was the one page
-  // with no way from it to Pricing or Usage. It now carries the shared
-  // masthead (public/site.css's .masthead, which test/usage.test.mjs holds to
-  // one navigation across the pages that use it), with this page's folder path
-  // under it, and the view strip given room instead of sitting cramped against
-  // the header.
-  const masthead = page.match(/<header class="masthead">[\s\S]*?<\/header>/);
-  assert.ok(masthead, "the page carries the shared masthead header");
-  // The tagline lives in the hero and the footer only (high-end gaps item 11).
-  assert.doesNotMatch(masthead[0], /class="tagline"/);
-  assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
+test("the page wears the app shell, with room for the view strip", () => {
+  assert.match(page, /<!-- shell:app-header current="\/files" -->/);
+  assert.doesNotMatch(page, /<header class="masthead">/, "the shell replaces the old masthead");
   assert.doesNotMatch(page, /<header class="topbar">/, "the page has no top bar of its own");
-  // The static label is gone, and no script is left reading it. The words are
-  // not lost either: the crumbs row's own root button says "Your drive"
-  // (crumbsForParts), which is where the walkthrough's reader saw them before.
+  assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
   assert.doesNotMatch(page, /id="account"/);
   assert.doesNotMatch(page, /getElementById\("account"\)|class="account"/);
 
-  // The rule each part of the header owns, and it owns nothing else: this
-  // page's own padding, background and sticky bar around the shared masthead
-  // (public/site.css owns the header's own metrics, its link colour and the
-  // tagline), this page's own wordmark size, and the crumbs row. A page that
-  // starts restyling a part it does not own fails here, which is what keeps the
-  // pages from drifting apart again. test/site-styles.test.mjs holds the same
-  // line for the other pages.
   /** @param {string} selector */
   const rules = (selector) =>
     [...page.matchAll(new RegExp(`(?:^|\\n)\\.${selector} \\{([^}]*)\\}`, "g"))].map(
       (rule) => rule[1],
     );
-  const mastheadRules = rules("masthead").join("");
-  for (const own of ["margin: 0;", "padding: 14px 0 12px;", "border-bottom: 0;"]) {
-    assert.ok(mastheadRules.includes(own), `the page gives the header its own ${own}`);
-  }
-  assert.ok(
-    !mastheadRules.includes("display:"),
-    "the page does not lay the header out, which the shared chrome already does",
-  );
-  assert.deepEqual(
-    rules("wordmark"),
-    ["\n  font-size: 24px;\n"],
-    "the page sets its own wordmark size and nothing else",
-  );
   assert.equal(rules("crumbs").length, 1, "the folder-path row has one rule of its own");
 
   // The strip's rule is the one that lays it out as a strip; the page has a
@@ -3769,7 +3737,7 @@ test("the purge judges by the name, so a stray file under .trash is left alone",
   const store = createMemoryStore();
   const scoped = scopeStore(store, { id: "acct-a" });
   await scoped.write(`${TRASH_PATH}/not-a-trash-key`, "bytes", "text/plain");
-  await park(store, "acct-a", "/expired.txt", now - 31 * 24 * 60 * 60 * 1000);
+  await park(store, "acct-a", "/expired.txt", now - 4 * 24 * 60 * 60 * 1000);
 
   const purged = await purgeExpiredTrash(db, store, now);
 
@@ -3801,8 +3769,8 @@ test("a purge needs its database and refuses to run without one", async () => {
 
 test("a parked file is expired past the window and never before it opens", () => {
   const day = 24 * 60 * 60 * 1000;
-  assert.equal(isTrashExpired(now - 30 * day, now), false);
-  assert.equal(isTrashExpired(now - 30 * day - 1, now), true);
+  assert.equal(isTrashExpired(now - 3 * day, now), false);
+  assert.equal(isTrashExpired(now - 3 * day - 1, now), true);
   // A future-dated name waits for now to catch up rather than vanishing
   // a day before its own window opens.
   assert.equal(isTrashExpired(now + day, now), false);
@@ -3815,7 +3783,7 @@ test("the entrypoint's trash trip runs the purge on its own schedule", async () 
     .bind(now)
     .run();
   const store = createMemoryStore();
-  await park(store, "acct-a", "/expired.txt", now - 31 * 24 * 60 * 60 * 1000);
+  await park(store, "acct-a", "/expired.txt", now - 4 * 24 * 60 * 60 * 1000);
   const env = { DRIVE_DB: db };
   // The same direct-drive wrapper the fetch calls use above: the handler type
   // is optional on ExportedHandler and takes the injectable store as a fourth
@@ -4306,4 +4274,30 @@ test("removeBatch refuses more than the 1,000-key ceiling and a mixed-bucket bat
     /keys from one bucket/,
   );
   assert.equal(calls, 0, "a refused batch makes no provider call");
+});
+
+test("the purge keeps an account's Recently deleted for the history window it chose", async () => {
+  const day = 24 * 60 * 60 * 1000;
+  const { db } = makeMeteredDB();
+  for (const [id, days] of /** @type {[string, number|null][]} */ ([
+    ["free", null],
+    ["month", 30],
+  ])) {
+    await db
+      .prepare("INSERT INTO accounts (id, email, created_at, history_days) VALUES (?1, ?2, ?3, ?4)")
+      .bind(id, `${id}@x.test`, now, days)
+      .run();
+  }
+  const store = createMemoryStore();
+  for (const id of ["free", "month"]) {
+    await park(store, id, "/ten.txt", now - 10 * day);
+    await park(store, id, "/forty.txt", now - 40 * day);
+  }
+
+  await purgeExpiredTrash(db, store, now);
+
+  const names = async (/** @type {string} */ id) =>
+    (await scopeStore(store, { id }).listAll(TRASH_PATH)).map((e) => e.name);
+  assert.deepEqual(await names("free"), []);
+  assert.deepEqual(await names("month"), [trashName("/ten.txt", now - 10 * day)]);
 });

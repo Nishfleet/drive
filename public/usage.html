@@ -204,23 +204,6 @@ h2 {
   font-size: clamp(18px, 2.6vw, 22px);
 }
 
-.cap button {
-  margin: 6px 0 0;
-  font: inherit;
-  font-weight: 600;
-  padding: 8px 14px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--ink);
-  color: var(--paper);
-  cursor: pointer;
-}
-
-.cap button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
 .close-form {
   display: grid;
   gap: 10px;
@@ -237,18 +220,6 @@ h2 {
   padding: 8px 10px;
   border: 1px solid var(--rule);
   border-radius: 8px;
-}
-
-.close-form button {
-  justify-self: start;
-  font: inherit;
-  font-weight: 600;
-  padding: 8px 14px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--ink);
-  color: var(--paper);
-  cursor: pointer;
 }
 
 .close-form .error {
@@ -329,23 +300,6 @@ h2 {
   gap: 8px;
 }
 
-.topup button,
-.topup-form button {
-  font: inherit;
-  font-weight: 600;
-  padding: 8px 14px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--ink);
-  color: var(--paper);
-  cursor: pointer;
-}
-
-.topup button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
 .topup-form {
   display: flex;
   flex-wrap: wrap;
@@ -382,12 +336,6 @@ h2 {
   margin: 14px 0 0;
   padding-top: 14px;
   border-top: 1px solid var(--rule);
-}
-
-.auto-topup input[type="checkbox"] {
-  width: 20px;
-  height: 20px;
-  accent-color: var(--accent);
 }
 
 .ledger-box {
@@ -438,30 +386,50 @@ h2 {
 <body>
   <a class="skip-link" href="#month-heading">Skip to this month's usage</a>
   <!-- shell:app-header current="/usage" -->
-  <header class="masthead">
-    <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
+  <nav class="app-side" aria-label="Main">
+    <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
     <a href="/home">Home</a>
-    <a href="/files">Your files</a>
-    <a href="/">Pricing</a>
-    <a href="/get-started">Get started</a>
+    <a href="/files">Files</a>
+    <a href="/usage" aria-current="page">Usage and billing</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Webhooks</a>
+    <span class="app-side-end">
+      <a href="/get-started">Get started</a>
+      <a href="/docs/">Docs</a>
+    </span>
+  </nav>
+  <header class="app-top">
+    <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <details class="account-menu" id="account-menu">
+      <summary>Account</summary>
+      <div class="account-panel">
+        <a href="/signin" id="nav-signin">Sign in</a>
+        <noscript>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout">
+            <button class="btn btn-ghost" type="submit">Sign out</button>
+          </form>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout-all">
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
+          </form>
+        </noscript>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      </div>
+    </details>
+  </header>
+  <nav class="app-tabs" aria-label="Tab bar">
+    <a href="/home">Home</a>
+    <a href="/files">Files</a>
     <a href="/usage" aria-current="page">Usage</a>
     <a href="/devices">Devices</a>
-    <a href="/signin" id="nav-signin">Sign in</a>
-      <noscript>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout">
-          <button type="submit">Sign out</button>
-        </form>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout-all">
-          <button type="submit">Sign out everywhere</button>
-        </form>
-      </noscript>
-      <button type="button" id="nav-signout" hidden>Sign out</button>
-      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
-  </header>
+    <a href="/webhooks">Hooks</a>
+  </nav>
   <!-- /shell:app-header -->
 
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
@@ -485,7 +453,7 @@ h2 {
         <div class="status" id="usage-status" data-state="unreachable" role="status" aria-live="polite" hidden>
           <p class="what"></p>
           <p class="next"></p>
-          <p><button type="button" id="usage-retry" hidden>Try again</button></p>
+          <p><button type="button" id="usage-retry" hidden class="btn">Try again</button></p>
         </div>
       </div>
     </section>
@@ -503,15 +471,15 @@ h2 {
               <div class="topup-presets" id="topup-presets"></div>
               <form class="topup-form" id="topup-form">
                 <label for="topup-amount">Another amount, in dollars
-                  <input type="number" id="topup-amount" name="amount" min="10" max="1000" step="1" inputmode="decimal" required>
+                  <input type="number" id="topup-amount" name="amount" min="10" max="1000" step="1" inputmode="decimal" required class="field">
                 </label>
-                <button type="submit">Add</button>
+                <button type="submit" class="btn btn-primary">Add</button>
               </form>
               <p class="error" id="topup-error" role="alert" hidden></p>
               <div class="auto-topup">
-                <input type="checkbox" id="auto-topup" aria-describedby="auto-topup-note">
+                <input type="checkbox" id="auto-topup" aria-describedby="auto-topup-note" class="check">
                 <label for="auto-topup">Auto top-up: add</label>
-                <input type="number" id="auto-topup-amount" min="10" max="1000" step="1" value="10" aria-label="Auto top-up amount, in dollars">
+                <input type="number" id="auto-topup-amount" min="10" max="1000" step="1" value="10" aria-label="Auto top-up amount, in dollars" class="field">
                 <span>when the balance drops under $2</span>
               </div>
               <p class="hint" id="auto-topup-note" role="status">Off until you turn it on. It uses your saved card and emails a receipt each time.</p>
@@ -595,15 +563,15 @@ h2 {
         <p class="hint" id="uploads-hint">Saves upload a few seconds after you close the file.</p>
       </section>
 
-      <section aria-labelledby="cap-heading">
+      <section aria-labelledby="cap-heading" id="cap-section">
         <h2 id="cap-heading">Your cap</h2>
         <div class="cap">
           <label for="cap-amount">Monthly cap, in whole dollars</label>
-          <input type="number" id="cap-amount" min="0" step="1" value="12" inputmode="numeric" aria-describedby="cap-note">
+          <input type="number" id="cap-amount" min="0" step="1" value="12" inputmode="numeric" aria-describedby="cap-note" class="field">
           <label for="cap-slider">Or move the slider</label>
-          <input type="range" id="cap-slider" min="0" max="12" step="1" value="12" aria-describedby="cap-note">
+          <input type="range" id="cap-slider" min="0" max="12" step="1" value="12" aria-describedby="cap-note" class="slider">
           <p class="cap-value" id="cap-value"></p>
-          <button type="button" id="cap-save" hidden>Save cap</button>
+          <button type="button" id="cap-save" hidden class="btn btn-primary">Save cap</button>
         </div>
         <div class="empty" id="cap-note">
           <p class="what" id="cap-note-what">At the cap the drive goes read-only; nothing is ever deleted.</p>
@@ -612,6 +580,15 @@ h2 {
         <p class="hint" id="cap-saved" role="status" hidden></p>
         <p class="hint" id="cap-saving" role="status" hidden>Saving…</p>
         <p class="hint" id="card-portal-line"><a id="card-portal-link" href="/api/billing/portal">Update your card in the billing portal</a></p>
+      </section>
+
+      <section aria-labelledby="history-heading" id="history-section" hidden>
+        <h2 id="history-heading">History</h2>
+        <p class="lede" id="history-now"></p>
+        <div id="history-options" role="radiogroup" aria-label="How long to keep deleted and replaced files"></div>
+        <p class="hint" id="history-line"></p>
+        <button type="button" id="history-save" hidden class="btn">Change history</button>
+        <p class="hint" id="history-status" role="status" hidden></p>
       </section>
 
       <section aria-labelledby="export-heading" id="export-section">
@@ -624,6 +601,7 @@ h2 {
         <h2 id="close-heading">Close your account</h2>
         <p class="lede" id="close-what">Closing revokes every key at once. Your files stay for 30 days, then they are deleted.</p>
         <p class="hint" id="close-next">Type your email to confirm. You can cancel any time in those 30 days.</p>
+        <p class="hint" id="close-alternatives">Before you go: your files are already in your drive folder, so copy it somewhere safe. Or <a href="#cap-section">pause instead</a>: set your cap to $0 and the drive goes read-only, nothing is deleted, and you can lift it any time.</p>
         <p class="hint" id="close-reminder">We email you now and again 5 days before the files go.</p>
         <p class="hint" id="close-purge-on" hidden></p>
         <p class="lede" id="close-closed-what" hidden>This account is closed. Keys are already revoked. Files are deleted 30 days after you closed it.</p>
@@ -631,9 +609,9 @@ h2 {
         <p class="hint" id="close-purged-next" hidden>Your files were deleted. This account stays closed.</p>
         <form class="close-form" id="close-form">
           <label for="close-email" id="close-email-label">Type your email to confirm</label>
-          <input type="email" id="close-email" name="email" autocomplete="email" required>
+          <input type="email" id="close-email" name="email" autocomplete="email" required class="field">
           <p class="error" id="close-error" hidden></p>
-          <button type="submit" id="close-submit">Close account</button>
+          <button type="submit" id="close-submit" class="btn btn-primary">Close account</button>
         </form>
       </section>
     </div>
@@ -983,6 +961,7 @@ function renderClose(status) {
   closeFormEl.hidden = closed && !pending;
   closeWhatEl.hidden = closed;
   closeNextEl.hidden = closed;
+  document.getElementById("close-alternatives").hidden = closed;
   closeClosedWhatEl.hidden = !closed;
   closeClosedNextEl.hidden = !pending;
   closePurgedNextEl.hidden = pending || !closed;
@@ -1278,6 +1257,7 @@ navSignoutAll.addEventListener("click", () => {
       ...summary.top_up_presets_usd.map((dollars) => {
         const button = document.createElement("button");
         button.type = "button";
+        button.className = "btn btn-primary";
         button.textContent = `Add $${dollars}`;
         button.addEventListener("click", () => topUp(dollars));
         return button;
@@ -1318,6 +1298,79 @@ navSignoutAll.addEventListener("click", () => {
   autoEl.addEventListener("change", () => saveAuto());
   pendingEl.hidden = new URLSearchParams(window.location.search).get("topup") !== "done";
   read();
+
+  // History (retention): how long deleted and replaced files stay restorable.
+  // The Worker words the price for each window (core/history-addon.js), so this
+  // block shows what the API says before it asks to turn anything on, and
+  // sends accept_price only for the window whose price is on screen.
+  async function history() {
+    const section = document.getElementById("history-section");
+    const optionsEl = document.getElementById("history-options");
+    const nowEl = document.getElementById("history-now");
+    const lineEl = document.getElementById("history-line");
+    const saveEl = document.getElementById("history-save");
+    const statusEl = document.getElementById("history-status");
+    if (!section || !optionsEl || !nowEl || !lineEl || !saveEl || !statusEl) return;
+    let payload;
+    try {
+      const response = await fetch("/api/history", { headers: { accept: "application/json" } });
+      payload = await response.json();
+      if (!response.ok || !Array.isArray(payload.options)) return;
+    } catch (_error) {
+      return;
+    }
+    let chosen = payload.days;
+    function paint() {
+      const current = payload.options.find((option) => option.days === payload.days);
+      nowEl.textContent = current ? current.line : "";
+      optionsEl.textContent = "";
+      for (const option of payload.options) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.className = "check";
+        input.name = "history-days";
+        input.value = String(option.days);
+        input.checked = option.days === chosen;
+        input.addEventListener("change", () => {
+          chosen = option.days;
+          paint();
+        });
+        label.append(input, ` ${option.label}${option.free ? " (free)" : ""}`);
+        optionsEl.append(label);
+      }
+      const picked = payload.options.find((option) => option.days === chosen);
+      lineEl.textContent = chosen === payload.days || !picked ? "" : picked.line;
+      saveEl.hidden = chosen === payload.days;
+      saveEl.textContent = picked && picked.free ? "Go back to the free window" : "Turn on with this price";
+    }
+    saveEl.addEventListener("click", async () => {
+      saveEl.disabled = true;
+      statusEl.hidden = true;
+      try {
+        const response = await fetch("/api/history", {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({ days: chosen, accept_price: true }),
+        });
+        const answer = await response.json().catch(() => null);
+        if (!response.ok) {
+          statusEl.textContent = answer && answer.error ? answer.error : "That did not save. Nothing was billed.";
+        } else {
+          payload.days = chosen;
+          statusEl.textContent = "Saved.";
+        }
+      } catch (_error) {
+        statusEl.textContent = "Could not reach the server. Nothing was billed.";
+      }
+      statusEl.hidden = false;
+      saveEl.disabled = false;
+      paint();
+    });
+    section.hidden = false;
+    paint();
+  }
+  history();
 })();
   </script>
   <script type="module" src="/close-banner.js"></script>

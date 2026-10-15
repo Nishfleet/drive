@@ -35,15 +35,15 @@ import { failureMessage } from "./messages.js";
  *   were walked and how many parked files were removed
  */
 export async function purgeExpiredTrash(db, store, now = Date.now()) {
-  const rows = await db.prepare("SELECT id FROM accounts").all();
-  const accounts = /** @type {{id: string}[]} */ (rows.results ?? []);
+  const rows = await db.prepare("SELECT id, history_days FROM accounts").all();
+  const accounts = /** @type {{id: string, history_days: number|null}[]} */ (rows.results ?? []);
   let purged = 0;
   for (const row of accounts) {
     const scoped = scopeStore(store, { id: row.id });
     const entries = await scoped.listAll(TRASH_PATH);
     for (const entry of entries) {
       const parsed = parseTrashName(entry.name);
-      if (parsed && isTrashExpired(parsed.deletedAt, now)) {
+      if (parsed && isTrashExpired(parsed.deletedAt, now, row.history_days ?? undefined)) {
         await scoped.remove(trashStorePath(entry.name));
         purged += 1;
       }

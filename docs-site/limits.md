@@ -25,10 +25,11 @@ would rather you read it here than find out in week three.
   have not run the measured suite on a Mac, so treat read-write on a Mac as
   untested.
 - **`drive restore` puts back one file at a time.** A delete from the Files page
-  is restorable for 30 days in Recently deleted. `drive restore <file>` lists
+  is restorable for 3 days in Recently deleted. `drive restore <file>` lists
   the earlier copies of a file you saved over, and `--latest` or `--copy N` puts
-  one back. A file deleted from the mounted folder is not listed yet: for that,
-  ask us within the 3 days.
+  one back. A file deleted from the mounted folder appears in Recently deleted on the
+  Files page shortly after, and Restore puts it back; `drive restore` does not
+  list it yet.
 - **{{VERSION_HISTORY}}** Save a file again and the file is replaced. The copy it
   replaced stays for 3 days and the Files page lists it under Earlier copies
   and `drive restore` lists them.
