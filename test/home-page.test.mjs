@@ -130,3 +130,7 @@ test("no agent sessions, or a failed read, leaves the agents tile out", async ()
   assert.equal(down.get("agents").hidden, true);
   assert.equal(down.get("home-status").hidden, true);
 });
+
+test("the grid honours the hidden attribute, so an error replaces it instead of pushing it down", () => {
+  assert.match(page, /\.grid\[hidden\]\s*\{\s*display:\s*none;/);
+});
