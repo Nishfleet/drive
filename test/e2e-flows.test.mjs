@@ -381,3 +381,42 @@ test("without reduced motion the page fades in and a toast shows then goes", OPT
   assert.equal(await page.$eval(".toast", (el) => el.textContent), "Copied");
   await page.waitForFunction(() => document.querySelector(".toast") === null, { timeout: 8000 });
 });
+
+test(
+  "Files paints the last listing at once while the fresh one is still on its way",
+  OPTIONS,
+  async (t) => {
+    const site = await startSite();
+    t.after(() => site.close());
+    const browser = await launchChrome(site.origin);
+    t.after(() => browser.close());
+    const page = await browserSignIn(browser, site, "quick@example.com");
+    await page.goto(`${site.origin}/files`, { waitUntil: "load" });
+    await page.waitForSelector("#upload-button:not([disabled])");
+    await page.evaluate(() => {
+      const data = new DataTransfer();
+      data.items.add(new File(["x"], "cached.txt", { type: "text/plain" }));
+      document.dispatchEvent(new DragEvent("drop", { dataTransfer: data, cancelable: true }));
+    });
+    await page.waitForFunction(() =>
+      document.querySelector("#file-list")?.textContent?.includes("cached.txt"),
+    );
+    await page.waitForFunction(() => sessionStorage.getItem("files:/")?.includes("cached.txt"));
+
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      if (request.url().includes("/api/files?")) {
+        setTimeout(() => request.continue(), 2500);
+      } else {
+        request.continue();
+      }
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(
+      () => document.querySelector("#file-list")?.textContent?.includes("cached.txt"),
+      {
+        timeout: 2000,
+      },
+    );
+  },
+);

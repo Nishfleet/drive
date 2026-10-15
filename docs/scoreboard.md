@@ -63,3 +63,17 @@ customer actually pays.
 ## Rows with no issue yet
 
 None. Every losing or unmeasured row names its issue.
+
+## Site speed: our own pages
+
+These are ours only, so they have no table row. The CI web-speed job fails a PR below any of them (`lighthouserc.json`, one assertion block for every listed page). Measured 2026-10-15 with Lighthouse 12.6.1, desktop preset, rtt 40 ms, 10 Mbps, the static pages served from `public/`; repeat: serve `public/` and run `lighthouse http://127.0.0.1:4173/<page>.html --preset=desktop --only-categories=performance --throttling.rttMs=40 --throttling.throughputKbps=10240 --throttling.cpuSlowdownMultiplier=1`.
+
+- public home: performance 100, largest paint 487 ms, blocking 0 ms, layout shift 0.001, 190 KB.
+- sign in: 100, 364 ms, 0 ms, 0.000, 80 KB.
+- signed-in Home: 100, 403 ms, 0 ms, 0.000, 103 KB.
+- Files: 100, 444 ms, 0 ms, 0.000, 139 KB.
+- Usage: 100, 445 ms, 0 ms, 0.008, 133 KB.
+- Devices: 100, 362 ms, 0 ms, 0.010, 102 KB.
+- Webhooks: 100, 403 ms, 0 ms, 0.007, 103 KB.
+
+Floors every page must keep: performance score 0.9 or more, largest paint under 1.5 s, blocking time under 150 ms, layout shift 0.01 or less, one script, one stylesheet, no third party, and 300 KB or less transferred.
