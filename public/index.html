@@ -548,6 +548,177 @@ a {
   animation: blink 1s steps(1) infinite;
 }
 
+.stage.demo {
+  --demo-cycle: 14s;
+  --demo-loops: 3;
+}
+
+.stage.demo.is-paused * {
+  animation-play-state: paused;
+}
+
+@keyframes demo-in-4 {
+  0%,
+  4% {
+    opacity: 0;
+  }
+
+  6%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-12 {
+  0%,
+  12% {
+    opacity: 0;
+  }
+
+  14%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-24 {
+  0%,
+  24% {
+    opacity: 0;
+  }
+
+  26%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-34 {
+  0%,
+  34% {
+    opacity: 0;
+  }
+
+  36%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-40 {
+  0%,
+  40% {
+    opacity: 0;
+  }
+
+  42%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-46 {
+  0%,
+  46% {
+    opacity: 0;
+  }
+
+  48%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-52 {
+  0%,
+  52% {
+    opacity: 0;
+  }
+
+  54%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-58 {
+  0%,
+  58% {
+    opacity: 0;
+  }
+
+  60%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes demo-in-64 {
+  0%,
+  64% {
+    opacity: 0;
+  }
+
+  66%,
+  100% {
+    opacity: 1;
+  }
+}
+
+.stage.demo .term p:nth-child(2) {
+  animation: demo-in-4 var(--demo-cycle) linear var(--demo-loops);
+}
+
+.stage.demo .term p:nth-child(3) {
+  animation: demo-in-12 var(--demo-cycle) linear var(--demo-loops);
+}
+
+.stage.demo .term p:nth-child(4) {
+  animation: demo-in-24 var(--demo-cycle) linear var(--demo-loops);
+}
+
+.stage.demo .term p:nth-child(5) {
+  animation: demo-in-34 var(--demo-cycle) linear var(--demo-loops);
+}
+
+.stage.demo .f-body > div:last-child .f-row:nth-child(2) {
+  animation: demo-in-40 var(--demo-cycle) linear var(--demo-loops);
+}
+
+.stage.demo .f-body > div:last-child .f-row:nth-child(3) {
+  animation: demo-in-46 var(--demo-cycle) linear var(--demo-loops);
+}
+
+.stage.demo .f-body > div:last-child .f-row:nth-child(4) {
+  animation: demo-in-52 var(--demo-cycle) linear var(--demo-loops);
+}
+
+.stage.demo .f-body > div:last-child .f-row:nth-child(5) {
+  animation: demo-in-58 var(--demo-cycle) linear var(--demo-loops);
+}
+
+.stage.demo .f-body > div:last-child .f-row:nth-child(6) {
+  animation: demo-in-64 var(--demo-cycle) linear var(--demo-loops);
+}
+
+.demo-toggle {
+  margin: 12px 0 0 40px;
+  padding: 4px 12px;
+  border: 1px solid var(--drive-term-dim);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--drive-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .demo-toggle {
+    display: none;
+  }
+}
+
 @keyframes blink {
   50% {
     opacity: 0;
@@ -1938,7 +2109,7 @@ details p {
           </div>
         </div>
 
-        <div class="stage">
+        <div class="stage demo" id="stage">
           <span class="tag t1" aria-hidden="true">38 GB in Finder</span>
           <div class="finder" role="img" aria-label="A Finder window with drive in the sidebar. It holds a 38 GB dataset, two 5 GB videos and a 212 GB archive, all online, and one folder kept offline. Almost nothing is on the local disk.">
             <div class="f-top"><span class="dots"><i></i><i></i><i></i></span><span>drive</span></div>
@@ -1970,6 +2141,7 @@ details p {
             <p class="ok">drive mounted in Finder</p>
             <p><span class="pr">$</span> <span class="caret" aria-hidden="true"></span></p>
           </div>
+          <button class="demo-toggle" id="demo-toggle" type="button" aria-pressed="false">Pause demo</button>
         </div>
       </div>
 
@@ -2424,6 +2596,14 @@ for (const button of agentButtons) {
     document.getElementById("agent-name").textContent = agentNames[button.dataset.agent];
   });
 }
+
+const demoStage = document.getElementById("stage");
+const demoToggle = document.getElementById("demo-toggle");
+demoToggle.addEventListener("click", () => {
+  const paused = demoStage.classList.toggle("is-paused");
+  demoToggle.setAttribute("aria-pressed", String(paused));
+  demoToggle.textContent = paused ? "Play demo" : "Pause demo";
+});
 
 for (const button of document.querySelectorAll("[data-copy]")) {
   button.addEventListener("click", async () => {
