@@ -1,17 +1,8 @@
-// A real browser against the real site: the shipped public/ files served the
-// way the asset layer serves them (clean URLs), and every /api, /s and /v1
-// request sent to the site Worker over a real D1 test database. Nothing here
-// stubs the page's own API, so a flow that passes is a flow a visitor gets.
-//
-// The browser is the same Chrome the a11y and files-page tests drive
-// (DRIVE_CHROME, else /usr/bin/google-chrome) through puppeteer-core, which is
-// already a devDependency; the suite skips when Chrome is not installed.
-
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname } from "node:path";
 import { Readable } from "node:stream";
-import { createMemoryStore } from "../core/files.js";
+import { createMemoryStore } from "../core/files-memory.js";
 import worker from "../src/index.js";
 import { TEST_FILES_STORE } from "../src/index-support.js";
 import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
@@ -34,7 +25,6 @@ const WORKER_PREFIXES = ["/api/", "/s/", "/v1/"];
 const allow = { limit: async () => ({ success: true }) };
 
 /**
- * The file public/ serves for a path, or null.
  * @param {string} pathname
  */
 function assetFor(pathname) {
@@ -47,17 +37,13 @@ function assetFor(pathname) {
           body: readFileSync(url),
           type: TYPES[extname(url.pathname)] ?? "application/octet-stream",
         };
-      } catch {
-        /* a directory */
-      }
+      } catch {}
     }
   }
   return null;
 }
 
 /**
- * Starts the site. `overrides` adds to the Worker's env (a Dodo fetch, a mail
- * hook). Close it with `site.close()`.
  * @param {{env?: Record<string, unknown>}} [options]
  */
 export async function startSite(options = {}) {
@@ -108,7 +94,6 @@ export async function startSite(options = {}) {
         continue;
       headers.set(name, Array.isArray(value) ? value.join(", ") : (value ?? ""));
     }
-    // The Worker's same-origin check compares Origin to its own base URL.
     headers.set("origin", TEST_BASE_URL);
     const hasBody = request.method !== "GET" && request.method !== "HEAD";
     const workerRequest = new Request(`${TEST_BASE_URL}${url.pathname}${url.search}`, {
@@ -157,9 +142,6 @@ export async function startSite(options = {}) {
 }
 
 /**
- * Launches Chrome; the caller closes it. The site's own origin is treated as
- * secure, because the Worker sets Secure, __Secure- prefixed cookies, which a
- * plain http page would otherwise refuse.
  * @param {string} origin
  */
 export async function launchChrome(origin) {
