@@ -1,0 +1,13 @@
+Your Storagebun receipt: $25.00 added
+
+You added $25.00 to your Storagebun balance.
+
+Your balance is now $31.50. It never expires.
+
+Storage is drawn from it at 2 cents per GB a month, and never more than $15 per TB.
+
+Open your drive: https://storagebun.com/
+
+-- Storagebun
+
+Reply to this email and it reaches us: support@drive.example

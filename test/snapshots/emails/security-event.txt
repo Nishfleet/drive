@@ -1,0 +1,13 @@
+A security event on your drive
+
+An agent key was minted.
+
+It happened at 2026-10-06T09:00:00.000Z, from a device named office laptop.
+
+If this was not you, revoke access on the usage page.
+
+Revoke access on the usage page: https://storagebun.com/usage.html
+
+-- Storagebun
+
+Reply to this email and it reaches us: support@drive.example

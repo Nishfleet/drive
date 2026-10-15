@@ -1,0 +1,13 @@
+A device asked to connect to your drive
+
+A device named office laptop asked to connect to your drive.
+
+It asked at 2026-10-05T12:00:00.000Z.
+
+If this was you, you can ignore this mail. If it was not, sign out of every device on the usage page.
+
+Open your drive: https://storagebun.com/
+
+-- Storagebun
+
+Reply to this email and it reaches us: support@drive.example
