@@ -1,0 +1,13 @@
+Your drive is read-only at your spending cap
+
+Your drive has reached its $12.00 spending cap and is now read-only.
+
+Nothing is deleted. Your files are safe and still readable, and uploads waiting on your machines stay on disk.
+
+Raise or remove the cap in the billing portal, or run `drive cap <dollars>` in a terminal, to start writing again.
+
+Open your drive: https://storagebun.com/
+
+-- Storagebun
+
+Reply to this email and it reaches us: support@drive.example

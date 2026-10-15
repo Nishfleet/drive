@@ -1,0 +1,15 @@
+Your Storagebun receipt: October 2026, UTC
+
+Your Storagebun bill for October 2026, UTC is $12.00.
+
+Storagebun bills whole months in UTC: the month starts at 00:00 on the 1st and closes at 00:00 on the 1st of the next month, both UTC.
+
+Your use this month meters to $16.00, and the most we charge for it is $12.00.
+
+Our price cap saved you $4.00
+
+Open your drive: https://storagebun.com/
+
+-- Storagebun
+
+Reply to this email and it reaches us: support@drive.example

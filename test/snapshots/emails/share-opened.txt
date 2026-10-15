@@ -1,0 +1,11 @@
+Your shared link was opened
+
+Your link to report.pdf was opened 3 times since the last time we wrote.
+
+You can turn a link off any time from the Files page or with drive share --revoke.
+
+Open your drive: https://storagebun.com/
+
+-- Storagebun
+
+Reply to this email and it reaches us: support@drive.example

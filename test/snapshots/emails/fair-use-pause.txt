@@ -1,0 +1,11 @@
+Uploads are paused because young deletes still count
+
+No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.
+
+You can still open, download and delete files, and nothing extra is charged.
+
+Open your drive: https://storagebun.com/
+
+-- Storagebun
+
+Reply to this email and it reaches us: support@drive.example
