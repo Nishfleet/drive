@@ -25,6 +25,7 @@ import {
   validatePath,
 } from "./files.js";
 import { restoreVersionRequest, versionsRequest } from "./files-history.js";
+import { mountDeletedRows } from "./files-mount-deleted.js";
 import { fileRows, plain, trashRows } from "./files-s3.js";
 import { accountStorageKey, ChangedUnderUsError, etagMismatch, scopeStore } from "./files-scope.js";
 import { historyDaysFor } from "./history-addon.js";
@@ -87,7 +88,14 @@ export async function handleFilesRequest(request, store, account, now = Date.now
   // it chose with the history add-on.
   const days = options.db ? await historyDaysFor(options.db, account.id) : HIDDEN_VERSION_DAYS;
   if (route === FILES_ENDPOINT) {
-    return listRequest(request, url, scoped, now, days);
+    return listRequest(
+      request,
+      url,
+      scoped,
+      now,
+      days,
+      options.db ? { db: options.db, account } : null,
+    );
   }
   if (
     route === `${FILES_ENDPOINT}/download` ||
@@ -156,18 +164,31 @@ const FILE_PAGE_SIZE = 200;
  * @param {FileStore} store
  * @param {number} now
  * @param {number} days the account's history window
+ * @param {{db: D1Database, account: {id: string}}|null} mount where removals made outside the page are read from
  * @returns {Promise<Response>}
  */
-async function listRequest(request, url, store, now, days) {
+async function listRequest(request, url, store, now, days, mount) {
   if (request.method !== "GET") {
     return plain("Method not allowed. GET a listing.", 405);
   }
   try {
     if (url.searchParams.get("view") === "deleted") {
       const entries = await store.listAll(TRASH_PATH);
+      const parked = /** @type {Array<{path: string, deletedAt: number}>} */ (
+        trashRows(entries, now, days).filter(Boolean)
+      );
+      const outside = mount
+        ? await mountDeletedRows(
+            mount.db,
+            mount.account,
+            new Set(parked.map((row) => row.path)),
+            now,
+            days,
+          )
+        : [];
       return json({
         view: "deleted",
-        rows: trashRows(entries, now, days),
+        rows: [...parked, ...outside].sort((a, b) => b.deletedAt - a.deletedAt),
         historyDays: days,
         empty: EMPTY_STATES.trash,
         line: PAGE_LINE,
