@@ -1032,7 +1032,7 @@ test("no month is painted before a read has landed", () => {
   // not look like a priced month of zeros, and the empty chart sits inside the
   // same hidden wrapper.
   assert.match(page, /<div id="usage-body" hidden>/);
-  assert.match(page, /<dd id="stored-now"><\/dd>/);
+  assert.match(page, /<dd id="stored-now" data-count><\/dd>/);
   assert.match(page, /<dd id="size30"><\/dd>/);
   assert.match(page, /<dd id="cost"><\/dd>/);
   assert.match(page, /<dd id="downloads-line"><\/dd>/);
