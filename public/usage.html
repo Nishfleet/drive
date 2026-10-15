@@ -401,6 +401,7 @@ h2 {
   <header class="app-top">
     <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
     <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <button class="btn btn-ghost palette-open" id="palette-open" type="button" aria-haspopup="dialog">Search <kbd>Ctrl K</kbd></button>
     <a class="top-up" href="/usage#topup-form">Top up</a>
     <details class="account-menu" id="account-menu">
       <summary>Account</summary>
@@ -430,6 +431,22 @@ h2 {
     <a href="/devices">Devices</a>
     <a href="/webhooks">Hooks</a>
   </nav>
+  <dialog class="palette" id="palette" aria-label="Search and commands">
+    <input class="field" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" aria-label="Search pages, files and commands" placeholder="Jump to a page, a file or a command" autocomplete="off" spellcheck="false">
+    <div id="palette-list" role="listbox" aria-label="Results"></div>
+  </dialog>
+  <dialog class="palette" id="shortcuts" aria-labelledby="shortcuts-title">
+    <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+    <dl>
+      <dt><kbd>Ctrl</kbd> <kbd>K</kbd></dt><dd>Search and commands</dd>
+      <dt><kbd>?</kbd></dt><dd>This list</dd>
+      <dt><kbd>/</kbd></dt><dd>Filter the files in this folder</dd>
+      <dt><kbd>U</kbd></dt><dd>Upload files</dd>
+      <dt><kbd>Delete</kbd></dt><dd>Delete the picked files</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close, or clear the pick</dd>
+    </dl>
+    <button class="btn" type="button" id="shortcuts-close">Close</button>
+  </dialog>
   <!-- /shell:app-header -->
 
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>

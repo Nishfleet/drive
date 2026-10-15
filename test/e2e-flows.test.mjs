@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -7,6 +8,7 @@ import { BILLING_WEBHOOK_PATH, signWebhook, TOPUP_PURPOSE } from "../core/topup.
 import { chromeSkip, launchChrome, startSite } from "./e2e-site.mjs";
 import { TEST_BASE_URL } from "./harness.mjs";
 
+const axeSource = readFileSync(createRequire(import.meta.url).resolve("axe-core"), "utf8");
 const OPTIONS = { timeout: 180_000, skip: chromeSkip };
 
 async function browserSignIn(
@@ -255,3 +257,50 @@ test("a deleted file shows in Recently deleted and one press puts it back", OPTI
   const listed = await page.$eval("#file-list", (el) => el.textContent);
   assert.match(listed ?? "", /keep\.txt/);
 });
+
+test(
+  "Ctrl+K opens the palette on every signed-in page and a keyboard alone gets around",
+  OPTIONS,
+  async (t) => {
+    const site = await startSite();
+    t.after(() => site.close());
+    const browser = await launchChrome(site.origin);
+    t.after(() => browser.close());
+    const page = await browserSignIn(browser, site, "keys@example.com");
+
+    for (const route of ["/home", "/files", "/usage", "/devices", "/webhooks"]) {
+      await page.goto(`${site.origin}${route}`, { waitUntil: "load" });
+      await page.keyboard.down("Control");
+      await page.keyboard.press("k");
+      await page.keyboard.up("Control");
+      await page.waitForFunction(
+        () => /** @type {HTMLDialogElement} */ (document.getElementById("palette")).open,
+      );
+      assert.equal(await page.evaluate(() => document.activeElement?.id), "palette-input", route);
+      await page.keyboard.press("Escape");
+    }
+
+    await page.goto(`${site.origin}/home`, { waitUntil: "load" });
+    await page.keyboard.down("Control");
+    await page.keyboard.press("k");
+    await page.keyboard.up("Control");
+    await page.type("#palette-input", "devi");
+    const violations = await page.evaluate(async (source) => {
+      const script = document.createElement("script");
+      script.textContent = source;
+      document.head.appendChild(script);
+      const run = await /** @type {any} */ (globalThis).axe.run(document, {
+        resultTypes: ["violations"],
+      });
+      return run.violations.map((/** @type {{id: string}} */ item) => item.id);
+    }, axeSource);
+    assert.deepEqual(violations, []);
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => location.pathname === "/devices");
+
+    await page.keyboard.press("?");
+    await page.waitForFunction(
+      () => /** @type {HTMLDialogElement} */ (document.getElementById("shortcuts")).open,
+    );
+  },
+);

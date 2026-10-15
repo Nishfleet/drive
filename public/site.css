@@ -791,3 +791,67 @@ body:has(.app-side) main h1 {
 body:has(.app-side) .wordmark {
   font-size: 22px;
 }
+
+.palette-open kbd,
+.palette kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+dialog.palette {
+  width: min(560px, calc(100vw - 32px));
+  margin: 12vh auto auto;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+  color: var(--ink);
+}
+
+dialog.palette::backdrop {
+  background: rgba(20, 20, 18, 0.55);
+}
+
+.palette [role="listbox"] {
+  margin: 8px 0 0;
+  max-height: 50vh;
+  overflow: auto;
+}
+
+.palette [role="option"] {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.palette [role="option"][aria-selected="true"] {
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.palette [role="option"] small {
+  color: var(--ink-soft);
+}
+
+.palette dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  margin: 0 0 12px;
+}
+
+.palette dd {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .palette-open kbd {
+    display: none;
+  }
+}
