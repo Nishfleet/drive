@@ -1,20 +1,3 @@
-// The prepaid balance's moving parts (drive#586, part 2): the meter's usage
-// draws, the pause at $0, the "$2 left" email and the optional auto top-up.
-//
-// The ledger itself (core/ledger.js) only appends and sums. This file decides
-// WHEN money is drawn and what the balance then triggers:
-//
-//   - drawUsageHours: run after the meter. It groups the closed hours into
-//     UTC days and draws each account once per day (drive#642): the monthly
-//     price of size30 / 30, remainder carried. One row per account per day
-//     in daily_draws, keyed usage:<acct>:day:<YYYY-MM-DD> on the ledger when
-//     the day's cents are at least 1, so a retried run never draws twice.
-//   - writesPaused: uploads and new writes pause at a balance of $0 or less.
-//     Reads, listing, downloads and restore never consult it, and nothing is
-//     deleted because the balance is empty.
-//   - settleBalance: after a draw, the "$2 left" email (once per crossing) and
-//     the auto top-up (off by default; at most one started per day).
-
 import { accountStoredBytes } from "./abuse-guards.js";
 import {
   centsFromDrawnMillicents,
@@ -38,18 +21,17 @@ import {
   usageKey,
 } from "./ledger.js";
 import { failureMessage } from "./messages.js";
-import { HOUR_MS, hourStart, monthStart, size30Through } from "./meter.js";
+import { HOUR_MS, hourStart } from "./meter.js";
+import { monthStart, size30Through } from "./meter-usage.js";
 import { pauseAccountKeys } from "./prepaid-pause.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";
+import { emitEvent } from "./webhooks.js";
 
-// The env value that turns the pause on. Anything else leaves it off.
 const PREPAID_PAUSE_ON = "on";
 
-/** A started auto top-up is not started again for this long. */
 export const AUTO_TOPUP_RETRY_MS = 24 * HOUR_MS;
 
-/** The purpose tag an auto top-up's checkout carries, beside the manual one. */
 const AUTO_TOPUP_SOURCE = "auto";
 
 /**
@@ -150,9 +132,6 @@ export async function drawUsageHours(db, hours, options = {}) {
   return { drawn, cents, accounts: [...touched] };
 }
 
-// The UTC days an account's draw still owes (drive#642): each distinct day
-// with rolled hours after the account's draw mark, so a missed day is charged
-// once on the next run and a double run charges once (daily_draws PK).
 const PENDING_DRAW_DAYS_SQL = `SELECT DISTINCT strftime('%Y-%m-%d', hour / 1000, 'unixepoch') AS day
   FROM usage_minutes
   WHERE account_id = ?1 AND hour > ?2 AND hour <= ?3
@@ -222,9 +201,6 @@ export async function drawAccountPending(db, accountId, options) {
   let drawn = 0;
   let cents = 0;
   for (const day of days) {
-    // A day with no meter rows still owes its draw while size30 holds a peak
-    // (an emptied drive keeps drawing for up to 30 days, drive#642), so every
-    // UTC day is walked, and a day with no rows and an empty window is skipped.
     const amount = await drawForDay(db, accountId, day, now, !rowDays.includes(day));
     if (amount > 0) {
       drawn += 1;
@@ -294,8 +270,6 @@ export function pendingDrawDays(rowDays, lastDrawnDay, throughDay) {
   /** @type {string} */
   let start;
   if (lastDrawnDay !== null) {
-    // The last drawn day itself is walked again: its row and ledger key make
-    // it a no-op, and it keeps a failed write on that day from passing silently.
     start = lastDrawnDay;
   } else if (first !== undefined) {
     start = first;
@@ -336,8 +310,6 @@ async function drawForDay(db, accountId, day, now, skipEmpty = false) {
     downloadBytes: size30.downloadBytes,
   });
   const dayStart = Date.parse(`${day}T00:00:00.000Z`);
-  // The newest earlier stored draw, not strictly the day before: a day skipped
-  // for an empty window must not reset the carried remainder.
   const prev = /** @type {{remainder_millicents?: unknown}|null} */ (
     await db
       .prepare(
@@ -386,9 +358,6 @@ async function drawForDay(db, accountId, day, now, skipEmpty = false) {
       `draw_millicents does not parse for ${accountId} ${day}, so no draw is made`,
     );
   }
-  // Cents come from the stored millicents, not this run's freshly computed
-  // bill: a same-day reroll that lost the INSERT still posts the first
-  // draw's cents, so the ledger key cannot see a different amount.
   const amountCents = centsFromDrawnMillicents(
     drawMillicents,
     remainderIn.unpostedMillicents,
@@ -415,8 +384,6 @@ async function drawForDay(db, accountId, day, now, skipEmpty = false) {
     throw new TypeError(`hourly draw count does not parse for ${accountId} ${day}`);
   }
   if (hourlyCount > 0) {
-    // Switch-over (drive#642): this UTC day was already charged under the
-    // per-minute hourly keys. Do not add a second charge.
     return 0;
   }
   const { inserted } = await appendLedgerEntry(db, {
@@ -554,8 +521,6 @@ export async function settleBalances(db, accountIds, deps) {
       );
     }
     if (deps.devices) {
-      // A failed swap is logged and the next account is still settled: the
-      // swap reads live state, so the next hour retries it.
       try {
         await pauseAccountKeys(accountId, {
           db,
@@ -583,7 +548,6 @@ export async function settleBalance(db, accountId, deps) {
   const now = deps.now ?? Date.now();
   const balance = await balanceCents(db, accountId);
   if (balance > LOW_BALANCE_CENTS || !(await hasToppedUp(db, accountId))) {
-    // Above $2, or an account that never added money: nothing to say.
     return { lowBalanceSent: false, autoTopUpStarted: false };
   }
   const row = /** @type {{email?: unknown, auto_topup_cents?: unknown}|null} */ (
@@ -667,6 +631,13 @@ async function sendLowBalanceOnce(db, accountId, balance, autoCents, row, deps, 
       .run();
     throw error;
   }
+  await emitEvent(
+    db,
+    accountId,
+    "balance.low",
+    { balance_cents: Math.max(0, balance), auto_topup_cents: autoCents },
+    { fetch: deps.fetch, now },
+  );
   return true;
 }
 
@@ -739,7 +710,6 @@ async function startAutoTopUp(db, accountId, cents, deps, now) {
   return true;
 }
 
-/** The account page's auto top-up switch (drive#586). */
 export const AUTO_TOPUP_ENDPOINT = "/api/topup/auto";
 
 /**
@@ -768,9 +738,6 @@ export async function handleAutoTopUpRequest(request, account, db) {
   if (request.method !== "POST") {
     return answer({ error: "Method not allowed." }, 405);
   }
-  // Cross-site writes are the Worker's one CSRF middleware (src/index.js
-  // csrfWhenBrowser on /api/*), not a copy here: the two public POSTs keep
-  // their own handler copies, and every other write is refused there.
   if (!db) {
     return answer({ error: failureMessage("drive-not-configured") }, 503);
   }

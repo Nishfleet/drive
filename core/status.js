@@ -1,56 +1,17 @@
-// First-run and sync status: the words and the arithmetic for "is it
-// working?", kept in one place because three surfaces ask the same question
-// (the first-run page, `drive status`, and the Devices list in
-// docs/build-spec.md "Screens"). The page is a Vite entry at the repo root
-// (issue #70): src/get-started.js imports this module and renders from it, so
-// the page and the CLI read the same words and there is no second copy left
-// to drift.
-//
-// Plain data and pure functions for the words and math; the one fetch handler
-// at the bottom serves the page's poll and uses only the standard Response,
-// which node --test provides.
-
 import { sessionAccount } from "./auth.js";
 import { INSTALL_LINES } from "./install-lines.js";
 import { failureMessage, INSTALL_COMMAND, SIGN_IN_COMMAND } from "./messages.js";
 
-// INSTALL_COMMAND is re-exported from the message table so the first-run page
-// and the tests keep importing it from here. It mounts the drive and connects
-// the agent tools. It does not sign anyone in: that is LOGIN_COMMAND.
 export { INSTALL_COMMAND };
 
-// The command that connects this machine to the account before `drive init`
-// runs: it opens the browser, mints the machine's key and writes the storage
-// settings, so init needs no pasted keys (drive issue #415). The string is the
-// message table's SIGN_IN_COMMAND (drive#557), so the first-run page, the
-// emails, the home page and every failure sentence name the same one command
-// and none of them can point at `drive init`, which does not sign in.
 export const LOGIN_COMMAND = SIGN_IN_COMMAND;
 
-// The command that says what the drive on this machine is doing: whether it
-// is mounted, what is waiting to upload and what the month has cost. It
-// answers from the machine itself, so it is the line the page points at while
-// the api Worker that stamps `devices.last_seen_at` is not deployed (drive
-// #342) and the page cannot see a sign-in land on its own (drive #556).
 export const STATUS_COMMAND = "drive status";
 
-// The two lines the Get started box shows, in the order they run: log in,
-// then set up. The install line for each system sits above the box
-// (INSTALL_LINES), so the box only carries the drive's own commands.
 export const FIRST_RUN_COMMAND = `${LOGIN_COMMAND}\n${INSTALL_COMMAND}`;
 
-// The one line that puts the command on a machine, one row per system, shown
-// above INSTALL_COMMAND so a new person sees what to paste before they are told
-// what to paste it into (drive issue #428). Re-exported from install-lines.js,
-// which is the one table test/packaging.test.mjs holds to .goreleaser.yaml
-// (drive#509). A short `brew install drive` cannot resolve after a release.
 export { INSTALL_LINES };
 
-// What the page walks through, in order: log in, approve, check it works. The
-// third step names STATUS_COMMAND rather than promising this page a flip,
-// because until the api Worker lands (drive #342) nothing writes
-// `devices.last_seen_at`, and a page that promises a flip it cannot make is a
-// page someone keeps waiting at.
 export const FIRST_RUN_STEPS = Object.freeze([
   {
     title: "Log in and set up",
@@ -66,33 +27,14 @@ export const FIRST_RUN_STEPS = Object.freeze([
   },
 ]);
 
-// Where the page reads the live state from. The path is the api Worker's job
-// (build-spec.md "The pieces" item 3); this page only reads it, and the shape
-// it reads is the same one the Devices screen renders.
 export const STATUS_ENDPOINT = "/api/first-run-status";
 
-// The page polls on this interval while it waits. Actually reading the value
-// keeps the number in one place and lets the test pin it.
 export const POLL_INTERVAL_MS = 3000;
 
-// A device counts as connected when it has signed in inside this window. The
-// window is not "recently active": the page is answering "did the sign-in
-// land?", and a device that signed in an hour ago is not what the person is
-// waiting for.
 export const CONNECTED_WINDOW_MS = 2 * 60 * 1000;
 
-// A device with no sync inside this window is not "synced": a save uploads a
-// few seconds after close (docs/spec.md "How it works"), so a quarter of an
-// hour of silence is worth saying out loud rather than papering over.
 export const SYNCED_WINDOW_MS = 15 * 60 * 1000;
 
-// The sentences the page shows for the live connection line. Static so the
-// shipped page can carry them verbatim and the test can pin them.
-//
-// While the api Worker is not deployed (drive #342) the status route can read a
-// device's `last_seen_at` but no device has one stamped yet, so the honest line
-// for the two states that wait is STATUS_COMMAND, which answers from the
-// machine. Nothing here promises this page a flip it cannot make (drive #556).
 export const CONNECTION_COPY = Object.freeze({
   waiting: {
     what: "Waiting for this Mac to sign in.",
@@ -108,10 +50,6 @@ export const CONNECTION_COPY = Object.freeze({
   },
 });
 
-// Every empty screen says what to do first (issue #32). One entry per surface
-// the first-run page renders today; the rest of the v1 screens
-// (build-spec.md "Screens") add their entry when they are built, so the table
-// never holds a line nothing reads.
 export const EMPTY_STATES = Object.freeze({
   devices: {
     what: "No other devices yet.",
@@ -123,10 +61,6 @@ export const EMPTY_STATES = Object.freeze({
   },
 });
 
-// The desktop notification for a sync error. The page raises it with the
-// browser Notification API when the person has allowed notifications, and
-// says nothing when they have not: the error is already on the page, so a
-// denied permission is not a failure to report.
 export const SYNC_ERROR_NOTIFICATION = Object.freeze({
   title: "Storagebun could not sync a file",
   body: "Open the drive page to see which file and what to do next.",
@@ -225,10 +159,6 @@ export function syncStatus(device, now = Date.now()) {
       detail: String(device.syncError),
     };
   }
-  // `typeof … === "number"` rather than Number.isFinite: the field is
-  // `number|null|undefined` and the question is whether a save is waiting, so
-  // a null or absent count is the same answer as a non-finite one, and this
-  // is the check that narrows the field for the comparison below.
   const pending = device.pendingBytes;
   if (typeof pending === "number" && Number.isFinite(pending) && pending > 0) {
     return { state: "syncing", label: "Uploading", detail: null };
@@ -244,33 +174,18 @@ export function syncStatus(device, now = Date.now()) {
   return { state: "synced", label: "Synced", detail: "Quiet for a while" };
 }
 
-// The upload-progress line, as a table of fragments so the page can carry the
-// same words it cannot import (`drive status` prints the assembled line).
-// `paused` and `resumed` are the two states `drive pause` and `drive resume`
-// name, printed by the status line and by the CLI's own command output; the Go
-// CLI mirrors this table (cmd/drive/pause.go) and
-// TestStatusWordsMatchThePageWords joins the two copies.
 export const UPLOAD_LABEL = Object.freeze({
   upToDate: "Up to date",
   oneFile: "Uploading 1 file",
   manyFiles: "Uploading {files} files",
   noCount: "Uploading",
   progress: "{uploaded} of {total} ({percent}%)",
-  // A paused queue is not a moving one. Its line names the state first and
-  // then what is still waiting, so a person reads "Paused" and not
-  // "Uploading" for bytes that are not leaving.
   paused: "Paused",
   resumed: "Resumed",
   pausedOne: "1 file waiting",
   pausedMany: "{files} files waiting",
   pausedLine: "Paused: {waiting} ({left} left)",
-  // The other half of a mixed account (drive issue #865): one device uploading
-  // while another is paused. {uploading} is the moving half's own line and
-  // {paused} the held half's, both spelled from the fragments above.
   mixedLine: "{uploading}; {paused}",
-  // Why a queued file has not gone up yet (drive issue #107). `drive status`
-  // prints these; the page carries the same fragments so the two copies cannot
-  // drift. Disk-full uses FAILURE_MESSAGES["disk-cache-full"] instead.
   waitingWhy: "They are waiting to upload.",
   waitingUnmounted: "They are waiting because the drive is not mounted.",
   waitingUnmountedNext: "They will upload when the drive is mounted again.",
@@ -318,14 +233,8 @@ export function uploadProgress(upload) {
     throw new RangeError(`uploadedBytes (${uploaded}) cannot pass totalBytes (${total})`);
   }
   const percent = Math.round((uploaded / total) * 100);
-  // `files` is optional on the payload, so it is read into a local: the count
-  // is null unless it is a positive integer, and the label below switches on
-  // that null rather than on a missing field.
   const count = fields.files;
   const files = typeof count === "number" && Number.isInteger(count) && count > 0 ? count : null;
-  // The pause is the same arithmetic in a stopped state, read off the payload
-  // the same defensive way: only a literal true pauses, so `paused: false` and
-  // an absent flag both leave the uploading line alone.
   if (fields.paused === true) {
     return { percent, label: pausedLabel(uploaded, total, files) };
   }
@@ -467,8 +376,6 @@ export async function signedInAccount(request, store) {
 export function unauthorizedResponse() {
   return new Response(JSON.stringify({ error: failureMessage("unauthorized") }), {
     status: 401,
-    // A cookie session, so the challenge names the scheme the sign-in flow
-    // mints rather than a bearer token it does not use.
     headers: { ...STATUS_HEADERS, "www-authenticate": "Cookie" },
   });
 }
@@ -505,8 +412,6 @@ export function unauthorizedResponse() {
  *   when none has signed in
  */
 export function handleFirstRunStatusRequest(request, account, upload = null, devices = []) {
-  // The gate comes before the method check, so an anonymous request is told
-  // only that it is not signed in and never which methods this route has.
   if (!account) {
     return unauthorizedResponse();
   }
@@ -516,15 +421,6 @@ export function handleFirstRunStatusRequest(request, account, upload = null, dev
       headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
     });
   }
-  // `upload` is the raw queue, not a finished line: this endpoint feeds the
-  // first-run page's renderer, which calls uploadLine() on it (drive issue
-  // #100). The value is the shape uploadProgress() accepts, and the renderer's
-  // own guard turns a payload it cannot draw into its unreachable state, so no
-  // second check is written here.
-  // A device that cannot be read is loud here, not silent: `firstRunState`
-  // turns a clock it cannot read into a TypeError, so a payload row that is
-  // not a device row fails the request instead of answering "waiting" to an
-  // account whose machine has signed in.
   return new Response(
     JSON.stringify({
       state: firstRunState(devices),

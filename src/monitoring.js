@@ -1,34 +1,3 @@
-// Sentry seam for the cron jobs and the request error path (drive issue #520:
-// "failures are invisible"). Before this module, `console.error` in the cron
-// branches and `app.onError` went nowhere: the Worker shipped with
-// `observability: null` and no error pipeline, so a failed rollup read as a
-// quiet zero until a customer noticed.
-//
-// Everything Sentry-facing lives here so three facts stay in one place:
-//   - the calls are the SDK's own three (`captureCheckIn`, `captureMessage`,
-//     `captureException`), with the check-ins shaped for Sentry Crons;
-//   - an unset SENTRY_DSN is safe: there is nowhere to send, so every capture
-//     is a no-op that still hands back its id, and a deployment that has not
-//     configured Sentry still runs every cron (issue #520);
-//   - tests stand a fake in place of the seam through the `sentry` parameter,
-//     the same injectable shape the meter's and the store's tests use.
-//
-// The transport is hand-rolled rather than the SDK (drive issue #847). A
-// static `import { withSentry } from "@sentry/cloudflare"` put @sentry/core,
-// @sentry/cloudflare, @sentry/server-utils and the OpenTelemetry API into the
-// Worker entry every request passes through: about 360 KB of an entry that was
-// 2.7 MB, none of it executed by a served request. Moving that same import
-// behind `await import()` did not help, because `cf build` code-splits the SDK
-// into bundle/assets and the shipped bytes are unchanged. The three calls drive
-// uses are a POST, a JSON envelope and a uuid, so this module speaks Sentry's
-// documented wire protocol directly and the SDK leaves the bundle entirely.
-// The protocol is versioned and stable: sdk/foundations/envelopes (framing and
-// ingest), sdk/telemetry/check-ins 1.6.0 (the `check_in` item), and
-// sdk/telemetry/errors (the `exception` interface).
-//
-// Every capture is awaited by its caller, which is what keeps an event alive
-// long enough to send: the SDK's wrap did the same through `context.waitUntil`.
-
 /**
  * The Sentry capture calls, as one object so a test can replace the whole
  * seam. The names and shapes are the SDK's own, so this seam reads exactly as
@@ -214,10 +183,7 @@ async function send(target, itemHeaders, payload, id) {
       },
       body: envelope,
     });
-  } catch {
-    // See the doc comment: a failed report is the platform's record to keep,
-    // never a thrown error on a cron or a request.
-  }
+  } catch {}
   return id;
 }
 
@@ -385,6 +351,41 @@ export async function reportPurgeFailures(purgeFailures, purged, sentry = sentry
       `(purged ${purged} account(s) in full)`,
     "error",
   );
+}
+
+/**
+ * Reports a gap between our fair-use meter and the vendor's stored bytes
+ * (drive#364). More than 1% either way is a warning: the pause is only as
+ * honest as the sizes it reads, and a silent drift would pause the wrong
+ * accounts or miss a pause.
+ * @param {number} ourBytes live + ghost we counted
+ * @param {number} vendorBytes the vendor's stored-bytes figure for the same account
+ * @param {Sentry} [sentry]
+ */
+export function reportFairUseVendorGap(ourBytes, vendorBytes, sentry = sentrySender()) {
+  if (!Number.isSafeInteger(ourBytes) || ourBytes < 0) {
+    throw new TypeError(`ourBytes must be 0 or more whole bytes, got ${String(ourBytes)}`);
+  }
+  if (!Number.isSafeInteger(vendorBytes) || vendorBytes < 0) {
+    throw new TypeError(`vendorBytes must be 0 or more whole bytes, got ${String(vendorBytes)}`);
+  }
+  if (vendorBytes === 0) {
+    if (ourBytes === 0) {
+      return;
+    }
+    sentry.captureMessage(
+      `fair-use vendor gap: our meter is ${ourBytes} bytes and the vendor reports 0`,
+      "warning",
+    );
+    return;
+  }
+  const gap = Math.abs(ourBytes - vendorBytes) / vendorBytes;
+  if (gap > 0.01) {
+    sentry.captureMessage(
+      `fair-use vendor gap: ${(gap * 100).toFixed(2)}% — our ${ourBytes} bytes vs vendor ${vendorBytes} bytes`,
+      "warning",
+    );
+  }
 }
 
 /**

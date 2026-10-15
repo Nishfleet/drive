@@ -1,11 +1,3 @@
-// The Sentry seam every cron branch and the error path report through
-// (drive issue #520). withCronCheckIn, monitorConfig, reportBillingGap and
-// captureError are the whole pipeline a failed trigger has to pass to reach
-// a human, so the tests stand a fake in the injectable `sentry` parameter
-// and pin the check-in shapes: in_progress before the work, ok or error
-// after, the same checkInId on both, and the error rethrown so the
-// platform's own record of a failed trigger keeps its signal.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -13,10 +5,12 @@ import {
   captureError,
   monitorConfig,
   reportBillingGap,
+  reportFairUseVendorGap,
   reportPurgeFailures,
   sentrySender,
   withCronCheckIn,
 } from "../src/monitoring.js";
+import { readIndexSource } from "./index-source.mjs";
 
 /** A fake Sentry seam recording every call. @returns {import("../src/monitoring.js").Sentry & {calls: {method: string, args: any[]}[]}} */
 function fakeSentry() {
@@ -27,7 +21,7 @@ function fakeSentry() {
     /** @param {any[]} args */
     async captureCheckIn(...args) {
       calls.push({ method: "captureCheckIn", args });
-      return String(calls.length); // a distinct checkInId per call
+      return String(calls.length);
     },
     /** @param {any[]} args */
     async captureException(...args) {
@@ -132,7 +126,7 @@ test("captureError reports the error with the job that failed, for the fingerpri
 // a duplicate slug would fold two schedules into one monitor and a missed
 // run of one could pass as the other's.
 test("every scheduled branch runs in its own check-in with a unique slug", () => {
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readIndexSource();
   const branches = [
     ["METER_CRON", "meter-hourly-rollup"],
     ["KNOWN_BAD_FEED_SCHEDULE", "known-bad-feed"],
@@ -197,12 +191,28 @@ test("reportPurgeFailures raises an error naming the failed purges, and none whe
   assert.match(/** @type {string} */ (message), /purged 1 account\(s\)/);
 });
 
+test("reportFairUseVendorGap warns when our meter and the vendor differ by more than 1%", () => {
+  const sentry = fakeSentry();
+  reportFairUseVendorGap(1000, 1000, sentry);
+  assert.equal(sentry.calls.length, 0);
+  reportFairUseVendorGap(1020, 1000, sentry);
+  assert.equal(sentry.calls.length, 1);
+  const [message, level] = sentry.calls[0].args;
+  assert.equal(level, "warning");
+  assert.match(/** @type {string} */ (message), /2\.00%/);
+  sentry.calls.length = 0;
+  reportFairUseVendorGap(1010, 1000, sentry);
+  assert.equal(sentry.calls.length, 0, "1% exactly is not over the line");
+  reportFairUseVendorGap(10, 0, sentry);
+  assert.equal(sentry.calls.length, 1);
+});
+
 test("the nightly close cron reports its resolved purge failures, not only rejections", () => {
   // The close cron runs on its own trigger (drive#522), awaited inside its
   // check-in, so a rejection fails the trigger and marks the monitor `error`.
   // A resolved purge-failure count is the half that would stay silent, so the
   // branch hands it to reportPurgeFailures.
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readIndexSource();
   const start = src.indexOf("if (event.cron === CLOSE_SCHEDULE)");
   assert.ok(start !== -1, "the close cron has its own branch");
   const block = src.slice(start, src.indexOf("\n    }\n", start));
@@ -430,7 +440,7 @@ test("a DSN with a path prefix and a secret key still resolves its ingest endpoi
 test("the SDK is gone from the source and the manifest, so it cannot reach the bundle", () => {
   // The whole point of #847: @sentry/cloudflare was a static import in the
   // entry every request passes through. Pin it out so a re-add is deliberate.
-  const index = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const index = readIndexSource();
   assert.doesNotMatch(index, /from "@sentry\//, "no Sentry import in the entry");
   // The word survives only in the comment that records why there is no wrap,
   // so the pin is on the call, not on the prose.
@@ -486,7 +496,7 @@ function callText(src, name, from = 0) {
 }
 
 test("every monitoring call in the entry passes the deployment's own sender", () => {
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readIndexSource();
   // The module's own exports are declared here too, so a definition is not a
   // call site: `const sentryFor = (env) => ...` and the import statement are
   // the only places these names appear without a sender argument.
@@ -514,7 +524,7 @@ test("every monitoring call in the entry passes the deployment's own sender", ()
   }
   assert.equal(
     sites,
-    14,
-    "the entry has the 14 monitoring call sites this guard walks: 6 cron check-ins, 5 errors, 3 reports",
+    18,
+    "the entry has the 18 monitoring call sites this guard walks: 6 cron check-ins, 9 errors, 3 reports",
   );
 });

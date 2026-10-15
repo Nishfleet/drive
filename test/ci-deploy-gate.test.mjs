@@ -1,12 +1,3 @@
-// A main commit deploys only after CI passed on it, and a failed post-deploy
-// check rolls the Worker version back (drive#499).
-//
-// The pair that made this issue: CI 37254363049 failed on 2f62b7a and deploy
-// 37254362979 on the same commit succeeded, because the deploy started from
-// `push`. This file pins the workflow text that makes that pair impossible,
-// so an edit that puts `push:` back on the deploy, drops `merge_group` from
-// CI, or removes the rollback fails here rather than shipping.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

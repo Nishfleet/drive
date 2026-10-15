@@ -1,27 +1,3 @@
-// The key store: the per-kind storage keys and the stand-in object bytes the
-// storage API lists. The device sign-in half (codes, the signed-in approval,
-// and the minted device token) lives in device-signin.js, which is the store
-// that can be backed by D1.
-//
-// Build step 4 (drive#55) needs three things the api Worker did not have yet:
-// a device sign-in flow, one storage key per account and kind (a device key
-// for the mount, an agent key per tool), and an authentication check that
-// refuses a revoked key and a path outside the key's own prefix. The device
-// sign-in flow is delegated; the other two are here.
-//
-// The real store is D1 plus the storage provider's key API (build step 1,
-// drive#2, still parked on the credential decision), so this module is the
-// stand-in the routes and the tests run against: the shapes here are the
-// shapes the D1 tables in docs/build-spec.md already name (`devices`), and
-// swapping it for D1 is a new factory with the same methods, not a route
-// change. Secrets are SHA-256 hashed on the way in and never stored or
-// returned again (docs/build-spec.md, "The B2 secret is shown once to the
-// device, never stored").
-//
-// Nothing here reads a request or a clock of its own: the clock is injected
-// (now) so a device code can be tested as expired without sleeping, and the
-// routes below own the HTTP shape.
-
 import { newId, nowSeconds, sha256Hex } from "./db.js";
 import {
   createMemoryDeviceSigninStore,
@@ -48,11 +24,6 @@ import {
 } from "./keyprovider.js";
 import { createTeamStore } from "./teams.js";
 
-// Kept as keystore re-exports so the one place that named a device-code,
-// device-token or agent-credential window keeps naming it; the values live with
-// the store that enforces them (device-signin.js and keyprovider.js), which
-// are the stores the D1 deployment uses and the only ones left — the
-// per-isolate Maps #122 built them over are gone.
 export {
   AGENT_KEY_TTL_SECONDS,
   DEVICE_CODE_INTERVAL_SECONDS,
@@ -62,14 +33,6 @@ export {
   renewDeviceTokenWindow,
 };
 
-/**
- * The refusal to mint because the account already holds the most live keys it
- * may hold (drive issue #552, `KEY_COUNT_CAP` in keyprovider.js). The mint
- * path throws it before the vendor call, so a capped account makes no vendor
- * request at all; the key route maps it to the message table's
- * "key-count-cap" answer. `live` is the count the check measured, for the
- * log — the customer's message is the table's, not this one.
- */
 export class KeyCountCapError extends Error {
   /** @param {string} accountId @param {number} live */
   constructor(accountId, live) {
@@ -96,8 +59,6 @@ function liveKeyCountInMap(devices, accountId, atSeconds) {
   let live = 0;
   for (const device of devices.values()) {
     if (device.accountId !== accountId || device.revokedAt !== null) continue;
-    // A null expiry never dies (a device key), so it counts as live: only a
-    // real expiry at or before `at` makes the row dead here.
     if ((device.expiresAt ?? Number.POSITIVE_INFINITY) <= atSeconds) continue;
     live += 1;
   }
@@ -126,17 +87,14 @@ function liveKeyCountInMap(devices, accountId, atSeconds) {
  * whether an account's balance is $0 so its keys may not write. It is unset
  * while the pause is switched off. `size30DayUnpaid` is the size30 raise
  * check (drive#642).
- * @param {{writesPaused?: (accountId: string) => Promise<boolean>, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>, credential?: {accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null, expiresAt: number|null}}|{error: string}>, countLiveKeys?: (accountId: string, atSeconds: number) => Promise<number>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
+ * `fairUseForUpload` is the fair-use pause (drive#364): when set, it answers
+ * the same check the web upload uses for this write's size.
+ * @param {{writesPaused?: (accountId: string) => Promise<boolean>, fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void, size30DayUnpaid?: (accountId: string, extraBytes: number) => Promise<boolean>, now?: () => number, randomBytes?: () => Uint8Array, signin?: import("./device-signin.js").DeviceSigninStore, keyProvider?: import("./keyprovider.js").KeyProvider, teams?: import("./teams.js").TeamStore, storage?: {endpoint?: string, region?: string}, deviceStore?: {put: (device: Device) => Promise<unknown>, listPublic?: (account: {id: string}) => Promise<ReturnType<typeof publicDevice>[]>, revokeKey?: (account: {id: string}, keyId: string) => Promise<{revoked: true}|{error: string}>, revokeAllKeys?: (account: {id: string}) => Promise<{revoked: number}>|{revoked: number}, revokeTeamKeys?: (accountId: string, teamId: string) => Promise<{revoked: number}>, authenticate?: (accessKeyId: string, secret: string) => Promise<Device|null>, renewKey?: (account: {id: string}, keyId: string) => Promise<{renewed: boolean, device: ReturnType<typeof publicDevice>, credential?: {accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null, expiresAt: number|null}}|{error: string}>, countLiveKeys?: (accountId: string, atSeconds: number) => Promise<number>, getCloseState?: (accountId: string) => Promise<{state: string}|null>}, download?: {baseUrl: string, secret: string}}} [options]
  */
 export function createMemoryStore(options = {}) {
   const now = options.now ?? (() => Date.now());
   const keyProvider = options.keyProvider;
   const deviceStore = options.deviceStore;
-  // Whether this deployment's provider mints credentials that die on their
-  // own (the STS path, s3-keys.js `namesSession`). The in-memory
-  // authenticate below refuses a null-expiry device row on that signal,
-  // exactly as the D1 store does, so a deployment without a database reads
-  // the same rule the D1 one enforces (drive#713).
   const providerNamesSessions = keyProvider !== undefined && keyProvider.namesSession === true;
   const storage = options.storage;
   const download = options.download;
@@ -161,12 +119,6 @@ export function createMemoryStore(options = {}) {
    * @param {string} name
    */
   async function mintScopedKey(account, scope, kind, name) {
-    // The per-account live-key cap (drive issue #552), before the vendor
-    // call: mintKey and mintTeamKey both come through here, so a team mint
-    // cannot walk around the bound. The count is a read then a mint, not a
-    // single D1 transaction across isolates, so two concurrent mints can both
-    // see 19 and both pass; the per-account KEYS_RATE_LIMITER (10 a minute)
-    // is the bound on how wide that window can get.
     const live = deviceStore?.countLiveKeys
       ? await deviceStore.countLiveKeys(account.id, nowSeconds(now()))
       : liveKeyCountInMap(devices, account.id, nowSeconds(now()));
@@ -177,9 +129,6 @@ export function createMemoryStore(options = {}) {
     /** @type {{accessKeyId: string, secret: string, sessionToken: string|null, expiresIn: number|null}} */
     let credential;
     if (keyProvider === undefined) {
-      // Tests: no storage configured, so the stand-in credential the api's
-      // own storage API knows. Production never reaches this branch
-      // (workers/api/src/index.js storeFor requires a key provider).
       credential = {
         accessKeyId: newId("ak"),
         secret: newId("sk"),
@@ -195,12 +144,6 @@ export function createMemoryStore(options = {}) {
         expiresIn: minted.expiresIn ?? null,
       };
     }
-    // The hour. The kind's own lifetime is the ceiling, and a provider session
-    // that names a shorter one wins: a session that dies in 15 minutes must
-    // not be stretched by bookkeeping that outlives it. A kind with no ceiling
-    // of its own takes the provider's session instead, because the STS
-    // provider mints ones that die (s3-keys.js DurationSeconds) and a device
-    // row read "never expires" over one would be a lie (drive#544).
     const ttl = mintTtlSeconds(kind, credential.expiresIn);
     /** @type {Device} */
     const device = {
@@ -214,9 +157,6 @@ export function createMemoryStore(options = {}) {
       capabilities: [...scope.capabilities],
       createdAt: nowSeconds(now()),
       expiresAt: ttl === null ? null : nowSeconds(now()) + ttl,
-      // The lifetime the mint actually gave, so every renewal of this row is
-      // measured from the same number and a provider session shorter than the
-      // hour cannot be renewed into an hour.
       ttlSeconds: ttl,
       lastSeenAt: null,
       revokedAt: null,
@@ -226,9 +166,6 @@ export function createMemoryStore(options = {}) {
     if (deviceStore !== undefined) {
       await deviceStore.put(device);
     }
-    // The download URL names this key, and only a key on the account's own
-    // folder: the dl Worker serves `u/<id>/…` from the account's bucket, so a
-    // team key (`drv-t-<id>`) gets none rather than one that cannot work.
     const downloadUrl =
       download !== undefined && scope.prefix.startsWith(`u/${account.id}/`)
         ? downloadUrlFor(
@@ -247,21 +184,12 @@ export function createMemoryStore(options = {}) {
       capabilities: device.capabilities,
       endpoint: storage?.endpoint ?? null,
       region: storage?.region ?? null,
-      // The bucket the credential is scoped to, straight from the scope:
-      // the account's own `drv-<id>` (or a team's `drv-t-<id>`), which is the
-      // boundary the storage server enforces (drive#371). It is part of the
-      // answer so a caller mounting this key mounts the bucket the key can
-      // reach, and so drive#462's regression — a mint that named no bucket at
-      // all — is visible in every answer rather than only in the policy.
       bucket: scope.bucket,
       downloadUrl,
     };
   }
 
   return {
-    /** The stand-in's accounts, for the tests and the stand-in's one query.
-     * The D1 sign-in store has no accounts of its own (the sign-in flow owns
-     * them, core/auth.js), so the map is the in-memory one's only. */
     accounts: signin.accounts ?? new Map(),
 
     /**
@@ -411,8 +339,6 @@ export function createMemoryStore(options = {}) {
       if (!KEY_KINDS.includes(/** @type {any} */ (kind))) {
         throw new Error(`Unknown key kind: ${kind}. Known kinds: ${KEY_KINDS.join(", ")}.`);
       }
-      // The live-key cap runs inside mintScopedKey, before the vendor call,
-      // so mintKey and mintTeamKey share one bound.
       const scope =
         request.scope ??
         (kind === "branch"
@@ -462,16 +388,6 @@ export function createMemoryStore(options = {}) {
      */
     async revokeKey(account, keyId) {
       if (deviceStore?.revokeKey) {
-        // Fail-closed: the database is the source of truth, so the
-        // revoke must land there before the map is touched. The map is
-        // marked only on the store's accepted answer, so a refused or
-        // missing row is reported as refused and this isolate's copy
-        // stays live — the same rule the bulk path (#236) follows.
-        // A concurrent request inside this isolate can still read the
-        // live entry between the write and the mark (sub-ms, same writer);
-        // eliminating that window would require mark-first + unmark on
-        // refusal, which would fail-open if the DB is unreachable, so
-        // the window is accepted and documented rather than hidden.
         const answer = await deviceStore.revokeKey(account, keyId);
         const device = devices.get(keyId);
         if (
@@ -521,15 +437,6 @@ export function createMemoryStore(options = {}) {
       const persisted = deviceStore?.revokeAllKeys
         ? await deviceStore.revokeAllKeys(account)
         : null;
-      // One call, both halves. The bound D1 device store revokes the account's
-      // keys (in D1 and at the provider), and its device tokens, share links
-      // and upload requests in the same statement set (devices.js
-      // revokeAccountCredentials). The sign-in store is called here as well, so
-      // the token half is revoked in every configuration — the in-memory
-      // stand-in has no bound store to do it — and the caller has one method
-      // to call rather than two that must stay in step (drive#497). A second
-      // write of an already-revoked token matches no row and keeps the first
-      // timestamp, so the extra call is idempotent, not a second revoke.
       await signin.revokeAllDeviceTokens(account);
       let revoked = 0;
       for (const device of devices.values()) {
@@ -585,9 +492,6 @@ export function createMemoryStore(options = {}) {
         return { error: "revoked" };
       }
       const at = nowSeconds(now());
-      // The device session re-mint (drive#749), the stand-in twin of the D1
-      // store's branch: the row here is the store, so the swap is three
-      // field writes and the two map entries the old access key sat behind.
       if (device.kind === "device" && providerNamesSessions && keyProvider !== undefined) {
         const minted = await keyProvider.mint({
           prefix: device.prefix,
@@ -673,25 +577,13 @@ export function createMemoryStore(options = {}) {
       const deviceId = byAccessKeyId.get(accessKeyId);
       const device = deviceId === undefined ? undefined : devices.get(deviceId);
       if (device !== undefined && device.revokedAt === null) {
-        // The one compare in http.js. A device is stored only as the hash of
-        // its secret, so both sides here are hashes: the stored one, and the
-        // hash of the secret this request presented.
         if (!(await tokensMatch(device.secretHash, await sha256Hex(secret)))) {
           return null;
         }
         const at = nowSeconds(now());
-        // Absent and null both mean "this credential never expires" (a person's
-        // own device key, and only when the provider named no session,
-        // drive#544), so both are checked rather than one being assumed.
         if (device.expiresAt !== undefined && device.expiresAt !== null && at >= device.expiresAt) {
           return null;
         }
-        // drive#713: the D1 store's refusal, mirrored here. On a provider
-        // that names a session, a device row with no expiry is a row minted
-        // over a session the vendor has since ended, not a permanent key;
-        // the api holds only the secret's hash, so there is no re-minting
-        // for the caller and the row is refused with no write. A provider
-        // that names no session keeps the row a permanent key.
         if (
           providerNamesSessions &&
           device.kind === "device" &&
@@ -733,10 +625,6 @@ export function createMemoryStore(options = {}) {
      * @returns {Promise<number>} how many keys were revoked
      */
     async revokeTeamKeys(accountId, teamId) {
-      // The team prefix is the one every member key carries whatever the role:
-      // keyprovider.js `teamPrefix`, the same function the mint and both
-      // revokes read, so the map's match and the store's statement name one
-      // string.
       const prefix = teamPrefix(teamId);
       const persisted = deviceStore?.revokeTeamKeys
         ? await deviceStore.revokeTeamKeys(accountId, teamId)
@@ -752,11 +640,6 @@ export function createMemoryStore(options = {}) {
           revoked++;
         }
       }
-      // The persisted count wins when a store is bound, so the number the
-      // caller reports is the rows that died rather than this isolate's map.
-      // The loop still runs either way — its side effect on `devices` is what
-      // makes this isolate refuse the key from its next request, whether or
-      // not anyone reads the count it produced.
       return persisted === null ? revoked : persisted.revoked;
     },
 
@@ -826,6 +709,31 @@ export function createMemoryStore(options = {}) {
       return options.writesPaused ? options.writesPaused(device.accountId) : false;
     },
 
+    fairUseRefuse: options.fairUseRefuse === true,
+
+    /**
+     * @param {unknown} error
+     */
+    onFairUseError(error) {
+      if (typeof options.onFairUseError === "function") {
+        options.onFairUseError(error);
+      }
+    },
+
+    /**
+     * Whether this write would trip the fair-use pause (drive#364). Unset
+     * while the check is off or the meter cannot be read, so a missing
+     * snapshot never pauses a write by guesswork.
+     * @param {{accountId: string}} device
+     * @param {number} uploadBytes
+     * @returns {Promise<{wouldRefuse: boolean, line: {copy: string}}|null>}
+     */
+    async fairUseForUpload(device, uploadBytes) {
+      return options.fairUseForUpload
+        ? options.fairUseForUpload(device.accountId, uploadBytes)
+        : null;
+    },
+
     /**
      * Whether a write of `extraBytes` would raise size30 without one day's
      * balance at the new size (drive#642). Unset when the pause is off.
@@ -838,21 +746,8 @@ export function createMemoryStore(options = {}) {
         : false;
     },
 
-    /**
-     * The team store: teams, members, and the invite-by-email lookup. The D1
-     * store when the deployment binds a database (core/teams.js
-     * `createD1TeamStore`), and the in-memory stand-in when it does not, so a
-     * route reads `store.teams` either way and neither path is special-cased.
-     */
     teams: options.teams ?? createTeamStore({ now, accounts: signin.accounts ?? new Map() }),
 
-    // The device sign-in store this key store delegates to, exposed because
-    // `DELETE /v1/keys` has to reach the account's device tokens as well as its
-    // keys and the dispatcher hands a route this one store (device-signin.js).
-    // Exposing it is not a second way in: every method here that touches a
-    // device token already forwards to this same object, so a caller that holds
-    // the key store holds the sign-in store it was built with and never a
-    // different one.
     signin,
   };
 }

@@ -1,19 +1,3 @@
-// Accessibility and 375px layout on the built pages (drive issue #546).
-//
-// drive#527 added an axe pass for the signed-in pages. This is the same engine
-// over the pages that pass does not cover: the built home page, the share
-// upload page and the built docs (benchmarks), plus a scrollWidth check on
-// every built docs page at 375px. A wide docs table used to widen the page
-// instead of scrolling inside it, and the home hero tagline was 2.4:1 on the
-// orange; both are fixed in the same issue and both are proven here.
-//
-// No new browser tool: puppeteer-core is a declared devDependency, the same
-// one test/files-page-click.test.mjs uses, and the same Chrome the Lighthouse
-// run in .github/workflows/ci.yml drives on this runner. axe-core is a
-// declared devDependency and is the engine behind Lighthouse's accessibility
-// category, so this gate runs the same rules. Any violation fails, whatever
-// its impact, because this page set is meant to be clean.
-
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -272,5 +256,59 @@ test("the upload page's Choose files button still opens the file picker", {
     assert.equal(await chooser, true, "Choose files must still open the file picker");
   } finally {
     await chrome.close();
+  }
+});
+
+// Dark mode (polish gap 3): every page on the html.drive alias follows the
+// visitor's device, so the same axe rules run again with the dark scheme
+// emulated. A colour that passed on paper and fails on dark paper is caught
+// here, not by a visitor. The home page keeps its orange field in both
+// modes and is covered by the light-and-dark pass above.
+const DARK_PAGES = [
+  "/signin.html",
+  "/privacy.html",
+  "/terms.html",
+  "/refunds.html",
+  "/acceptable-use.html",
+  "/support.html",
+  "/accessibility.html",
+  "/status.html",
+  "/404.html",
+  "/500.html",
+  "/starter.html",
+];
+
+test("the pages on the html.drive alias carry no axe violation in dark mode", {
+  timeout: 240_000,
+  skip: chromeSkip,
+}, async (t) => {
+  const site = await servePublic();
+  t.after(site.close);
+  const browser = await launch(t);
+  for (const path of DARK_PAGES) {
+    const chrome = await browser.newPage();
+    chrome.setDefaultTimeout(120_000);
+    try {
+      await chrome.setViewport({ width: 1280, height: 900 });
+      await chrome.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "dark" }]);
+      await chrome.goto(`${site.origin}${path}`, { waitUntil: "networkidle0" });
+      const scheme = await chrome.evaluate(
+        () => getComputedStyle(document.documentElement).colorScheme,
+      );
+      assert.equal(scheme, "dark", `${path}: the dark values did not apply`);
+      const found = await runAxe(chrome, axeSource);
+      assert.equal(
+        found.length,
+        0,
+        `${path} (dark): axe found ${found
+          .map(
+            (violation) =>
+              `${violation.id} at ${violation.targets.map((target) => target.join(" ")).join("; ")}`,
+          )
+          .join(" | ")}`,
+      );
+    } finally {
+      await chrome.close();
+    }
   }
 });

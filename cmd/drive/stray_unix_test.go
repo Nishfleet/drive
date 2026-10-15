@@ -9,9 +9,6 @@ import (
 	"testing"
 )
 
-// TestRestoreStrayMountFilesLeavesNoPartialCopy proves a copy that fails
-// part-way into the drive leaves no truncated file there to upload, and the
-// whole file stays in the holding folder for the next restore.
 func TestRestoreStrayMountFilesLeavesNoPartialCopy(t *testing.T) {
 	dir := t.TempDir()
 	mount := filepath.Join(dir, "Drive")
@@ -25,8 +22,6 @@ func TestRestoreStrayMountFilesLeavesNoPartialCopy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(holding, "photos", "a.jpg"), []byte("jpg"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A fifo is a file kind the copy refuses, so it fails after the
-	// folder and its first file are already in the drive.
 	if err := syscall.Mkfifo(filepath.Join(holding, "photos", "b.pipe"), 0o644); err != nil {
 		t.Skipf("mkfifo: %v", err)
 	}

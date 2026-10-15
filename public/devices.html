@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Storagebun — devices</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <meta name="description" content="The keys on your account: each device or agent, when it was last used, and a button that revokes it.">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="description" content="The devices and agents that can use your drive, when each was last used, and a button that turns it off.">
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="/site.css">
   <style>
@@ -100,44 +102,105 @@ th {
   flex-wrap: wrap;
   gap: 8px 18px;
 }
-  </style>
+  .add {
+  margin: 24px 0 8px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 4px 16px;
+}
+
+.add summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 12px 0;
+}
+
+.add .paths {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  padding-bottom: 16px;
+}
+
+.add h3 {
+  margin: 0 0 8px;
+}
+
+.add ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.add li {
+  margin: 8px 0;
+}
+
+.add code {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--paper-raised);
+}
+
+.add a,
+.lede a {
+  color: var(--accent);
+}
+
+.add .copy {
+  margin-left: 8px;
+}
+</style>
 </head>
 <body>
   <a class="skip-link" href="#keys-heading">Skip to your keys</a>
-  <header class="masthead">
-    <span class="wordmark"><i aria-hidden="true"></i>storagebun</span>
-    <span class="tagline">A Finder drive for people and their agents.</span>
-    <a href="/files">Your files</a>
-    <a href="/">Pricing</a>
-    <a href="/get-started">Get started</a>
+  <!-- shell:app-header current="/devices" -->
+  <nav class="app-side" aria-label="Main">
+    <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a href="/home">Home</a>
+    <a href="/files">Files</a>
+    <a href="/usage">Usage and billing</a>
+    <a href="/devices" aria-current="page">Devices</a>
+    <a href="/webhooks">Webhooks</a>
+    <span class="app-side-end">
+      <a href="/get-started">Get started</a>
+      <a href="/docs/">Docs</a>
+    </span>
+  </nav>
+  <header class="app-top">
+    <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <details class="account-menu" id="account-menu">
+      <summary>Account</summary>
+      <div class="account-panel">
+        <a href="/signin" id="nav-signin">Sign in</a>
+        <noscript>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout">
+            <button class="btn btn-ghost" type="submit">Sign out</button>
+          </form>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout-all">
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
+          </form>
+        </noscript>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      </div>
+    </details>
+  </header>
+  <nav class="app-tabs" aria-label="Tab bar">
+    <a href="/home">Home</a>
+    <a href="/files">Files</a>
     <a href="/usage">Usage</a>
     <a href="/devices" aria-current="page">Devices</a>
-    <a href="/signin" id="nav-signin">Sign in</a>
-      <noscript>
-        <!-- Not Django: POST /api/signin refuses a cross-site post
-             (isSameOriginRequest). A token in the markup would protect nothing. -->
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout">
-          <button type="submit">Sign out</button>
-        </form>
-        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-        <form method="POST" action="/api/signin">
-          <input type="hidden" name="step" value="signout-all">
-          <button type="submit">Sign out everywhere</button>
-        </form>
-      </noscript>
-      <button type="button" id="nav-signout" hidden>Sign out</button>
-      <button type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
-  </header>
+    <a href="/webhooks">Hooks</a>
+  </nav>
+  <!-- /shell:app-header -->
 
-  <!-- The pending-close banner (drive issue #424). Hidden until
-       GET /api/account/close says this account is closing, then
-       public/close-banner.js fills the two slots from that payload: the
-       sentence is the module's own words with the purge date in them, and the
-       link goes to the page where the close and the cancel both live. The
-       styles are the shared stylesheet's, so the four pages that carry this
-       aside are one banner. -->
   <div class="close-banner" id="close-banner" role="status" aria-live="polite" hidden>
     <p id="close-banner-what"></p>
     <a id="close-banner-cancel" href="/usage">Cancel closing</a>
@@ -146,29 +209,52 @@ th {
     <section aria-labelledby="devices-heading">
       <h1 id="devices-heading">Devices</h1>
       <p class="lede">
-        Every key on this account: the device or agent that holds it, when it
-        was last used, and a button that turns it off at the storage provider.
+        Devices and agents that can use your drive. Turn any off with one click.
+        To get events sent to your own server, see <a href="/webhooks">Webhooks</a>.
       </p>
     </section>
+
+    <details class="add" id="add-wizard">
+      <summary>Add a computer or an agent</summary>
+      <div class="paths">
+        <section aria-labelledby="add-computer">
+          <h3 id="add-computer">A computer</h3>
+          <ol>
+            <li>Install the command. <a href="/docs/quickstart#1-install-the-command">One line for your system</a>.</li>
+            <li>Run <code>drive login</code> <button type="button" class="btn btn-sm copy" data-copy="drive login">Copy</button>. It opens this site; press Approve.</li>
+            <li>Run <code>drive init</code> <button type="button" class="btn btn-sm copy" data-copy="drive init">Copy</button>. Your drive appears as a folder.</li>
+          </ol>
+        </section>
+        <section aria-labelledby="add-agent">
+          <h3 id="add-agent">An agent</h3>
+          <ol>
+            <li>On a computer that is already added, run <code>drive init</code> <button type="button" class="btn btn-sm copy" data-copy="drive init">Copy</button>. It finds your agent tools.</li>
+            <li>Or pick one yourself: <code>drive agents connect claude</code> <button type="button" class="btn btn-sm copy" data-copy="drive agents connect claude">Copy</button>.</li>
+            <li>The agent gets its own folder and its own key. It shows in the list below, and Turn off stops it at once. <a href="/docs/agents">What an agent key can do</a>.</li>
+          </ol>
+        </section>
+      </div>
+    </details>
 
     <section aria-labelledby="keys-heading">
       <h2 id="keys-heading" tabindex="-1">Keys</h2>
       <div class="status" id="devices-status" role="status" aria-live="polite" hidden>
         <p class="what"></p>
         <p class="next"></p>
+        <p><button type="button" id="devices-retry" hidden class="btn">Try again</button></p>
       </div>
       <div class="empty" id="devices-empty" hidden>
-        <p class="what">No live keys on this account.</p>
-        <p class="next">Run drive login on a machine to mint one.</p>
+        <p class="what">No devices or agents yet.</p>
+        <p class="next">Run drive login on a computer to add one.</p>
       </div>
       <table id="keys" hidden>
-        <caption>Live keys</caption>
+        <caption>Devices and agents</caption>
         <thead>
           <tr>
             <th scope="col">Name</th>
             <th scope="col">Kind</th>
             <th scope="col">Last used</th>
-            <th scope="col">Revoke</th>
+            <th scope="col">Turn off</th>
           </tr>
         </thead>
         <tbody id="keys-body"></tbody>
@@ -190,13 +276,16 @@ th {
 const DEVICES_ENDPOINT = "/api/devices";
 const SIGNIN_ENDPOINT = "/api/signin";
 const NEVER = "Never";
-const REVOKE_LABEL = "Revoke";
-const REVOKE_CONFIRM = "Revoke this key? It will stop working at once.";
+const LOAD_FAILED = "We could not load your devices. Check your connection and try again.";
+const REVOKE_LABEL = "Turn off";
+const REVOKE_CONFIRM = "Turn this off? It stops working at once.";
 
 const statusEl = document.getElementById("devices-status");
 const emptyEl = document.getElementById("devices-empty");
 const tableEl = document.getElementById("keys");
 const bodyEl = document.getElementById("keys-body");
+const retryEl = document.getElementById("devices-retry");
+const wizardEl = document.getElementById("add-wizard");
 const navSignin = document.getElementById("nav-signin");
 const navSignout = document.getElementById("nav-signout");
 const navSignoutAll = document.getElementById("nav-signout-all");
@@ -207,10 +296,11 @@ function showSessionNav(signedIn) {
   navSignoutAll.hidden = !signedIn;
 }
 
-function sayStatus(text) {
+function sayStatus(text, retry) {
   const parts = String(text).split(". ");
   statusEl.querySelector(".what").textContent = parts[0] ? `${parts[0]}.` : text;
   statusEl.querySelector(".next").textContent = parts.slice(1).join(". ");
+  retryEl.hidden = !retry;
   statusEl.hidden = false;
   emptyEl.hidden = true;
   tableEl.hidden = true;
@@ -232,6 +322,7 @@ function keyRow(key) {
   const action = document.createElement("td");
   const button = document.createElement("button");
   button.type = "button";
+  button.className = "btn btn-sm btn-danger";
   button.textContent = REVOKE_LABEL;
   button.addEventListener("click", () => revokeKey(key.keyId, button));
   action.appendChild(button);
@@ -244,6 +335,7 @@ function render(keys) {
   bodyEl.replaceChildren(...keys.map(keyRow));
   tableEl.hidden = keys.length === 0;
   emptyEl.hidden = keys.length > 0;
+  wizardEl.open = keys.length === 0;
 }
 
 async function readKeys() {
@@ -251,7 +343,7 @@ async function readKeys() {
   try {
     response = await fetch(DEVICES_ENDPOINT, { headers: { accept: "application/json" } });
   } catch (_error) {
-    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(LOAD_FAILED, true);
     showSessionNav(false);
     return;
   }
@@ -263,7 +355,7 @@ async function readKeys() {
   }
   const payload = await response.json().catch(() => null);
   if (!response.ok || !payload || !Array.isArray(payload.keys)) {
-    sayStatus(payload && typeof payload.error === "string" ? payload.error : "Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(payload && typeof payload.error === "string" ? payload.error : LOAD_FAILED, true);
     return;
   }
   showSessionNav(true);
@@ -283,7 +375,7 @@ async function revokeKey(keyId, button) {
     });
   } catch (_error) {
     button.disabled = false;
-    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(LOAD_FAILED, true);
     return;
   }
   if (response.status === 401) {
@@ -298,7 +390,7 @@ async function revokeKey(keyId, button) {
   }
   button.disabled = false;
   const payload = await response.json().catch(() => null);
-  sayStatus(payload && typeof payload.error === "string" ? payload.error : "Could not reach the devices list just now. Reload the page to try again.");
+  sayStatus(payload && typeof payload.error === "string" ? payload.error : LOAD_FAILED, true);
 }
 
 async function postSignout(step) {
@@ -312,13 +404,13 @@ async function postSignout(step) {
       body: JSON.stringify({ step }),
     });
   } catch (_error) {
-    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(LOAD_FAILED, true);
     navSignout.disabled = false;
     navSignoutAll.disabled = false;
     return;
   }
   if (!response.ok) {
-    sayStatus("Could not reach the devices list just now. Reload the page to try again.");
+    sayStatus(LOAD_FAILED, true);
     navSignout.disabled = false;
     navSignoutAll.disabled = false;
     return;
@@ -332,6 +424,19 @@ navSignout.addEventListener("click", () => {
 navSignoutAll.addEventListener("click", () => {
   postSignout("signout-all");
 });
+retryEl.addEventListener("click", () => {
+  readKeys();
+});
+for (const button of document.querySelectorAll(".copy")) {
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(button.dataset.copy);
+      button.textContent = "Copied";
+    } catch (_error) {
+      button.textContent = "Select and copy";
+    }
+  });
+}
 readKeys();
   </script>
   <script type="module" src="/close-banner.js"></script>

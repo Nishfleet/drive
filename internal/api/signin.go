@@ -6,25 +6,17 @@ import (
 	"time"
 )
 
-// OpenURL opens the device-approve page. cmd/drive points this at the
-// browser helper so tests can replace it.
+// OpenURL opens the device-approve page.
 var OpenURL = func(raw string) error { return nil }
 
-// SignedIn is what one device flow ends with: the token, the epoch second its
-// window ends at, and the account it names. The expiry is carried out of the
-// flow rather than looked up later because the api Worker states it exactly
-// once, at the poll that approves the code (drive#557), and the CLI writes it
-// down so it knows its own shelf life instead of finding out from a 401.
+// SignedIn is what one device flow ends with: the token, the epoch second its window ends at, and the account it names.
 type SignedIn struct {
 	Token     string
 	ExpiresAt int64
 	Account   Account
 }
 
-// SignIn runs the device flow on the terminal: ask for a code, print it and
-// the page to approve it on, then poll until the person approves or the code
-// expires. It returns the device token, when that token's window ends, and the
-// account it belongs to; the caller keeps all three.
+// SignIn runs the device flow on the terminal: ask for a code, print it and the page to approve it on, then poll until the person approves or the code expires.
 func SignIn(client *Client, deviceName string, out io.Writer) (SignedIn, error) {
 	code, err := client.RequestDeviceCode(deviceName)
 	if err != nil {

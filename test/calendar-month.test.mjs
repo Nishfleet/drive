@@ -1,16 +1,7 @@
-// size30 does not divide by a calendar month (drive#642). A 1 TB peak bills
-// $15.00 in February and in October alike. minutesInMonth remains the UTC
-// month length the meter still books hours against.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  capStatus,
-  gbMonths,
-  minutesInMonth,
-  monthBillCents,
-  size30Window,
-} from "../core/billing.js";
+import { gbMonths, minutesInMonth, monthBillCents, size30Window } from "../core/billing.js";
+import { capStatus } from "../core/billing-report.js";
 
 const MONTHS = Object.freeze([
   { at: "2026-02-14T12:00:00.000Z", days: 28 },

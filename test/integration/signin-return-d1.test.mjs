@@ -1,15 +1,3 @@
-// Integration test for drive#558's return-path table and drive#785's age
-// attestation that rides on the same row: the real migration files under
-// migrations/drive/, applied to a real SQLite database. A mocked binding
-// cannot see the schema. This proves all three directions: WRITE — a start's
-// token lands on a row a plain SELECT can find, keyed by the token's digest,
-// with the address its start was posted for and whether its tick travelled;
-// READ — a consume over the same database hands the path back exactly once
-// and deletes the row, and a row nothing wrote cannot bounce the session
-// elsewhere, while the gate's non-consuming read leaves the row standing for
-// the consume behind it; and EXPAND — the columns the code before them never
-// wrote still take that code's inserts.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

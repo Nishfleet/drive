@@ -1,34 +1,19 @@
-// The gates behind AGENTS.md's "Before you open a PR" list (drive issue #95).
-//
-// The 3pm review found pages shipped with no login, and review after merge is
-// too late; the list is the builder's own check. That only works if a line is
-// checkable, so every line names a gate and this file proves each one against
-// the same modules the Worker runs. The first test pins the list's own shape:
-// nine checkable lines, under fifteen, every pointer a file that exists — so
-// a line cannot drift into prose or name a test that is no longer there.
-//
-// The one line a program cannot judge is the last one, what the PR body claims
-// was proven on real records. Its pointer is the spec's rule for it
-// (docs/build-spec.md), and the builder answers it in the PR.
-
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { monthBillCents, USAGE_ENDPOINT } from "../core/billing.js";
-import {
-  createMemoryStore,
-  createS3Store,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  storageBucketForKey,
-} from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore, storageBucketForKey } from "../core/files-memory.js";
+import { createS3Store } from "../core/files-s3.js";
 import { FAILURE_MESSAGES } from "../core/messages.js";
 import { STATUS_ENDPOINT } from "../core/status.js";
 import { HEALTH_PATH } from "../src/health.js";
 import worker from "../src/index.js";
 import { createTestAuth, signIn, TEST_SECRET } from "./harness.mjs";
+import { readIndexSource } from "./index-source.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 /** @param {string} path @returns {string} */
@@ -227,10 +212,10 @@ test("the list is checkable: nine lines, every pointer real, gates still wired",
   /** @type {Array<[string, RegExp]>} */
   const required = [
     ["core/status.js", /export async function signedInAccount\(request, store\)/],
-    ["core/files.js", /export function createS3Store\(config\)/],
+    ["core/files-s3.js", /export function createS3Store\(config\)/],
     // The account prefix is applied in exactly one place, and it is the place
     // that keeps one account's keys from another's (issue #73).
-    ["core/files.js", /const toKey = \(path\) => \{/],
+    ["core/files-scope.js", /const toKey = \(path\) => \{/],
     ["core/billing.js", /export function monthBillCents\(/],
     ["core/messages.js", /export function failureMessage\(key\)/],
   ];
@@ -268,14 +253,14 @@ const ROUTES = [
 
 test("gate 1: every route is in the table, and the gated one answers 401", async () => {
   // Hono is the proven router for every Worker (drive#94).
-  const index = srcFile("index.js");
+  const index = readIndexSource();
   assert.match(index, /import \{ Hono \} from "hono"/, "Hono is the router");
   assert.match(index, /new Hono\(/, "Hono app is created");
   assert.match(index, /methodNotAllowed/, "405 comes from the library");
   assert.match(index, /trimTrailingSlash/, "trailing slashes come from the library");
   assert.match(index, /secureHeaders/, "secure headers come from the library");
   assert.match(index, /createApp/, "createApp exports the app builder");
-  const { createApp } = await import("../src/index.js");
+  const { createApp } = await import("../src/index-app.js");
   const app = createApp();
   const registered = app.routes
     .filter((r) => r.method !== "ALL")
@@ -325,7 +310,7 @@ test("gate 1: every route is in the table, and the gated one answers 401", async
   // every other account route (issue #73): the one gate, so a request that
   // cannot prove an account is a 401 rather than an empty month.
   assert.match(
-    productFile("billing.js"),
+    productFile("billing-report.js"),
     /export function handleUsageRequest\(\s*request,\s*account,\s*upload = null,\s*balanceLine = null,\s*monthIso = "",?\s*\)/,
   );
   const usage = await workerFetch(new Request(`https://drive.test${USAGE_ENDPOINT}`), env, ctx);

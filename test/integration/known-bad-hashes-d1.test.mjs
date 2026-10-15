@@ -1,19 +1,3 @@
-// 0042 adds the two tables the stock known-bad SHA-256 feed loads into (drive
-// issue #826): `known_bad_hashes`, one row per digest, and
-// `known_bad_feed_state`, the one row that records the last successful load.
-// This file applies the REAL migration file, in the real order, against
-// node:sqlite — the engine D1 runs — and asserts the two paths the fleet's D1
-// rule asks a migration PR to prove on a real schema:
-//
-//   WRITE: loadKnownBadFeed writes every hash the download carried and stamps
-//          the load on the state row.
-//   READ:  isKnownBadHash answers from the row, with no network at all.
-//
-// plus the additive shape the expand/contract rule asks for: two new tables,
-// no existing column dropped, renamed or made NOT NULL, so the previous
-// version of the code keeps running against this schema. D1 has no
-// down-migration, so this is one-way and that shape is the whole guarantee.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -28,7 +12,7 @@ import {
   loadKnownBadFeed,
   parseKnownBadFeed,
 } from "../../src/malware.js";
-import { createD1LinkStore, newRequestRecord } from "../../src/share.js";
+import { createD1LinkStore, newRequestRecord } from "../../src/share-store.js";
 import { createTestD1, DRIVE_MIGRATIONS, knownBadHashRows } from "../harness.mjs";
 
 /** The instant every load in this file is stamped with (epoch millis). */

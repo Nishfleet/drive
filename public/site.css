@@ -1,27 +1,3 @@
-/* The site stylesheet (drive issue #71). The pricing page (public/index.html),
-   the first-run page (get-started.html, a Vite entry at the repo root), the
-   Web Files page (public/files.html) and the usage page (public/usage.html)
-   all link this, so the palette, the reset and the page chrome are declared
-   once: one edit to a token changes every page, and no page can drift.
-
-   Each page keeps only what differs from this base in its own <style> block,
-   which loads after this file: page widths (1180px on the pricing page, 940px
-   on the reading pages, 900px on the Web Files page), the Web Files page's
-   mobile-first shell (min-height: 100dvh, a 44px --tap target, skip link
-   z-index 30), the reading pages' type rules (h1, h2, section, .lede) and the
-   pricing page's own sections.
-
-   Two type and colour sets live here. The first (--paper, --ink, --accent,
-   --serif, --sans, --mono) is the one every page shipped with, on system font
-   stacks. The second (--drive-*, --font-*) is the loud price-first look the
-   home page moved to in drive#152: signal orange on warm paper and ink, with
-   three self-hosted faces (public/fonts/, each with its OFL licence). A page
-   adopts it by setting class="drive" on <html>, which aliases the old names
-   onto the new tokens so page CSS does not have to be rewritten token by
-   token (docs/design/DESIGN.md). Until a page does that, the @font-face rules
-   below download nothing, because a browser fetches a face only when a
-   rendered element uses it. */
-
 :root {
   --paper: #faf6ee;
   --paper-raised: #fffdf8;
@@ -39,11 +15,6 @@
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 
-  /* drive#152 palette. One accent: signal orange. --drive-orange is a fill
-     (the hero field, bars, buttons); text on it is --drive-ink (5.4:1). Orange
-     text on paper needs a darker shade to pass AA: --drive-orange-ink for any
-     size (5.3:1 on --drive-paper), --drive-orange-deep only for display type
-     of 24px and up (3.7:1, the large-text bar). No pure black or white. */
   --drive-orange: #ff4f12;
   --drive-orange-deep: #e23f05;
   --drive-orange-ink: #b83200;
@@ -64,11 +35,6 @@
   --font-code: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
-/* drive#458: pages that adopt the home-page look set class="drive" on <html>.
-   The old names stay on :root with their reviewed values (test/site-styles.test.mjs
-   pins them), and this alias is how a page switches without restating every
-   colour. --serif becomes the display face so headings move with the home page;
-   body type comes along because body already reads --sans. */
 html.drive {
   --paper: var(--drive-paper);
   --paper-raised: var(--drive-card);
@@ -83,9 +49,48 @@ html.drive {
   --mono: var(--font-code);
 }
 
-/* The three faces, latin subset, only the weights the home page sets. swap
-   shows the fallback at once and swaps when the file lands, so text is never
-   invisible; the home page preloads the 900 display face its price uses. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --drive-orange-ink: #ff8e63;
+    --drive-orange-wash: #3b2214;
+    --drive-ink: #f3ecdf;
+    --drive-ink-soft: #cdc3b1;
+    --drive-paper: #171410;
+    --drive-paper-deep: #1d1913;
+    --drive-card: #211d17;
+    --drive-line: #3b342a;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .tag,
+  .ticker,
+  .dark,
+  .site-foot {
+    --drive-ink: #1b1712;
+    --drive-ink-soft: #d8cdb9;
+    --drive-paper: #f5efe4;
+    --drive-orange-ink: #ff4f12;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  html.drive {
+    color-scheme: dark;
+    --paper: #171410;
+    --paper-raised: #211d17;
+    --ink: #f3ecdf;
+    --ink-soft: #cdc3b1;
+    --ink-faint: #b8ae9b;
+    --rule: #3b342a;
+    --accent: #ff8e63;
+    --accent-soft: #3b2214;
+    --good: #7fd1a0;
+    --bad: #ff9b9b;
+  }
+}
+
 @font-face {
   font-family: "Big Shoulders Display";
   font-style: normal;
@@ -134,16 +139,6 @@ html.drive {
   src: url("/fonts/jetbrains-mono-latin-700-normal.woff2") format("woff2");
 }
 
-/* Metric-matched fallbacks (drive#152). swap paints the fallback first, and
-   a fallback of a different width rewraps the text when the real face lands:
-   Lighthouse measured a 0.30 layout shift on the home page, against a 0.01
-   budget. These faces are the local Arial (Liberation Sans on Linux, the same
-   metrics), resized so a line takes the same width and height as it will in
-   the real face. They download nothing. size-adjust is the measured width
-   ratio of each real face to the fallback at the weight the page uses; the
-   ascent and descent are the real face's own (Big Shoulders 1971/429 of
-   2000 units, Instrument Sans 970/250 of 1000) divided by that ratio. JetBrains
-   Mono needs none: a monospace fallback is within 0.4% of its width. */
 @font-face {
   font-family: "Big Shoulders Display Fallback";
   font-weight: 800;
@@ -229,13 +224,6 @@ body {
   outline-offset: 2px;
 }
 
-/* drive#870: the brand word is five characters longer than "drive" (Nish,
-   2026-10-09), and the 940px masthead row had no slack left for it. The last
-   nav item wrapped to a second line, and because the self-hosted faces land
-   after the first paint the rewrap counted as a layout shift: Lighthouse
-   measured 0.27 on /usage.html and 0.42 on /get-started.html against a 0.01
-   budget. One gap, 18px to 8px, buys back the room the word needs with room
-   to spare, so the row no longer depends on the brand fitting to the pixel. */
 .masthead {
   display: flex;
   flex-wrap: wrap;
@@ -256,8 +244,6 @@ body {
   text-decoration: none;
 }
 
-/* The orange dash on the wordmark, from the home page (drive#152). Shared so
-   every page that carries <i> inside .wordmark gets the same mark. */
 .wordmark i {
   width: 20px;
   height: 20px;
@@ -277,10 +263,6 @@ body {
   background: var(--drive-orange);
 }
 
-/* The line under the wordmark, which names what the site is on every page that
-   carries the masthead. The pricing and sign-in pages declared it themselves
-   with these values; the shared chrome owns it now, so a page that adopts the
-   header does not have to know this rule exists. */
 .tagline {
   color: var(--ink-soft);
   font-size: 15px;
@@ -290,9 +272,6 @@ body {
   color: var(--ink-soft);
 }
 
-/* Sign out is an action, not a place, so it is a button. It has to read as
-   the other menu items or it looks bolted on. The no-script path is a form
-   that posts the same step, so the form itself must not add a box. */
 .masthead form {
   display: inline;
   margin: 0;
@@ -307,8 +286,6 @@ body {
   cursor: pointer;
 }
 
-/* The page you are on, in the menu. Declared here so a page takes the shared
-   header with it, as the Web Files page took its own markup until drive#425. */
 .masthead a[aria-current="page"] {
   color: var(--ink);
   font-weight: 600;
@@ -322,14 +299,6 @@ main {
   padding-top: 18px;
   border-top: 1px solid var(--rule);
 }
-
-/* The pending-close banner (drive issue #424). Every signed-in page carries
-   this one <aside>, hidden until GET /api/account/close says the account is
-   closing, and public/close-banner.js fills the two slots from that payload:
-   the sentence is the module's CLOSE_COPY.pendingWhat with the endpoint's
-   purgeOn in it, and the link is the module's pendingCancel words. The styles
-   live here rather than in each page's <style> block so the four pages that
-   show it are one banner, and a page cannot drift from the others. */
 
 .close-banner {
   display: flex;
@@ -358,7 +327,6 @@ main {
   white-space: nowrap;
 }
 
-/* The legal links every page footer carries (drive#523). */
 .legal-links {
   display: flex;
   flex-wrap: wrap;
@@ -369,10 +337,6 @@ main {
 .legal-links a {
   color: inherit;
 }
-
-/* The legal and trust pages (drive#523): terms, privacy, refunds, acceptable
-   use and support (src/legal.js). They share one reading column, declared
-   here once so the five pages cannot drift. */
 
 body.policy .masthead,
 body.policy main,
@@ -424,8 +388,6 @@ body.policy td {
   border-bottom: 1px solid var(--rule);
 }
 
-/* At phone width the processor table stacks, one company per block, and
-   each cell names its column, so the page never scrolls sideways. */
 @media (max-width: 600px) {
   body.policy thead {
     position: absolute;
@@ -456,11 +418,402 @@ body.policy .footer {
   font-size: 15px;
 }
 
-/* A fact the owner still has to fill in (src/legal.js LEGAL_PLACEHOLDERS).
-   Loud on purpose, so an unfilled one cannot pass for real words. */
 mark.to-fill {
-  background: var(--drive-orange-wash);
+  background: var(--accent-soft);
   color: var(--ink);
-  outline: 2px dashed var(--drive-orange-ink);
+  outline: 2px dashed var(--accent);
   padding: 0 4px;
+}
+
+a,
+button {
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    transform 100ms ease;
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.app-side,
+.app-top,
+.app-tabs {
+  display: none;
+}
+
+body:has(.app-side) {
+  padding: 56px 0 72px;
+}
+
+body:has(.app-side) .app-top {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 clamp(16px, 4vw, 32px);
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+body:has(.app-side) .app-top-mark {
+  margin-right: auto;
+  color: var(--ink);
+}
+
+body:has(.app-side) .balance-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 112px;
+  justify-content: center;
+  padding: 4px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font-size: 15px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+body:has(.app-side) .balance-chip[hidden] {
+  display: inline-flex;
+  visibility: hidden;
+}
+
+body:has(.app-side) .top-up {
+  padding: 4px 14px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--paper-raised);
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+body:has(.app-side) .account-menu {
+  position: relative;
+}
+
+body:has(.app-side) .account-menu summary {
+  padding: 4px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 15px;
+  list-style: none;
+  white-space: nowrap;
+}
+
+body:has(.app-side) .account-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+body:has(.app-side) .account-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 200px;
+  padding: 8px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+  box-shadow: 0 8px 24px rgba(27, 23, 18, 0.15);
+}
+
+body:has(.app-side) .account-panel a,
+body:has(.app-side) .account-panel button {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+body:has(.app-side) .account-panel a:hover,
+body:has(.app-side) .account-panel button:hover {
+  background: var(--accent-soft);
+}
+
+body:has(.app-side) .account-panel [hidden] {
+  display: none;
+}
+
+body:has(.app-side) .app-tabs {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  display: flex;
+  height: 60px;
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+body:has(.app-side) .app-tabs a {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-soft);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+body:has(.app-side) .app-tabs a[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: inset 0 3px 0 var(--accent);
+}
+
+body:has(.app-side) main,
+body:has(.app-side) .footer,
+body:has(.app-side) .close-banner {
+  width: calc(100% - 2 * clamp(16px, 4vw, 32px));
+  max-width: 960px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+body:has(.app-side) main {
+  padding-top: 28px;
+  padding-right: 0;
+  padding-left: 0;
+}
+
+@media (max-width: 559px) {
+  body:has(.app-side) .app-top {
+    gap: 8px;
+  }
+
+  body:has(.app-side) .app-top-mark {
+    font-size: 0;
+  }
+
+  body:has(.app-side) .balance-chip {
+    min-width: 0;
+    padding: 4px 10px;
+    font-size: 14px;
+  }
+
+  body:has(.app-side) .top-up,
+  body:has(.app-side) .account-menu summary {
+    padding: 4px 10px;
+    font-size: 14px;
+  }
+}
+
+body:has(.app-side) main h1 {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-size: clamp(32px, 5vw, 48px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+@media (min-width: 900px) {
+  body:has(.app-side) {
+    padding-left: 224px;
+    padding-bottom: 40px;
+  }
+
+  body:has(.app-side) .app-side {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 224px;
+    padding: 16px 12px;
+    border-right: 1px solid var(--rule);
+    background: var(--paper);
+  }
+
+  body:has(.app-side) .app-side .wordmark {
+    margin: 4px 8px 16px;
+    color: var(--ink);
+  }
+
+  body:has(.app-side) .app-side a:not(.wordmark) {
+    padding: 8px 12px;
+    border-radius: 8px;
+    color: var(--ink-soft);
+    text-decoration: none;
+  }
+
+  body:has(.app-side) .app-side a[aria-current="page"] {
+    background: var(--accent-soft);
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  body:has(.app-side) .app-side-end {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: auto;
+  }
+
+  body:has(.app-side) .app-top {
+    left: 224px;
+    justify-content: flex-end;
+  }
+
+  body:has(.app-side) .app-top-mark,
+  body:has(.app-side) .app-tabs {
+    display: none;
+  }
+}
+
+:where(button, input[type="button"], input[type="submit"]),
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    transform 0.06s ease;
+}
+
+:where(button:hover, input[type="button"]:hover, input[type="submit"]:hover),
+.btn:hover {
+  background: var(--accent-soft);
+}
+
+:where(button:active, input[type="button"]:active, input[type="submit"]:active),
+.btn:active {
+  transform: translateY(1px);
+}
+
+:where(button:disabled, input[type="button"]:disabled, input[type="submit"]:disabled),
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+  transform: none;
+}
+
+.btn-primary,
+.btn-primary:hover {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--paper-raised);
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+}
+
+.btn-danger {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent);
+}
+
+.btn-sm {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+:where(
+  input:not([type]),
+  input[type="text"],
+  input[type="email"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  input[type="password"],
+  select,
+  textarea
+),
+.field {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+
+:where(textarea) {
+  padding: 10px 14px;
+}
+
+:where(input[type="checkbox"], input[type="radio"]),
+.check {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+
+:where(input[type="range"]),
+.slider {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.btn[hidden],
+.field[hidden],
+.check[hidden] {
+  display: none;
+}
+
+body:has(.app-side) .wordmark {
+  font-size: 22px;
 }

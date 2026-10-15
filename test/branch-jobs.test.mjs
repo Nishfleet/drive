@@ -1,12 +1,8 @@
-// Branch jobs (drive#563): copy, approve, discard and rewind run in file
-// batches so a large folder stays inside one Worker's subrequest budget.
-// These tests are the issue's finish line, against the in-memory store with
-// the shipped migrations.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createMemoryStore, scopeStore } from "../core/files.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
 import { failureMessage } from "../core/messages.js";
 import {
   BRANCH_JOBS_DEAD_LETTER_QUEUE,
@@ -17,19 +13,17 @@ import {
   branchJobsQueue,
   handleBranchJobs,
 } from "../src/branch-jobs.js";
+import { BRANCH_JOB_BATCH_FILES, createKvSnapshotStore, snapshotKey } from "../src/branches.js";
+import { processBranchJob } from "../src/branches-jobs.js";
 import {
   approveBranch,
-  BRANCH_JOB_BATCH_FILES,
   createBranch,
-  createKvSnapshotStore,
-  diffBranch,
   discardBranch,
-  getBranch,
   handleBranchesRequest,
-  processBranchJob,
-  snapshotKey,
-} from "../src/branches.js";
-import worker, { TEST_FILES_STORE } from "../src/index.js";
+} from "../src/branches-routes.js";
+import { diffBranch, getBranch } from "../src/branches-snapshot.js";
+import worker from "../src/index.js";
+import { TEST_FILES_STORE } from "../src/index-support.js";
 import { handleRewindRequest, rewindBranch } from "../src/rewind.js";
 import { createTestD1, createTestKv } from "./harness.mjs";
 

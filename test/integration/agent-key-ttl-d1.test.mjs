@@ -1,32 +1,8 @@
-// The one-hour agent credential over the real D1 schema (drive issue #106).
-//
-// The unit proof (workers/api/test/keystore.test.js) runs against the
-// in-memory stand-in, which cannot make the two claims the real store has to
-// make:
-//
-//   1. `devices.expires_at` is a COLUMN, not a field on a per-isolate object.
-//      An agent key minted through one store instance is authenticated through
-//      a second, freshly built store over the same database — the stand-in for
-//      a Worker isolate a deploy replaces — and the hour it was minted with is
-//      the hour the second instance enforces.
-//   2. Both the new READ and the new WRITE land on the real migration
-//      (`migrations/drive/0012_agent_key_ttl.sql`), applied with every other
-//      drive table, so a statement this store adds without a column fails here
-//      rather than in production.
-//
-// The migration is expand-only (nullable, no default, no NOT NULL), so the
-// third claim is that the previous code's rows still work: a `devices` row
-// written with no `expires_at` is a key that never expires, and it keeps
-// authenticating exactly as it did before this column existed.
-//
-// Every assertion about storage reads the row back with plain node:sqlite
-// statements, off the same engine, so a store that answered from a Map would
-// leave these tables empty and fail here.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sha256Hex } from "../../core/db.js";
-import { createD1DeviceStore, renewKeyRow } from "../../core/devices.js";
+import { createD1DeviceStore } from "../../core/devices.js";
+import { renewKeyRow } from "../../core/devices-rows.js";
 import { AGENT_KEY_TTL_SECONDS } from "../../core/keyprovider.js";
 import { createMemoryStore } from "../../core/keystore.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";

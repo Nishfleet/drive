@@ -25,7 +25,9 @@
     "test": "npm run docs:build && node --test --test-skip-pattern 'a search returns in under one second and reads only its matches|the index search is under a second' && node --test --test-concurrency=1 --test-name-pattern 'a search returns in under one second and reads only its matches|the index search is under a second' test/search.test.mjs test/standin-search.test.mjs",
     "eval:agents:install": "python3 -m venv evals/agents/.venv && evals/agents/.venv/bin/pip install -q -r evals/agents/requirements.txt",
     "eval:agents:endstate": "node src/render-docs.js && evals/agents/.venv/bin/inspect eval evals/agents/endstate.py",
-    "mutate": "stryker run"
+    "mutate": "stryker run",
+    "shell:sync": "node src/render-shell.js",
+    "shell:check": "node src/render-shell.js --check"
   },
   "engines": {
     "node": ">=24"
@@ -34,25 +36,26 @@
     "@better-auth/passkey": "1.7.7",
     "aws4fetch": "^1.0.20",
     "better-auth": "^1.7.7",
-    "hono": "^4.13.12",
+    "hono": "^4.13.13",
     "validator": "^13.15.35",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
     "@cloudflare/vite-plugin": "2.0.0-beta.sha-805ec1ff3",
-    "@cloudflare/workers-types": "^5.20261001.1",
+    "@cloudflare/workers-types": "^5.20261007.1",
     "@stryker-mutator/core": "^10.0.0",
-    "@types/node": "^25.9.8",
+    "@types/node": "^25.9.9",
     "@types/validator": "^13.15.10",
-    "axe-core": "4.13.0",
+    "axe-core": "4.14.0",
     "cf": "^1.0.0-beta.10",
     "fast-check": "^4.10.2",
+    "jose": "^6.2.12",
     "knip": "^6.39.0",
     "puppeteer-core": "^25.12.0",
     "typescript": "^7.0.2",
     "urlpattern-polyfill": "^10.1.0",
-    "vite": "^8.3.0",
+    "vite": "^8.3.3",
     "vitepress": "^1.6.4",
     "vitepress-plugin-llms": "^1.14.0"
   }

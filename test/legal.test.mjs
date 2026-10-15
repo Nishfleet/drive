@@ -1,14 +1,3 @@
-// The legal and trust pages (drive#523): terms, privacy, refunds, acceptable
-// use and support. This file pins what the issue's finish line asks for:
-// the pages ship and are in the sitemap, every footer and the sign-in page
-// link them, the four owner facts stay marked placeholders in one place
-// each, the pages state the real price and the real storage provider, and
-// security.txt points at the support page.
-//
-// drive#584 adds the accessibility and status pages to the same list, plus the
-// three operator runbooks, the site's own 5xx page, and the sub-processor list
-// on the security page. Those are pinned at the end of this file.
-
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -144,10 +133,19 @@ test("the terms carry an age line (drive#547)", () => {
   assert.match(legalText("terms.html"), /You must be 18 or older to open an account/);
 });
 
-test("the four owner facts are marked placeholders, each in one place only", () => {
+test("the terms pin the balance pause, the low-balance email, and the 30-day notices", () => {
+  const terms = legalText("terms.html");
+  assert.match(terms, new RegExp(`falls to \\$${PREPAID.lowBalanceUsd}`));
+  assert.match(terms, /At \$0, uploads pause/);
+  assert.ok(readRepo("core/prepaid-pause.js").includes("The prepaid pause at $0"));
+  assert.match(terms, /at least 30 days before the new price applies/);
+  assert.match(terms, /at least 30 days before they apply/);
+});
+
+test("the two owner facts are marked placeholders, each in one place only", () => {
   assert.deepEqual(
     LEGAL_PLACEHOLDERS.map((fact) => fact.id),
-    ["payee-name", "contact-address", "refund-rule", "vat-line"],
+    ["payee-name", "contact-address"],
   );
   /** @type {Map<string, string[]>} */
   const seen = new Map();
@@ -162,7 +160,7 @@ test("the four owner facts are marked placeholders, each in one place only", () 
   for (const id of seen.keys()) {
     assert.ok(
       LEGAL_PLACEHOLDERS.some((fact) => fact.id === id),
-      `${id} is not one of the four owner facts in core/legal.js`,
+      `${id} is not one of the two remaining owner facts in core/legal.js`,
     );
   }
   // A fact may be filled (gone), never typed twice or moved off its page.
@@ -173,39 +171,40 @@ test("the four owner facts are marked placeholders, each in one place only", () 
       assert.equal(where[0], fact.file, `${fact.id} belongs on ${fact.file}`);
     }
   }
-  // The refund placeholder carries the draft default the owner can accept.
-  assert.match(legalText("refunds.html"), /14 days of a top-up/);
+  // Refund and VAT defaults from the drive#882 body (MEMBER): real words on
+  // the refunds page, not placeholders.
+  const refunds = legalText("refunds.html");
+  assert.match(refunds, /14 days of a top-up/);
+  assert.match(refunds, /non-refundable, but it never expires/);
+  assert.match(refunds, /Prices exclude VAT/);
+  assert.match(refunds, /shows any VAT at checkout/);
 });
 
-test("no legal page carries an email address but the one support mailbox", () => {
-  // The mailbox is the one decided contact fact (drive#883): SUPPORT_EMAIL in
-  // core/legal.js. The support page and the share report mail import it. The
-  // static security.txt copy cannot import, so this file pins that spelling
-  // too (see the security.txt test below). Nowhere else, so nobody's personal
-  // inbox ends up on the site by accident. Everywhere else the address is
-  // still the owner's to fill, so a second address cannot ride along behind
-  // the allowed one.
-  const EMAIL_PATTERN = /[\w.+-]+@[\w-]+\.[\w.-]+/;
+test("the legal pages carry the support mailbox and no other address", () => {
+  // drive#882: the support mailbox is a shared inbox on the site's own
+  // domain, so the four legal pages carry it where the drafts put an address.
+  // The rule that replaces the old "no page carries an address" line is the
+  // same one: a personal inbox must never reach the site, so
+  // support@storagebun.com is the only address any legal page may show.
+  // The four legal pages plus the support page readers are sent to. The
+  // second loop walks every legal page, so a different address added
+  // anywhere still fails.
+  for (const page of [
+    "terms.html",
+    "privacy.html",
+    "refunds.html",
+    "acceptable-use.html",
+    "support.html",
+  ]) {
+    assert.ok(readPublic(page).includes(SUPPORT_EMAIL), `${page} must carry the support mailbox`);
+  }
   for (const page of LEGAL_PAGES) {
-    const html = readPublic(page.file);
-    if (page.path === SUPPORT_PATH) {
-      assert.match(
-        html,
-        new RegExp(`mailto:${SUPPORT_EMAIL}`),
-        "the support page must carry the support mailbox",
+    for (const match of readPublic(page.file).matchAll(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g)) {
+      assert.equal(
+        match[0],
+        SUPPORT_EMAIL,
+        `${page.file} carries ${match[0]}: only the support mailbox may appear`,
       );
-      const withoutMailbox = html
-        .split(`mailto:${SUPPORT_EMAIL}`)
-        .join("")
-        .split(SUPPORT_EMAIL)
-        .join("");
-      assert.doesNotMatch(
-        withoutMailbox,
-        EMAIL_PATTERN,
-        `${page.file} carries an address besides the support mailbox`,
-      );
-    } else {
-      assert.doesNotMatch(html, EMAIL_PATTERN, page.file);
     }
   }
 });
@@ -241,6 +240,12 @@ test("the privacy policy names every company that handles data, with the storage
   }
   assert.match(privacy, /Paris, France \(region eu-west-3\)/);
   assert.ok(privacy.includes(`${CLOSE_GRACE_DAYS} days after you close the account`));
+  assert.match(privacy, /Device names/);
+  assert.match(privacy, /bytes stored and bytes transferred/);
+  assert.match(privacy, /card fingerprint/);
+  assert.match(readRepo("core/devices-rows.js"), /name: String\(r\.name/);
+  assert.match(readRepo("core/meter-usage.js"), /downloadBytes/);
+  assert.match(readRepo("core/ledger.js"), /fingerprint/);
 });
 
 test("the security page and the changelog name the real storage provider", () => {
@@ -328,9 +333,9 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
   /** @type {readonly [runbook: string, source: string, ...symbols: string[]][]} */
   const claims = [
     ["incident.md", "src/health.js", "REQUIRED_BINDINGS"],
-    ["restore.md", "core/files.js", "purgeExpiredTrash"],
+    ["restore.md", "core/files-scope.js", "purgeExpiredTrash"],
     ["restore.md", "core/files.js", "TRASH_PURGE_SCHEDULE"],
-    ["secrets-rotation.md", "core/meter.js", "METER_EVENT_TOKEN"],
+    ["secrets-rotation.md", "core/meter-events.js", "METER_EVENT_TOKEN"],
     ["secrets-rotation.md", "core/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
     ["secrets-rotation.md", "workers/api/cloudflare.config.ts", "IDRIVE_E2_API_TOKEN"],
   ];
@@ -339,15 +344,15 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
     // source must still carry it, so a rename in either fails here instead of
     // misleading an operator.
     const sourceText = readRepo(source);
-    const runbookText = readRepo("docs/runbooks/" + runbook);
+    const runbookText = readRepo(`docs/runbooks/${runbook}`);
     for (const symbol of symbols) {
       assert.ok(
         runbookText.includes(symbol),
-        runbook + " must name " + symbol + " (it cites " + source + ")",
+        `${runbook} must name ${symbol} (it cites ${source})`,
       );
       assert.ok(
         sourceText.includes(symbol),
-        source + " must still carry the " + symbol + " the runbook cites",
+        `${source} must still carry the ${symbol} the runbook cites`,
       );
     }
   }

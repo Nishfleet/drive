@@ -1,50 +1,34 @@
-// The account gate (drive issue #73, north star: Safe). One gate —
-// signedInAccount() in core/status.js — stands in front of every /api/*
-// route that touches an account, and every read and write is scoped to the
-// signed-in account's own prefix.
-//
-// Four things this file pins, each against real responses rather than by
-// reading the code:
-//   1. Deny by default: a walk of every route src/index.js registers, where
-//      each account route answers 401 to an anonymous request. A new route
-//      added without the gate fails the walk because its path is not one the
-//      test knows.
-//   2. One account's files are invisible to another: account A cannot list,
-//      read, write or delete account B's path, and neither one's Recently
-//      deleted leaks into the other.
-//   3. Downloads and previews can never render script from our own origin:
-//      an uploaded .html and .svg come back as attachments with a safe type
-//      and nosniff.
-//   4. One CSRF middleware refuses a cross-site write on every account POST.
-
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { handleUsageRequest, USAGE_ENDPOINT } from "../core/billing.js";
-import { CAP_ENDPOINT } from "../core/cap.js";
+import { USAGE_ENDPOINT } from "../core/billing.js";
+import { handleUsageRequest } from "../core/billing-report.js";
+import { CAP_ENDPOINT } from "../core/cap-request.js";
 import { isSameOriginRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT } from "../core/export.js";
-import {
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-} from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
+import { scopeStore } from "../core/files-scope.js";
+import { HISTORY_ENDPOINT } from "../core/history-addon.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { AUTO_TOPUP_ENDPOINT } from "../core/prepaid.js";
+import { RECEIPT_ENDPOINT } from "../core/receipts.js";
 import { STATUS_ENDPOINT } from "../core/status.js";
 import { BALANCE_ENDPOINT, TOPUP_ENDPOINT } from "../core/topup.js";
+import { WEBHOOK_ENDPOINT } from "../core/webhook-routes.js";
 import { CLOSE_CANCEL_ENDPOINT, CLOSE_ENDPOINT } from "../src/account-close.js";
 import { BRANCHES_ENDPOINT } from "../src/branches.js";
 import { DEVICES_ENDPOINT } from "../src/devices-page.js";
 import { HEALTH_PATH } from "../src/health.js";
-import worker, { TEST_FILES_STORE } from "../src/index.js";
+import worker from "../src/index.js";
+import { TEST_FILES_STORE } from "../src/index-support.js";
 import { PORTAL_ENDPOINT } from "../src/portal.js";
 import { REWIND_ENDPOINT } from "../src/rewind.js";
 import { SEARCH_ENDPOINT } from "../src/search.js";
 import { REQUEST_ENDPOINT, SHARE_ENDPOINT, SHARE_LINK_PREFIX } from "../src/share.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
 import { createTestAuth, createTestD1, DRIVE_SCHEMA_MIGRATIONS, signIn } from "./harness.mjs";
+import { readIndexSource } from "./index-source.mjs";
 
 /**
  * A fake rate limiter that always allows (drive issue #147). The sign-in
@@ -165,6 +149,15 @@ const ACCOUNT_ROUTES = [
   `${TOPUP_ENDPOINT}`,
   `${TOPUP_ENDPOINT}/`,
   `${AUTO_TOPUP_ENDPOINT}`,
+  // The history add-on: the account's retention window and its price.
+  `${HISTORY_ENDPOINT}`,
+  // Drive#901: the account's webhook endpoints, their test send and log.
+  `${WEBHOOK_ENDPOINT}`,
+  `${WEBHOOK_ENDPOINT}/:id`,
+  `${WEBHOOK_ENDPOINT}/:id/test`,
+  `${WEBHOOK_ENDPOINT}/:id/deliveries`,
+  // Polish gap 13: a top-up's printable receipt names the account's payment.
+  `${RECEIPT_ENDPOINT}/:id`,
   // drive#575: the billing portal, where the account's card is updated. It
   // names the account's own customer and billing page, so it is behind the
   // account gate exactly like the balance read beside it, and the walk
@@ -216,7 +209,8 @@ test("every route src/index.js registers is either public or behind the gate", a
   // as public or account-gated, and a new route that is not classified fails
   // the walk, so it cannot ship unclassified. The `registered` list is the
   // same table the deny-by-default probe below walks.
-  const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
+  const { createApp } = await import("../src/index-app.js");
+  const { PUBLIC_ROUTES: exportedPublic } = await import("../src/index-support.js");
   // The app closes over no env and no request, so the walk builds it bare and
   // reads the registry the Worker really serves.
   const app = createApp();
@@ -253,6 +247,8 @@ test("every route src/index.js registers is either public or behind the gate", a
         path.startsWith(BRANCHES_ENDPOINT) ||
         path.startsWith(REWIND_ENDPOINT) ||
         path.startsWith(DEVICES_ENDPOINT) ||
+        path.startsWith(WEBHOOK_ENDPOINT) ||
+        path.startsWith(RECEIPT_ENDPOINT) ||
         path.startsWith(SHARE_ENDPOINT) ||
         path.startsWith(REQUEST_ENDPOINT) ||
         path.startsWith(STARTER_ENDPOINT) ||
@@ -364,7 +360,8 @@ test("deny by default, walked from Hono's own route table: every registered non-
   // above classifies), skips the routes the export declares public, and asks
   // every remaining one directly, so a route that shipped without being
   // added to the hand list still has to answer 401 before a handler runs.
-  const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
+  const { createApp } = await import("../src/index-app.js");
+  const { PUBLIC_ROUTES: exportedPublic } = await import("../src/index-support.js");
   const app = createApp();
   for (const { method, path } of app.routes.filter((r) => r.method !== "ALL")) {
     // A public route declared as a prefix (the share-link wildcard) exempts
@@ -406,7 +403,8 @@ test("the one forwarded /api/* route frames the hole the deny-by-default gate le
   // the site must forward it unchanged with the Basic header still on the
   // request. A second /api/* route forwarded past the gate fails the first
   // two checks, so it cannot join this one quietly.
-  const { createApp, PUBLIC_ROUTES: exportedPublic } = await import("../src/index.js");
+  const { createApp } = await import("../src/index-app.js");
+  const { PUBLIC_ROUTES: exportedPublic } = await import("../src/index-support.js");
   const app = createApp();
   const forwarded = app.routes.filter((r) => r.method === "ALL" && r.path === REVOKE_PATH);
   assert.equal(
@@ -739,7 +737,7 @@ test("an anonymous files request never reaches the store", async () => {
   // (src/index.js). A store that throws if touched proves the order rather
   // than asserting it in a comment.
   const { default: isolated } = await import("../src/index.js");
-  const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const source = readIndexSource();
   assert.match(
     source,
     /account \? withIndex\(storeFor\(c\.env\), c\.env\.DRIVE_DB, account\) : null/,

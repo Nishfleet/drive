@@ -1,21 +1,3 @@
-// Tests for the month's money (drive#7, #76, and the pay-for-what-you-store
-// rule of drive#463, Nish 2026-10-04).
-//
-//     charge = min(2¢ x avg GB, $10 x max(1, avg TB))
-//
-// avg is the time-weighted stored size over the month: GB-minutes over the
-// minutes in that calendar month (drive#531).
-// There is no minimum, no membership, no first-month discount and no
-// founding rate: everyone pays the one price. The formula edges below are the
-// ones the issue names: 0 GB, 1 GB, 499 GB, 500 GB, 1 TB, 1.5 TB and 4 TB,
-// each held all month.
-//
-// The default cap ($12) is issue #39's and #464 owns moving it, so the cap
-// tests read it from BILLING_CONFIG rather than typing it.
-//
-// The shapes the two consumers read (the usage page and `drive usage`, issue
-// #53) are in test/usage.test.mjs.
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -23,9 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   BILLING_CONFIG,
-  capStatus,
   downloadCostUsd,
-  handleUsageRequest,
   meteredMonthlyBillUsd,
   minutesInMonth,
   monthBillCents,
@@ -33,10 +13,9 @@ import {
   monthlyStorageBillUsd,
   quoteForStoredTb,
   SAVED_COPY,
-  savedLine,
   storedGb,
-  usageSummary,
 } from "../core/billing.js";
+import { capStatus, handleUsageRequest, savedLine, usageSummary } from "../core/billing-report.js";
 import { PRICE } from "../core/pricing.js";
 import { formatBytes } from "../core/status.js";
 import worker from "../src/index.js";

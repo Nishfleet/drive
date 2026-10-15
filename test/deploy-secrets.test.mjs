@@ -1,23 +1,4 @@
-// The deploy path, pinned (drive issue #189).
-//
-// `cloudflare.config.ts` deliberately leaves EMAIL_SEND_TOKEN and MAIL_FROM
-// undeclared: a declared secret is required, so the deploy would refuse to
-// ship before drive has a sending domain, and the closed-door design says the
-// send route answers 403/503 instead of a placeholder. That only works if the
-// CLI that deploys the Worker inherits secret bindings from the previous
-// Worker version. cf 1.0.0-beta.5 does not: beta.7 and later do
-// (https://github.com/cloudflare/cf/releases/tag/cf%401.0.0-beta.7), so the
-// pin is the whole guarantee.
-//
-// Live proof (drive#198): active deployment 9802c380 (2026-10-02T19:38:15Z)
-// serves version 66 (2026-10-02T19:38:14Z, triggered_by=version_upload), whose
-// bindings still carry DRIVE_TEST_SECRET_189 across the deploy. The pin works.
-//
-// A pin is a file that can be edited back down, and the failure mode is
-// invisible until the next push-to-main deploy silently drops a secret. So
-// this file is the gate: it fails on a pin below the version the design
-// depends on, and on a config comment that names a tool this repo does not
-// use. The two numbers it reads are the same two the deploy reads.
+// cf 1.0.0-beta.5 dropped secret bindings on deploy; beta.7 restored them (https://github.com/cloudflare/cf/releases/tag/cf%401.0.0-beta.7), so the CLI pin is the whole guarantee.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

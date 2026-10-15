@@ -1,9 +1,3 @@
-// Integration test for the prepaid balance, part 2 (drive#586): the meter's
-// usage draws, the pause at $0, the "$2 left" email and the auto top-up, on
-// every real migration under migrations/drive/ in a real SQLite database. The
-// provider is a recorder fetch and mail is a fake binding, so nothing is
-// charged or sent.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -15,7 +9,8 @@ import {
   size30Window,
 } from "../../core/billing.js";
 import { createD1DeviceStore } from "../../core/devices.js";
-import { createMemoryStore, handleFilesRequest } from "../../core/files.js";
+import { handleFilesRequest } from "../../core/files-handlers.js";
+import { createMemoryStore } from "../../core/files-memory.js";
 import { createMemoryStore as createKeyStore } from "../../core/keystore.js";
 import {
   appendLedgerEntry,
@@ -26,7 +21,8 @@ import {
   usageKey,
 } from "../../core/ledger.js";
 import { failureMessage } from "../../core/messages.js";
-import { BYTES_PER_GB, MINUTE_MS, recordUsage, size30Through } from "../../core/meter.js";
+import { BYTES_PER_GB, MINUTE_MS } from "../../core/meter.js";
+import { recordUsage, size30Through } from "../../core/meter-usage.js";
 import {
   AUTO_TOPUP_ENDPOINT,
   AUTO_TOPUP_RETRY_MS,
@@ -46,6 +42,7 @@ import {
   signWebhook,
   TOPUP_PURPOSE,
 } from "../../core/topup.js";
+import { createEndpoint } from "../../core/webhooks.js";
 import { storageWriteRoute } from "../../workers/api/src/key-routes.js";
 import { makeMeteredDB, midnight } from "../d1-sqlite.mjs";
 
@@ -1319,4 +1316,51 @@ test("a batch walk adds each account's own draw and never mixes them", async () 
     -50,
     "the healthy account's draw is not rolled back by the other's failure",
   );
+});
+
+test("the low-balance crossing also sends a signed balance.low webhook, once", async () => {
+  const { db } = makeMeteredDB();
+  await putAccount(db, ACCOUNT);
+  const email = fakeEmail();
+  /** @type {Array<{url: string, body: any}>} */
+  const calls = [];
+  const fetchDouble = /** @type {typeof fetch} */ (
+    /** @type {unknown} */ (
+      async (/** @type {string} */ url, /** @type {any} */ init) => {
+        calls.push({ url, body: JSON.parse(init.body) });
+        return new Response(null, { status: 200 });
+      }
+    )
+  );
+  const deps = {
+    email,
+    mailFrom: MAIL_FROM,
+    fetch: fetchDouble,
+    now: Date.parse("2026-10-05T12:00:00Z"),
+  };
+  const made = await createEndpoint(db, ACCOUNT, {
+    url: "https://hooks.example.com/low",
+    events: ["balance.low"],
+  });
+  assert.ok("endpoint" in made);
+  await creditTopUp(db, {
+    accountId: ACCOUNT,
+    paymentId: "pay_w",
+    amountCents: 1000,
+    now: deps.now,
+  });
+  await appendLedgerEntry(db, {
+    accountId: ACCOUNT,
+    kind: "usage",
+    amountCents: -850,
+    idempotencyKey: usageKey(ACCOUNT, 0),
+    windowStart: 0,
+    now: deps.now,
+  });
+  await settleBalance(db, ACCOUNT, deps);
+  await settleBalance(db, ACCOUNT, deps);
+  assert.equal(calls.length, 1, "once per crossing");
+  assert.equal(calls[0].url, "https://hooks.example.com/low");
+  assert.equal(calls[0].body.type, "balance.low");
+  assert.deepEqual(calls[0].body.data, { balance_cents: 150, auto_topup_cents: null });
 });

@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en" class="drive">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storagebun — your drive</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="description" content="Your balance, what you store, your devices and the next step, on one screen.">
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="/site.css">
+  <style>
+body {
+  padding: 0 clamp(20px, 5vw, 72px) 72px;
+}
+
+.masthead,
+main,
+.footer {
+  max-width: 940px;
+}
+
+main {
+  padding-top: clamp(28px, 5vh, 48px);
+}
+
+h1 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(34px, 5.4vw, 52px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.lede {
+  max-width: 60ch;
+  color: var(--ink-soft);
+}
+
+.grid[hidden] {
+  display: none;
+}
+
+.stage {
+  min-height: 260px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin: 28px 0 0;
+}
+
+.tile {
+  padding: 20px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+  min-height: 150px;
+}
+
+.tile h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.big {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(34px, 5vw, 46px);
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+.tile p {
+  margin: 6px 0 0;
+}
+
+.tile a {
+  color: var(--accent);
+}
+
+.tile .more {
+  color: var(--ink-soft);
+}
+
+.checklist {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.checklist li {
+  margin: 6px 0;
+}
+
+.checklist li[data-done="true"] {
+  color: var(--ink-muted, inherit);
+}
+
+.next-step {
+  margin: 16px 0 0;
+  border-color: var(--drive-orange, currentColor);
+}
+
+.status {
+  margin: 28px 0 0;
+  padding: 16px 18px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper-raised);
+}
+
+.status .what {
+  margin: 0;
+  font-weight: 600;
+}
+
+.status .next {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.footer {
+  margin: 48px auto 0;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+.footer a {
+  color: var(--ink-soft);
+}
+
+.legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#home-heading">Skip to your drive</a>
+  <!-- shell:app-header current="/home" -->
+  <nav class="app-side" aria-label="Main">
+    <a class="wordmark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a href="/home" aria-current="page">Home</a>
+    <a href="/files">Files</a>
+    <a href="/usage">Usage and billing</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Webhooks</a>
+    <span class="app-side-end">
+      <a href="/get-started">Get started</a>
+      <a href="/docs/">Docs</a>
+    </span>
+  </nav>
+  <header class="app-top">
+    <a class="wordmark app-top-mark" href="/home"><i aria-hidden="true"></i>storagebun</a>
+    <a class="balance-chip" id="balance-chip" href="/usage" hidden>Balance <b id="balance-chip-amount">$0.00</b></a>
+    <a class="top-up" href="/usage#topup-form">Top up</a>
+    <details class="account-menu" id="account-menu">
+      <summary>Account</summary>
+      <div class="account-panel">
+        <a href="/signin" id="nav-signin">Sign in</a>
+        <noscript>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout">
+            <button class="btn btn-ghost" type="submit">Sign out</button>
+          </form>
+          <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+          <form method="POST" action="/api/signin">
+            <input type="hidden" name="step" value="signout-all">
+            <button class="btn btn-ghost" type="submit">Sign out everywhere</button>
+          </form>
+        </noscript>
+        <button class="btn btn-ghost" type="button" id="nav-signout" hidden>Sign out</button>
+        <button class="btn btn-ghost" type="button" id="nav-signout-all" hidden>Sign out everywhere</button>
+      </div>
+    </details>
+  </header>
+  <nav class="app-tabs" aria-label="Tab bar">
+    <a href="/home" aria-current="page">Home</a>
+    <a href="/files">Files</a>
+    <a href="/usage">Usage</a>
+    <a href="/devices">Devices</a>
+    <a href="/webhooks">Hooks</a>
+  </nav>
+  <!-- /shell:app-header -->
+
+  <main>
+    <h1 id="home-heading" tabindex="-1">Your drive</h1>
+    <p class="lede" id="home-lede">Your balance, what you store and your devices, in one place.</p>
+
+    <div class="stage">
+    <div class="status" id="home-status" role="status" aria-live="polite" hidden>
+      <p class="what"></p>
+      <p class="next"></p>
+      <p><button type="button" id="home-retry" hidden class="btn">Try again</button></p>
+    </div>
+
+    <div class="grid" id="home-grid" aria-busy="true">
+      <section class="tile" aria-labelledby="balance-title">
+        <h2 id="balance-title">Balance</h2>
+        <p class="big" id="balance-amount">…</p>
+        <p class="more" id="balance-line"></p>
+        <p><a href="/usage">Top up</a></p>
+      </section>
+      <section class="tile" aria-labelledby="stored-title">
+        <h2 id="stored-title">Stored this month</h2>
+        <p class="big" id="stored-now">…</p>
+        <p class="more" id="stored-cost"></p>
+        <p><a href="/usage">See usage</a></p>
+      </section>
+      <section class="tile" aria-labelledby="devices-title">
+        <h2 id="devices-title">Devices</h2>
+        <p class="big" id="devices-count">…</p>
+        <p class="more" id="devices-line"></p>
+        <p><a href="/devices">Manage devices</a></p>
+      </section>
+    </div>
+    </div>
+
+    <section class="tile" id="checklist" aria-labelledby="checklist-title" hidden>
+      <h2 id="checklist-title">Get started</h2>
+      <ol class="checklist" id="checklist-items"></ol>
+    </section>
+
+    <section class="tile" id="agents" aria-labelledby="agents-title" hidden>
+      <h2 id="agents-title">What your agents did</h2>
+      <p class="big" id="agents-what"></p>
+      <p class="more" id="agents-line"></p>
+      <p><a id="agents-link" href="/files#rewind">See and undo</a></p>
+    </section>
+
+    <section class="tile next-step" id="next-step" aria-labelledby="next-title" hidden>
+      <h2 id="next-title">Next step</h2>
+      <p class="big" id="next-what"></p>
+      <p class="more" id="next-line"></p>
+      <p><a id="next-link" href="/files">Your files</a></p>
+    </section>
+    <p class="more" id="whats-new" hidden>What's new: <span id="whats-new-text"></span> <a href="/docs/changelog">Changelog</a></p>
+  </main>
+  <!-- shell:footer -->
+  <footer class="footer">
+    <nav class="legal-links" aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/refunds">Refunds</a>
+      <a href="/acceptable-use">Acceptable use</a>
+      <a href="/support">Support</a>
+      <a href="/accessibility">Accessibility</a>
+      <a href="/status">Status</a>
+    </nav>
+    <p>A Finder drive for people and their agents.</p>
+    <p>macOS and Linux. A drive folder, not a shared link. <a href="/get-started">Get started</a></p>
+  </footer>
+  <!-- /shell:footer -->
+  <script>
+const BALANCE_ENDPOINT = "/api/balance";
+const USAGE_ENDPOINT = "/api/usage";
+const DEVICES_ENDPOINT = "/api/devices";
+const REWIND_ENDPOINT = "/api/rewind";
+const FILES_ENDPOINT = "/api/files";
+const WHATS_NEW_URL = "/whats-new.json";
+const SIGNIN_ENDPOINT = "/api/signin";
+const LOAD_FAILED = "We could not load your drive. Check your connection and try again.";
+const SIGNED_OUT = "Sign in to see your drive.";
+
+const gridEl = document.getElementById("home-grid");
+const statusEl = document.getElementById("home-status");
+const retryEl = document.getElementById("home-retry");
+const nextEl = document.getElementById("next-step");
+const navSignin = document.getElementById("nav-signin");
+const navSignout = document.getElementById("nav-signout");
+const navSignoutAll = document.getElementById("nav-signout-all");
+
+function sayStatus(text, retry) {
+  const parts = String(text).split(". ");
+  statusEl.querySelector(".what").textContent = parts[0] ? `${parts[0]}.` : text;
+  statusEl.querySelector(".next").textContent = parts.slice(1).join(". ");
+  retryEl.hidden = !retry;
+  statusEl.hidden = false;
+  gridEl.hidden = true;
+  nextEl.hidden = true;
+}
+
+function showSessionNav(signedIn) {
+  navSignin.hidden = signedIn;
+  navSignout.hidden = !signedIn;
+  navSignoutAll.hidden = !signedIn;
+}
+
+async function getJson(url) {
+  const response = await fetch(url, { headers: { accept: "application/json" } });
+  const payload = await response.json().catch(() => null);
+  return { status: response.status, ok: response.ok, payload };
+}
+
+function setText(id, text) {
+  document.getElementById(id).textContent = text;
+}
+
+function nextStep(balanceCents, deviceCount) {
+  if (balanceCents <= 0) {
+    return { what: "Add $10 to open your drive", line: "Your balance pays for storage. It never expires.", href: "/usage", label: "Top up" };
+  }
+  if (deviceCount === 0) {
+    return { what: "Add a computer", line: "Run drive login on it, then your drive shows up in Finder.", href: "/get-started", label: "Get started" };
+  }
+  return { what: "Open your files", line: "Browse, upload and share from here.", href: "/files", label: "Your files" };
+}
+
+async function read() {
+  statusEl.hidden = true;
+  gridEl.hidden = false;
+  gridEl.setAttribute("aria-busy", "true");
+  let balance;
+  let usage;
+  let devices;
+  try {
+    [balance, usage, devices] = await Promise.all([
+      getJson(BALANCE_ENDPOINT),
+      getJson(USAGE_ENDPOINT),
+      getJson(DEVICES_ENDPOINT),
+    ]);
+  } catch (_error) {
+    sayStatus(LOAD_FAILED, true);
+    return;
+  }
+  if ([balance, usage, devices].some((r) => r.status === 401)) {
+    showSessionNav(false);
+    sayStatus(SIGNED_OUT, false);
+    return;
+  }
+  if (
+    !balance.ok ||
+    typeof balance.payload?.balance !== "string" ||
+    !devices.ok ||
+    !Array.isArray(devices.payload?.keys)
+  ) {
+    sayStatus(LOAD_FAILED, true);
+    return;
+  }
+  showSessionNav(true);
+  setText("balance-amount", balance.payload.balance);
+  setText(
+    "balance-line",
+    [balance.payload.balance_line, balance.payload.runway_line].filter(Boolean).join(" "),
+  );
+  const labels = usage.ok ? usage.payload?.labels : null;
+  setText("stored-now", labels?.storedNow ?? "—");
+  setText("stored-cost", labels?.cost ?? "");
+  const count = devices.payload.keys.length;
+  setText("devices-count", String(count));
+  setText("devices-line", count === 0 ? "None yet." : count === 1 ? "One can use your drive." : `${count} can use your drive.`);
+  const step = nextStep(Number(balance.payload.balance_cents) || 0, count);
+  setText("next-what", step.what);
+  setText("next-line", step.line);
+  const link = document.getElementById("next-link");
+  link.href = step.href;
+  link.textContent = step.label;
+  nextEl.hidden = false;
+  gridEl.setAttribute("aria-busy", "false");
+  readChecklist(devices.payload.keys);
+  readAgents();
+  readWhatsNew();
+}
+
+async function readWhatsNew() {
+  try {
+    const answer = await getJson(WHATS_NEW_URL);
+    if (!answer.ok || typeof answer.payload?.text !== "string") return;
+    setText("whats-new-text", answer.payload.text);
+    document.getElementById("whats-new").hidden = false;
+  } catch (_error) {}
+}
+
+// The newest agent session, in one line: who, how many files, and whether
+// Rewind can still put them back. The tile is left out when there is none or
+// the read fails, because it is a bonus on this page and never its error.
+async function readChecklist(keys) {
+  let hasFile = false;
+  try {
+    const answer = await getJson(FILES_ENDPOINT);
+    if (answer.ok) hasFile = (answer.payload?.rows ?? []).length > 0;
+    else if (answer.status !== 404) return;
+  } catch (_error) {
+    return;
+  }
+  const steps = [
+    { text: "Add a computer", href: "/get-started", done: keys.some((key) => key.kind === "device") },
+    { text: "Add your first file", href: "/files", done: hasFile },
+    { text: "Connect an agent", href: "/get-started#agents", done: keys.some((key) => key.kind === "agent") },
+  ];
+  const list = document.getElementById("checklist-items");
+  list.textContent = "";
+  for (const step of steps) {
+    const item = document.createElement("li");
+    item.dataset.done = String(step.done);
+    if (step.done) {
+      item.textContent = `Done: ${step.text}`;
+    } else {
+      const link = document.createElement("a");
+      link.href = step.href;
+      link.textContent = step.text;
+      item.append(link);
+    }
+    list.append(item);
+  }
+  document.getElementById("checklist").hidden = steps.every((step) => step.done);
+}
+
+async function readAgents() {
+  let rewinds;
+  try {
+    const answer = await getJson(REWIND_ENDPOINT);
+    rewinds = answer.ok ? answer.payload?.rewinds : null;
+  } catch (_error) {
+    return;
+  }
+  if (!Array.isArray(rewinds) || rewinds.length === 0) return;
+  const latest = [...rewinds].sort((a, b) => Number(b.createdAt) - Number(a.createdAt))[0];
+  const count = Number(latest.files?.count ?? 0);
+  const who = latest.changedBy || "An agent";
+  setText("agents-what", `${who} changed ${count} ${count === 1 ? "file" : "files"}`);
+  const until = new Date(latest.restorableUntil);
+  setText(
+    "agents-line",
+    latest.canRewind && !Number.isNaN(until.getTime())
+      ? `One click puts your files back, until ${until.toLocaleDateString(undefined, { day: "numeric", month: "short" })}.`
+      : "That work is already settled.",
+  );
+  document.getElementById("agents-link").textContent = latest.canRewind ? "See and undo" : "See what changed";
+  document.getElementById("agents").hidden = false;
+}
+
+async function postSignout(step) {
+  navSignout.disabled = true;
+  navSignoutAll.disabled = true;
+  let response;
+  try {
+    response = await fetch(SIGNIN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ step }),
+    });
+  } catch (_error) {
+    sayStatus(LOAD_FAILED, true);
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  if (!response.ok) {
+    sayStatus(LOAD_FAILED, true);
+    navSignout.disabled = false;
+    navSignoutAll.disabled = false;
+    return;
+  }
+  location.reload();
+}
+
+navSignout.addEventListener("click", () => {
+  postSignout("signout");
+});
+navSignoutAll.addEventListener("click", () => {
+  postSignout("signout-all");
+});
+retryEl.addEventListener("click", () => {
+  read();
+});
+read();
+  </script>
+  <script type="module" src="/close-banner.js"></script>
+</body>
+</html>

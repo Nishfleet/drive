@@ -1,19 +1,3 @@
-// The S3 client the api Worker speaks to storage through: signed requests,
-// the four bucket-configuration calls build step 1 needs, and STS key
-// minting. Everything here is stock S3 (drive#2), so pointing the Worker at
-// iDrive e2, Backblaze B2 or the local stand-in is configuration alone —
-// endpoint, region, bucket and the master credential (docs/build-spec.md,
-// "Keys and safety").
-//
-// Two shapes of S3 answer arrive in this file and neither is special-cased by
-// vendor: the XML error body (`<Code>`/`<Message>`) every endpoint returns,
-// and the XML the calls below read. An endpoint that answers with neither is
-// named as unrecognised rather than treated as success, because a storage
-// layer that reports success for a call it could not read is how a key ends up
-// unscoped. Listing bodies — the versions this file's restore path reads —
-// parse in core/s3-listing.js, the one S3 listing parser both Workers share
-// (drive issue #504), so a key's own characters survive the answer everywhere.
-
 import { AwsClient } from "aws4fetch";
 import { decodeEntities, parseVersionRows, tagValue as scanTagValue } from "./s3-listing.js";
 
@@ -27,11 +11,6 @@ import { decodeEntities, parseVersionRows, tagValue as scanTagValue } from "./s3
  * @property {string} text
  */
 
-/**
- * An S3 call that failed, with the endpoint's own code and message. Thrown by
- * `ok()` and by every function here that promises an effect, so a failure is
- * never swallowed into a default.
- */
 export class S3Error extends Error {
   /**
    * @param {string} operation what the Worker was trying to do
@@ -129,22 +108,11 @@ export function createS3Client(config) {
     async send(method, target = {}) {
       const url = new URL(`${origin}/${target.bucket ?? ""}`);
       if (target.key !== undefined && target.key !== "") {
-        // Each path segment is percent-encoded before it goes on the URL, and
-        // the slashes are kept. A key from a Finder drive can legally contain
-        // `?`, `#` or a space, and the URL pathname setter would otherwise read
-        // `?` as the start of the query and `#` as a fragment, so a file named
-        // `report#2.txt` would sign and fetch `<prefix>report`. The URL is then
-        // what aws4fetch canonicalises, so the address signed and the address
-        // sent are the same string.
         url.pathname = `${url.pathname}/${target.key.split("/").map(encodeURIComponent).join("/")}`;
       }
       for (const [name, value] of Object.entries(target.query ?? {})) {
         url.searchParams.set(name, value);
       }
-      // The body is sent exactly as it was signed: a `Uint8Array` is copied
-      // into a plain-ArrayBuffer view (the bytes themselves, for a binary
-      // upload), a string is text, and an absent body is absent. Sending
-      // anything other than the signed bytes is SignatureDoesNotMatch.
       /** @type {string|Uint8Array<ArrayBuffer>|undefined} */
       let body;
       if (target.body === undefined || target.body === "") {
@@ -166,13 +134,7 @@ export function createS3Client(config) {
   };
 }
 
-/**
- * How many days a hidden version (an overwritten copy, or the file behind a
- * delete marker) stays in a bucket before the lifecycle rule removes it. The
- * docs read this value (src/keys.js `storagePowersFor`), so a page cannot
- * promise a longer undo window than the bucket keeps (drive#502).
- */
-export const HIDDEN_VERSION_DAYS = 1;
+export const HIDDEN_VERSION_DAYS = 3;
 
 /**
  * The bucket build step 1 asks for: versioning on, hidden versions kept for a
@@ -196,7 +158,7 @@ export const HIDDEN_VERSION_DAYS = 1;
  * @returns {Promise<{versioning: S3Response, lifecycle: S3Response, notification: S3Response|null, encryption: S3Response|null}>}
  */
 export async function provisionBucket(client, config) {
-  const { bucket, notificationQueueArn, hiddenVersionDays = HIDDEN_VERSION_DAYS } = config;
+  const { bucket, notificationQueueArn } = config;
 
   const created = await client.send("PUT", { bucket });
   if (created.status !== 200 && tagValue(created.text, "Code") !== "BucketAlreadyOwnedByYou") {
@@ -213,8 +175,13 @@ export async function provisionBucket(client, config) {
     }),
   );
 
-  // S3 refuses a lifecycle body without a Content-MD5, so it is computed here
-  // rather than left to the caller to remember.
+  let hiddenVersionDays = config.hiddenVersionDays ?? HIDDEN_VERSION_DAYS;
+  if (config.hiddenVersionDays === undefined) {
+    const current = await client.send("GET", { bucket, query: { lifecycle: "" } });
+    const days = current.status === 200 ? Number(tagValue(current.text, "NoncurrentDays")) : 0;
+    if (Number.isFinite(days) && days > hiddenVersionDays) hiddenVersionDays = days;
+  }
+
   const lifecycleBody =
     `<LifecycleConfiguration><Rule><ID>hidden-versions</ID><Status>Enabled</Status>` +
     `<Filter><Prefix></Prefix></Filter>` +
@@ -251,9 +218,6 @@ export async function provisionBucket(client, config) {
     );
   }
 
-  // SSE-S3, the stock bucket-encryption call. Only sent when the deployment
-  // names it: a stock S3 stand-in refuses it, and the vendor that takes it
-  // (iDrive e2, measured drive#173) is the one whose deployment names it.
   let encryption = null;
   if (config.sse !== undefined) {
     const encryptionBody =
@@ -301,7 +265,6 @@ export async function readBucketEncryption(client, config) {
 export async function contentMd5(text) {
   const bytes = new TextEncoder().encode(text);
   const bitLength = bytes.length * 8;
-  // One 0x80 byte, then zeroes, then the length in little-endian bits.
   const padded = new Uint8Array((((bytes.length + 8) >> 6) + 1) * 64);
   padded.set(bytes);
   padded[bytes.length] = 0x80;
@@ -330,9 +293,7 @@ export async function contentMd5(text) {
     }
     let [a, b, c, d] = state;
     for (let i = 0; i < 64; i++) {
-      // Each round takes a different function of the same four variables, a
-      // different message word and a different rotation, in four groups of
-      // sixteen (RFC 1321 section 3.4).
+      // RFC 1321 section 3.4: each round takes a different function of the four variables, message word and rotation.
       let mixed;
       let word;
       let shift;
@@ -367,7 +328,6 @@ export async function contentMd5(text) {
     state[3] = (state[3] + d) | 0;
   }
 
-  // The digest is the four state words in little-endian order.
   let out = "";
   for (const word of state) {
     for (let i = 0; i < 4; i++) {

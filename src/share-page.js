@@ -1,49 +1,12 @@
-// The public share landing page (drive#883). A share link (/s/<token>) used
-// to serve the raw bytes and nothing else, so the one page a stranger lands
-// on had no way to report it (drive#523 part 2). The landing page is that
-// report path: our own minimal HTML, generated here, carrying the file's
-// preview or its download and a prefilled report mail to the support mailbox.
-//
-// One route still answers, three ways, so nothing that works today changes:
-//
-//   - A browser navigating to /s/<token> (GET, Accept asks for text/html, no
-//     flag) gets this page. The page itself reads no bytes; it checks the
-//     link and the live object the way the byte path's HEAD answer does, so
-//     a revoked, expired, deleted or replaced link shows the same plain
-//     refusal it always did, and a page view counts no download.
-//   - ?embed=1 — the page's own <img>, <video> and <audio> source, and any
-//     other subresource load: the bytes, with exactly the headers the direct
-//     link served before (src/share.js handleShareFileRequest: the served
-//     type is the file's kind, nosniff, a sandboxed document, no-referrer).
-//   - ?open=1, and every request that does not ask for text/html (curl, a
-//     download manager, the CLI): the bytes, exactly the old direct-open
-//     behaviour — inline when the kind previews, an attachment otherwise.
-//
-// Every /s/ visit passes the one share-download edge limiter, so a stranger
-// with the link pays the same per-IP budget for a page view as for a byte
-// read, and a page can never be a way around the limit.
-//
-// The page carries no script at all: its Content-Security-Policy refuses one
-// (script-src 'none'), so the markup is the whole behaviour. The file's name
-// is attacker-controlled text from the share row, so every place it shows is
-// escapeHtml()'d (core/escape-html.js); every other word on the page is code
-// or a constant from core/legal.js.
-
 import { escapeHtml } from "../core/escape-html.js";
 import { fileKind, previewDisposition } from "../core/files.js";
 import { LEGAL_PAGES, REPORT_PATH, SUPPORT_EMAIL } from "../core/legal.js";
-import {
-  admitShareLink,
-  expiresAtIso,
-  handleShareFileRequest,
-  liveShareObject,
-  SHARE_LINK_PREFIX,
-} from "./share.js";
+import { PRICE } from "../core/pricing.js";
+import { expiresAtIso, SHARE_LINK_PREFIX } from "./share.js";
+import { admitShareLink, handleShareFileRequest, liveShareObject } from "./share-routes.js";
 
-/** The query flag that reads the bytes as the page's own media source. */
 const EMBED_FLAG = "embed";
 
-/** The query flag that reads the bytes the way the direct link always did. */
 const OPEN_FLAG = "open";
 
 /**
@@ -171,8 +134,6 @@ function shareLandingHtml({ record, stat, url }) {
     middle = `<p>This kind of file has no preview.</p>
       <p><a href="${openHref}">Download ${name}</a></p>`;
   }
-  // The link a report names is the clean share URL, without whatever flag the
-  // visitor's own address bar may carry.
   const shareUrl = new URL(`${SHARE_LINK_PREFIX}/${record.token}`, url.origin).toString();
   const reportHref = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Report a shared link")}&body=${encodeURIComponent(`Reporting this shared link:\n${shareUrl}\n\nWhat is wrong with it?`)}`;
   const footerLinks = LEGAL_PAGES.map((page) => `<a href="${page.path}">${page.label}</a>`).join(
@@ -196,6 +157,7 @@ h1 { font-size: 1.4rem; margin: 0.4rem 0 1rem; }
 img, video { max-width: 100%; height: auto; }
 a { color: #1f3a5f; }
 .expiry { color: #6f6a5f; }
+.made { color: #56514a; margin-top: 2rem; }
 footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #ddd5c5; display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; font-size: 0.85rem; }
 </style>
 </head>
@@ -207,6 +169,7 @@ footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #ddd5c5; d
 ${middle}
 ${expiry}
 <p><a href="${reportHref}" rel="nofollow">Report this link</a> to support, or read the <a href="${REPORT_PATH}">report policy</a>.</p>
+<p class="made">Stored on Storagebun. ${escapeHtml(`${PRICE.rateLine} ${PRICE.maxLine}`)} <a href="/">See how it works</a></p>
 <footer><nav aria-label="Footer">
       ${footerLinks}
 </nav></footer>

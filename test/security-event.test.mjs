@@ -1,20 +1,16 @@
-// Security-event mail (drive#551): one template, one send per event, a mail
-// failure does not fail the action, and the usage page shows open public links.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AUTH_COOKIE_PREFIX } from "../core/auth.js";
-import { handleUsageRequest } from "../core/billing.js";
-import { handleCapRequest } from "../core/cap.js";
+import { handleUsageRequest } from "../core/billing-report.js";
+import { handleCapRequest } from "../core/cap-request.js";
 import { renderEmail, SECURITY_EVENT_COPY } from "../core/emails.js";
-import {
-  createMemoryStore as createFileStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-} from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore as createFileStore } from "../core/files-memory.js";
 import { createMemoryStore } from "../core/keystore.js";
 import { mailFromEnv, notifySecurityEvent, sessionLabel } from "../core/security-event.js";
-import { createD1LinkStore, handleRequestRequest, handleShareRequest } from "../src/share.js";
+import { handleRequestRequest, handleShareRequest } from "../src/share-routes.js";
+import { createD1LinkStore } from "../src/share-store.js";
 import { dispatch } from "../workers/api/src/index.js";
 import { mintTeamKeyRoute } from "../workers/api/src/team-routes.js";
 import { createTestD1 } from "./harness.mjs";

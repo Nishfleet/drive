@@ -1,24 +1,16 @@
-// Production Workers refuse an in-memory files store (drive#505). The
-// handler-level 503 is pinned in test/files.test.mjs; these tests drive the
-// Worker the platform drives, so a missing storage endpoint is a 503 on the
-// request path and a skipped nightly trigger, not a quiet empty Map.
-
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import {
-  createMemoryStore,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  TRASH_PURGE_SCHEDULE,
-} from "../core/files.js";
+import { FILES_ENDPOINT, TRASH_PURGE_SCHEDULE } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
 import { failureMessage } from "../core/messages.js";
-import { METER_RECONCILE_SCHEDULE } from "../core/meter.js";
+import { METER_RECONCILE_SCHEDULE } from "../core/meter-fair-use.js";
 import { CLOSE_SCHEDULE } from "../src/account-close.js";
 import worker from "../src/index.js";
 import { REINDEX_SCHEDULE } from "../src/search.js";
 import { STARTER_ENDPOINT } from "../src/starter.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
+import { readIndexSource } from "./index-source.mjs";
 
 const workerFetch =
   /** @type {(request: Request, env: unknown, ctx: {waitUntil(promise: Promise<unknown>): void, passThroughOnException(): void}) => Promise<Response>} */ (
@@ -31,7 +23,7 @@ const workerScheduled =
 const ctx = { waitUntil() {}, passThroughOnException() {} };
 
 test("src/index.js never builds the in-memory files store", () => {
-  const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const source = readIndexSource();
   assert.doesNotMatch(
     source,
     /createMemoryStore\s*\(/,

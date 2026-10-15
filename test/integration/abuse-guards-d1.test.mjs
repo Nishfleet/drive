@@ -1,11 +1,3 @@
-// Integration test for drive#464's three new accounts columns: the real
-// migration files under migrations/drive/, applied to a real SQLite database.
-// A mocked binding cannot see the schema. This file proves both directions:
-// WRITE — claiming a card fingerprint lands on the row a plain SELECT can
-// find; READ — a second store over the same database sees it, and a duplicate
-// fingerprint is refused. The retired founding columns stay in the schema and
-// are never written.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

@@ -1,21 +1,14 @@
-// The public savings calculator (drive issue #14): a size in, this month's
-// bill, our maximum and a usual 1 TB plan's price out (drive#463). The
-// numbers come from monthBillCents() via monthlyBillForStoredTb() and
-// usualPlanMonthlyUsd(), so the page cannot quote a different arithmetic than
-// the invoice. The rival is named only by the neutral label "a usual 1 TB
-// plan", never by name.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   GB_PER_TB,
-  handleQuoteRequest,
   monthlyBillForStoredTb,
   monthlyMaximumUsd,
   QUOTE_ENDPOINT,
   quoteForStoredTb,
 } from "../core/billing.js";
+import { handleQuoteRequest } from "../core/billing-report.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { PRICE, usualPlanMonthlyUsd } from "../core/pricing.js";
 import worker from "../src/index.js";

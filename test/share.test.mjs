@@ -1,34 +1,16 @@
-// Tests for share links and upload requests (drive issue #19). Two halves, the
-// same split test/files.test.mjs uses for core/files.js:
-//
-// 1. The logic in src/share.js against a real in-memory FileStore and the
-//    memory LinkStore: tokens, the 7-day window, revocation, the logged-out
-//    share route, and the upload page's routes.
-// 2. The shipped page: public/upload.html is a static asset and cannot import
-//    the module, so this reads it and fails when its words or endpoints drift
-//    from src/share.js.
-//
-// The three "Done when" bullets are their own tests at the bottom, run as the
-// real routes a browser and the CLI's API calls hit:
-//   - a real file opens from a share link with no account and no cookie;
-//   - a revoked link is a 404;
-//   - a file dropped on an upload page is in the folder's listing afterwards.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { run } from "../core/db.js";
-import {
-  createMemoryStore,
-  createS3Store,
-  FILES_ENDPOINT,
-  handleFilesRequest,
-  scopeStore,
-  storageBucketForKey,
-} from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore, storageBucketForKey } from "../core/files-memory.js";
+import { createS3Store } from "../core/files-s3.js";
+import { scopeStore } from "../core/files-scope.js";
 import { bucketForAccount } from "../core/keyprovider.js";
 import { failureMessage } from "../core/messages.js";
-import worker, { createApp } from "../src/index.js";
+import worker from "../src/index.js";
+import { createApp } from "../src/index-app.js";
 import {
   EICAR_BODY,
   EICAR_SHA256,
@@ -44,16 +26,9 @@ import {
 } from "../src/malware.js";
 import {
   base64url,
-  createD1LinkStore,
   DAY_MS,
   DEFAULT_LINK_DAYS,
   folderDisplayName,
-  folderExists,
-  handleRequestInfoRequest,
-  handleRequestRequest,
-  handleRequestUploadRequest,
-  handleShareFileRequest,
-  handleShareRequest,
   LINK_RETENTION_DAYS,
   linkExpiry,
   linkIsOpen,
@@ -62,9 +37,6 @@ import {
   MALWARE_NOTICE_QUIET_MS,
   MAX_OPEN_LINKS,
   newLinkToken,
-  newRequestRecord,
-  newShareRecord,
-  purgeStaleLinks,
   REQUEST_ENDPOINT,
   REQUEST_FILE_MAX_BYTES,
   REQUEST_MAX_FILES,
@@ -84,7 +56,22 @@ import {
   validateShareFile,
   validateToken,
 } from "../src/share.js";
+import {
+  handleRequestInfoRequest,
+  handleRequestRequest,
+  handleShareFileRequest,
+  handleShareRequest,
+} from "../src/share-routes.js";
+import {
+  createD1LinkStore,
+  folderExists,
+  newRequestRecord,
+  newShareRecord,
+  purgeStaleLinks,
+} from "../src/share-store.js";
+import { handleRequestUploadRequest } from "../src/share-upload.js";
 import { createTestD1, knownBadHashRows } from "./harness.mjs";
+import { readIndexSource } from "./index-source.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 const page = readFileSync(new URL("../public/upload.html", import.meta.url), "utf8");
@@ -240,7 +227,7 @@ function denyLimiter() {
  * Options the public upload route needs in tests: the two edge limiters
  * production binds, plus the clock. A call that omits them is the fail-closed
  * 503, which is not what the size/cap tests are asking.
- * @param {{now?: number, db?: import("./harness.mjs").TestD1, owner?: unknown, email?: unknown, mailFrom?: string, token?: string, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
+ * @param {{fairUseRefuse?: boolean, fairUseForUpload?: (accountId: string, uploadBytes: number) => Promise<{wouldRefuse: boolean, line: {copy: string}}|null>, onFairUseError?: (error: unknown) => void, now?: number, db?: import("./harness.mjs").TestD1, owner?: unknown, email?: unknown, mailFrom?: string, token?: string, ipLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}, linkLimiter?: {limit(options: {key: string}): Promise<{success: boolean}>}}} [options]
  */
 function withLimits(options = {}) {
   return {
@@ -466,6 +453,36 @@ test("a known-bad hash is refused on share mint and on an upload-request drop", 
     (await list()).map((row) => row.name),
     ["eicar.txt"],
   );
+  const record = await links.requests.get(TOKEN);
+  assert.ok(record);
+  assert.equal(record.uploadCount, 0);
+});
+
+test("a fair-use pause refuses a drop through an upload request when refuse is on", async () => {
+  const { files, links, request } = drive();
+  const made = await request("/", { token: TOKEN });
+  assert.equal(made.status, 201);
+  const line = {
+    copy: "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.",
+  };
+  const dropped = await handleRequestUploadRequest(
+    new Request(`${api(REQUEST_ENDPOINT)}/upload?k=${TOKEN}&name=big.bin`, {
+      method: "POST",
+      body: "twelve-bytes",
+    }),
+    files,
+    links,
+    () => "active",
+    withLimits({
+      fairUseRefuse: true,
+      fairUseForUpload: async () => ({ wouldRefuse: true, line }),
+    }),
+  );
+  assert.equal(dropped.status, 429);
+  assert.deepEqual(await dropped.json(), {
+    error: failureMessage("fair-use-pause"),
+    fairUseLine: line.copy,
+  });
   const record = await links.requests.get(TOKEN);
   assert.ok(record);
   assert.equal(record.uploadCount, 0);
@@ -723,7 +740,7 @@ test("every route that can hit the list binds everything a refusal needs", () =>
   // and answer 200s in production, because the handler would simply have no
   // database to read. So the wiring is read out of src/index.js beside them,
   // in the style test/monitoring.test.mjs already uses for its crons.
-  const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  const src = readIndexSource();
   /**
    * Every `app.<verb>(...)` registration in src/index.js, as its own block
    * with the comment lines stripped. The strip is the point: a route that

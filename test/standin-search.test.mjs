@@ -1,40 +1,3 @@
-// The issue's done-when, on real storage (drive issue #18): "on a real drive
-// with 100,000 files, `drive search` returns in under 1 s".
-//
-// test/search.test.mjs proves the number on the same SQL against the same
-// SQLite engine D1 runs, but from rows the test wrote itself. This file is the
-// half that only real storage can answer: the files are in an S3 bucket, the
-// index is built by walking that bucket with the shipped S3 store, and the
-// search runs over what the walk found. Everything is the production path —
-// `createS3Store` (core/files.js) scoped by `scopeStore`, fed to
-// `reconcileIndex` (src/search.js) exactly as the Worker's scheduled handler
-// wires it, then `searchDrive` over the result.
-//
-// The stand-in is stock `rclone serve s3` on a local folder (the same tool and
-// the same shape as test/two-mount-sync.test.mjs and the Go mount proof; no
-// new dependency). Storage is configuration, never code, so the same proof runs
-// against real iDrive e2 (eu-west-3) by setting the environment and nothing
-// else — that is what lands with issue #2, and this file is the proof it
-// unblocks:
-//
-//   DRIVE_STANDIN_ENDPOINT  S3 endpoint (default: a local rclone serve s3)
-//   DRIVE_STANDIN_BUCKET    bucket name (default: "bucket")
-//   DRIVE_STANDIN_SEARCH_FILES  files in the stand-in drive (default 100000)
-//   DRIVE_STANDIN_REGION    S3 region, with a real endpoint
-//   DRIVE_STANDIN_ACCESS_KEY / DRIVE_STANDIN_SECRET_KEY  the credential a
-//                            real endpoint requires, the same two names
-//                            test/step1-storage.test.mjs uses. The shipped
-//                            store signs every request when all three are
-//                            given (aws4fetch, the signer the api Worker
-//                            already uses) and sends the local stand-in's
-//                            unsigned requests untouched when they are not.
-//
-// The search must not list the bucket, so the cost of doing it anyway is
-// measured on the same files and printed beside the search: that is the
-// listing-based alternative the index exists to avoid. Spotlight itself is
-// macOS and cannot be timed here; the drive repo's AGENTS.md marks a Mac-only
-// proof for Nish, and the number recorded on the issue says so.
-
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -45,7 +8,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createS3Store, scopeStore } from "../core/files.js";
+import { createS3Store } from "../core/files-s3.js";
+import { scopeStore } from "../core/files-scope.js";
 import { reconcileIndex, searchDrive, withIndex } from "../src/search.js";
 import { sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 

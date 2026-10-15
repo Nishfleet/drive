@@ -1,49 +1,3 @@
-// Step 6 done-when proof on a real mount (docs/build-spec.md build step 6,
-// drive issue #229): "a capped account goes read-only with no file lost and
-// starts writing again once the cap is raised."
-//
-// The unit proof (test/cap.test.mjs) and the row proof
-// (test/integration/cap-store-d1.test.mjs) stop one layer short of the claim
-// the spec actually makes, because both can be true while the user loses work:
-// they check that enforceCap returns a read-only key and that the row flipped,
-// but neither runs a mount. So a cap that revoked the wrong thing, or a key
-// whose prefix the mount cannot read, would pass every other test and still
-// take files off someone's disk. This file is the layer that can see that: a
-// real `rclone mount` over the spec's VFS flags, with a real scoped key from
-// the real provider, against a real S3 endpoint that refuses what the policy
-// does not allow.
-//
-// The four claims, each read off the mount or off storage rather than off a
-// return value:
-//
-//   1. A write-capable device key mounts, reads what storage holds, and takes
-//      a new file. The file is a PENDING UPLOAD: --vfs-write-back 5s means
-//      rclone may still be holding it in its cache, which is the state the
-//      spec's "uploads waiting in the cache stay on disk" sentence is about.
-//   2. At the cap, enforceCap on the real D1 rows mints a read-only key and
-//      says the mount restarts. The mount is restarted with THAT key, which is
-//      what the CLI does (cap.mount.restart, then the credential in `applied`).
-//   3. On the read-only mount: the existing file is still readable, a new write
-//      never reaches storage (the read-only session policy has no PutObject),
-//      and the pending upload from phase 1 is still on disk. No file lost.
-//   4. With the cap raised, enforceCap mints a write key again, the mount
-//      restarts with it, and the pending upload goes up.
-//
-// Storage is MinIO in Docker (test/minio-standin.mjs), the same stand-in
-// test/step1-storage.test.mjs reads its scoped-key refusals off. It is the
-// only endpoint in this repo that mints scoped read-only keys at all: B2
-// does, and iDrive e2 refuses STS AssumeRole outright (measured, drive#173,
-// recorded in core/s3-keys.js). The cap swap's provider calls are
-// the same code either way — the endpoint is a configuration difference — so
-// this proves the swap against the one backend that can perform it.
-//
-// Unprivileged FUSE: GitHub's ubuntu runners allow a direct mount. This VPS
-// refuses one (AppArmor restricts unprivileged user namespaces), so when the
-// direct mount is refused while a user namespace is available, the test
-// re-executes itself inside `unshare -Urm`, where the mounts are allowed and
-// visible to the test process itself. Same shape as
-// test/two-mount-sync.test.mjs, and for the same reason.
-
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -56,7 +10,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { dollarsToCapCents, enforceCap } from "../../core/cap.js";
+import { enforceCap } from "../../core/cap.js";
+import { dollarsToCapCents } from "../../core/cap-request.js";
 import { createD1DeviceStore } from "../../core/devices.js";
 import { bucketForAccount } from "../../core/keyprovider.js";
 import { createS3Client, provisionBucket } from "../../core/s3.js";
@@ -752,7 +707,7 @@ test("the straddling month really does straddle the cap", async () => {
   // it. If a pricing change moved the maximum, that would silently stop being
   // true and the proof would pass without ever capping anything, so it is
   // asserted here rather than assumed.
-  const { capStatus } = await import("../../core/billing.js");
+  const { capStatus } = await import("../../core/billing-report.js");
   assert.equal(capStatus(STRADDLING_MONTH.size30Bytes, CAP_BEFORE).state, "read_only");
   assert.equal(capStatus(STRADDLING_MONTH.size30Bytes, CAP_AFTER).state, "active");
 });

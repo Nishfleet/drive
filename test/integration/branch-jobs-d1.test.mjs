@@ -1,8 +1,3 @@
-// Integration test for drive#563's branch-job columns: the real migration
-// under migrations/drive/, applied to a real SQLite database. A mocked binding
-// cannot see the schema, and the unique index is what stops a second create
-// of a name while approve is copying.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";

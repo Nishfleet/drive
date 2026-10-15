@@ -1,14 +1,3 @@
-// drive#642: bill the biggest size in the last 30 days, not by the minute.
-//
-//     size30  = the largest stored size in the trailing 30 days
-//     charge  = min(2¢ x size30 GB, $15 x max(1, size30 TB))
-//     daily   = that monthly charge / 30, remainder carried in millicents
-//
-// monthBillCents() is the one function that turns the config into money.
-// These tests are the issue's finish line: the four worked cases, grow-then-
-// shrink, an emptied drive on day 29 and day 31, remainder, and the "you
-// saved" hide at 1 TB and above.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -21,10 +10,10 @@ import {
   monthlyBillForStoredTb,
   packDrawRemainder,
   SIZE30_MS,
-  savedLine,
   size30Window,
   unpackDrawRemainder,
 } from "../core/billing.js";
+import { savedLine } from "../core/billing-report.js";
 import { pendingDrawDays } from "../core/prepaid.js";
 import { PRICE } from "../core/pricing.js";
 

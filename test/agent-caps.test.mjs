@@ -1,11 +1,3 @@
-// The per-agent cap's decision, as pure functions over injected numbers
-// (drive issue #171). No database and no clock: everything these caps decide is
-// handed in, so every boundary below is a fact about the rule rather than
-// about the day the test runs.
-//
-// The reading of those numbers — the `agent_caps` row, the day's counter and
-// the metered month — is a different module and is proved against the real
-// schema in test/integration/agent-caps-d1.test.mjs.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -16,7 +8,8 @@ import {
   dayKey,
   monthKey,
 } from "../core/agentcaps.js";
-import { BILLING_CONFIG, capStatus } from "../core/billing.js";
+import { BILLING_CONFIG } from "../core/billing.js";
+import { capStatus } from "../core/billing-report.js";
 import { READ_ONLY_CAPABILITIES } from "../core/cap.js";
 
 // One pinned instant, so a day boundary is a fact of the test. Midday UTC,

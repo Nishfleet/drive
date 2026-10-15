@@ -1,14 +1,6 @@
-// Every drive email, every branch. The copy is a decision (docs/build-spec.md,
-// "Nothing missing": welcome, 80% of cap, read-only reached, payment failed,
-// monthly receipt with the "you saved" line), so the tests pin the sentences,
-// the numbers and the two "you saved" baselines from drive#39 rather than
-// letting a later run quietly reword a customer's inbox.
-//
-// No Worker runtime: sendEmail takes the binding as an argument, so a fake
-// records what would have gone out and the templates run through node --test.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { signinLinkEmail } from "../core/auth.js";
 import { BILLING_CONFIG } from "../core/billing.js";
 import {
   handleSendEmailRequest,
@@ -23,6 +15,7 @@ import {
   DEFAULT_CAP_USD,
   EMAIL_KINDS,
   FROM_NAME,
+  fairUsePauseTemplate,
   filesDeletedTemplate,
   monthlyReceiptTemplate,
   paymentFailedTemplate,
@@ -116,9 +109,13 @@ test("the emails include the spec's money kinds and the close kinds", () => {
     "files-deleted",
     "top-up-receipt",
     "low-balance",
+    "fair-use-pause",
     "device-approve-notice",
     "upload-arrivals",
     "security-event",
+    "first-file-nudge",
+    "runway-notice",
+    "bill-dropped",
   ]);
 });
 
@@ -132,6 +129,31 @@ test("every kind renders a subject and both body parts", () => {
     assert.ok(html.includes("<html"), `${kind} needs an HTML part`);
     assert.ok(html.includes(`<p>`), `${kind}'s HTML needs paragraphs`);
   }
+});
+
+test("every email wears the one branded frame, with a preview line and a button (high-end gap 18)", () => {
+  for (const kind of EMAIL_KINDS) {
+    const { html, text } = renderEmail(kind, dataFor(kind));
+    assert.match(html, /<title>[^<]+<\/title>/, `${kind} has a title`);
+    assert.match(html, /display:none;max-height:0[^>]*>[^<]+<\/div>/, `${kind} has a preview line`);
+    assert.match(html, /<body style="[^"]*background:#f4efe6/, `${kind} uses the site paper`);
+    assert.match(html, /prefers-color-scheme: dark/, `${kind} has a dark twin`);
+    // A double quote inside a style attribute ends it early and drops the font.
+    assert.doesNotMatch(html, /style="[^"]*"[A-Za-z]/, `${kind} has a broken style attribute`);
+    assert.match(html, /background:#ff4f12[^>]*>[^<]+<\/a>/, `${kind} has one button`);
+    assert.ok(text.length > 0, `${kind} keeps its text twin`);
+  }
+});
+
+test("the sign-in link email is branded too, and escapes what it prints", () => {
+  const { html, text } = signinLinkEmail(
+    "https://storagebun.com/api/signin/verify?token=a&b=1",
+    'Mozilla"><script>',
+  );
+  assert.match(html, /prefers-color-scheme: dark/);
+  assert.match(html, /Sign in to your drive<\/a>/);
+  assert.ok(!html.toLowerCase().includes("<script"), "the user agent never becomes markup");
+  assert.ok(text.includes("Sign in to your drive:"));
 });
 
 test("every email carries one sign-off, in both parts", () => {
@@ -374,6 +396,11 @@ function dataFor(kind) {
       return { ...base, amountUsd: 25, balanceUsd: 31.5, auto: false };
     case "low-balance":
       return { ...base, balanceUsd: 1.8, autoTopUpUsd: null };
+    case "fair-use-pause":
+      return {
+        ...base,
+        copy: "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.",
+      };
     case "device-approve-notice":
       return {
         ...base,
@@ -394,6 +421,12 @@ function dataFor(kind) {
         deviceName: "office laptop",
         happenedAt: "2026-10-06T09:00:00.000Z",
       };
+    case "first-file-nudge":
+      return { ...base, hours: 24 };
+    case "bill-dropped":
+      return { ...base, fromLine: "$10.00", toLine: "$2.00" };
+    case "runway-notice":
+      return { ...base, runwayLine: "Your $14 lasts about 1 month at your current size." };
     default:
       throw new Error(`no test data for ${kind}`);
   }
@@ -1108,4 +1141,26 @@ test("the low-balance email says what happens at $0, or that auto top-up covers 
   assert.match(off.text, /nothing is deleted/);
   const on = renderEmail("low-balance", { balanceUsd: 1.8, autoTopUpUsd: 25, replyTo: REPLY_TO });
   assert.match(on.text, /Auto top-up is on, so \$25\.00 will be added/);
+});
+
+test("the fair-use pause email uses the same sentence the usage page prints", () => {
+  const copy =
+    "No upload room left. Uploads pause because young deletes still count until 5 Nov 2026. Uploads open again on 5 Nov 2026.";
+  const mail = fairUsePauseTemplate({ copy, replyTo: REPLY_TO });
+  assert.deepEqual(mail, renderEmail("fair-use-pause", { copy, replyTo: REPLY_TO }));
+  assert.equal(mail.subject, "Uploads are paused because young deletes still count");
+  assert.match(mail.text, /No upload room left/);
+  assert.match(mail.text, /nothing extra is charged/);
+  assert.match(mail.html, /No upload room left/);
+});
+
+test("the account-closed email says the files can be copied from the drive folder and that keys are made again", () => {
+  const { text } = renderEmail("account-closed", {
+    replyTo: "help@storagebun.com",
+    graceDays: 30,
+    reminderDays: 25,
+    purgeOn: "3 Nov (UTC)",
+  });
+  assert.match(text, /already in your drive folder on your computer/);
+  assert.match(text, /you make new keys for your computers/);
 });

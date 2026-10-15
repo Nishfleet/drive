@@ -1,18 +1,3 @@
-// Tests for the usage page and the usage lines (drive issue #53). Three
-// halves:
-//
-// 1. The arithmetic the endpoint carries for both surfaces: stored GB now, the
-//    last-30-days series, GB-months so far, the downloads line and the two
-//    labels sets — all from usageSummary() in core/billing.js, which the page
-//    and `drive usage` both read so neither works out money itself.
-// 2. The lines `drive usage` prints, as the CLI's contract (the Go command
-//    lands with build steps 2 and 4).
-// 3. The shipped page: public/usage.html is a static asset and cannot import
-//    the module, so this reads the file and fails CI when its copy, its
-//    endpoint or its poll interval drifts from src/usage.js — the same gate
-//    test/status.test.mjs runs for the first-run page and
-//    test/pricing-copy.test.mjs for the price.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -21,16 +6,15 @@ import {
   BILLING_CONFIG,
   dailyDrawMillicents,
   gbMonths,
-  handleUsageRequest,
   monthBillCents,
   monthlyBillForStoredTb,
   SAVED_COPY,
   size30DropsOutDay,
   USAGE_ENDPOINT,
   USAGE_HISTORY_DAYS,
-  usageSummary,
 } from "../core/billing.js";
-import { CAP_ENDPOINT } from "../core/cap.js";
+import { handleUsageRequest, usageSummary } from "../core/billing-report.js";
+import { CAP_ENDPOINT } from "../core/cap-request.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { EXPORT_ENDPOINT, EXPORT_FILENAME } from "../core/export.js";
 import { PRICE } from "../core/pricing.js";
@@ -100,6 +84,7 @@ function month(storedGb, overrides = {}) {
     // The month the answer belongs to (drive#559), the field the Worker adds on
     // its way out: the page names the month in the browser's words from it.
     monthIso: MONTH_ISO,
+    fairUseLine: null,
   };
 }
 
@@ -518,6 +503,8 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "capLine",
     "cardOnFile",
     "downloads",
+    "fairUseLine",
+
     "labels",
     "maximumUsd",
     "meteredUsd",
@@ -534,6 +521,7 @@ test("the upload line rides the usage answer beside capLine", async () => {
     "uploadLine",
   ]);
   assert.equal(body.uploadLine, null, "no device store means no queue to report");
+  assert.equal(body.fairUseLine, null, "no meter snapshot means no fair-use line");
   assert.equal(typeof body.capLine, "string", "capLine still rides beside it");
 
   // A queue handed in is checked by uploadProgress(), which throws on a value
@@ -563,6 +551,51 @@ test("the upload line rides the usage answer beside capLine", async () => {
     MONTH_ISO,
   ).json();
   assert.equal(withBalance.balanceLine, "Balance $1.50. Top up to keep adding files.");
+  const withFairUse = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    {
+      ...account,
+      fairUse: {
+        liveBytes: 0,
+        ghostBytes: 0,
+        size30Bytes: 0,
+        oldestGhostCreatedAt: null,
+        now: Date.parse("2026-10-06T00:00:00.000Z"),
+      },
+    },
+    null,
+    null,
+    MONTH_ISO,
+  ).json();
+  assert.equal(typeof withFairUse.fairUseLine, "string");
+  assert.match(withFairUse.fairUseLine, /upload room left/i);
+  const missingSnapshot = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    { ...account, fairUse: { ghostBytes: 0 } },
+    null,
+    null,
+    MONTH_ISO,
+  );
+  assert.equal(missingSnapshot.status, 200, "missing snapshot fields must not 500");
+  assert.equal((await missingSnapshot.json()).fairUseLine, null);
+  const uncomputable = await handleUsageRequest(
+    new Request("https://drive.test/api/usage"),
+    {
+      ...account,
+      fairUse: {
+        liveBytes: 0,
+        ghostBytes: 0,
+        size30Bytes: Number.MAX_SAFE_INTEGER,
+        oldestGhostCreatedAt: null,
+        now: Date.parse("2026-10-06T00:00:00.000Z"),
+      },
+    },
+    null,
+    null,
+    MONTH_ISO,
+  );
+  assert.equal(uncomputable.status, 200, "a check that cannot compute a limit must not 500");
+  assert.equal((await uncomputable.json()).fairUseLine, null);
   assert.throws(
     () =>
       handleUsageRequest(
@@ -687,6 +720,7 @@ function emptyMonth(overrides = {}) {
     // The month the answer belongs to (drive#559), the field the Worker adds on
     // its way out: an empty month still belongs to a named month.
     monthIso: MONTH_ISO,
+    fairUseLine: null,
   };
 }
 
@@ -697,6 +731,7 @@ const PAGE_IDS = Object.freeze([
   "saved",
   "month-heading",
   "usage-status",
+  "usage-retry",
   "usage-body",
   "chart",
   "chart-line",
@@ -712,6 +747,7 @@ const PAGE_IDS = Object.freeze([
   "downloads-line",
   "open-public-links",
   "upload-line",
+  "fair-use-line",
   "cap-amount",
   "cap-slider",
   "cap-value",
@@ -1143,7 +1179,10 @@ test("the cap is a control, not a readout, and it saves through the api", async 
   // The slider ships usable: the signed-out state is what disables it, which
   // is the gate (drive#73) rather than a not-yet-implemented placeholder.
   assert.doesNotMatch(page.slice(page.indexOf("<body>")), /id="cap-slider"[^>]*disabled/);
-  assert.match(page, /<button type="button" id="cap-save" hidden>Save cap<\/button>/);
+  assert.match(
+    page,
+    /<button type="button" id="cap-save" hidden class="btn btn-primary">Save cap<\/button>/,
+  );
   assert.match(page, /capAmount\.addEventListener\("input"/);
   assert.match(page, /capSaveEl\.addEventListener\("click"/);
   // The write: the same body `drive cap` sends, and the answer's own sentence
@@ -1200,6 +1239,7 @@ test("the pages' mastheads read as one navigation", () => {
   // page's masthead is its wordmark alone — its links are its footer nav,
   // which is issue #11's and is checked below.
   const nav = [
+    '<a href="/home"',
     '<a href="/files"',
     '<a href="/"',
     '<a href="/get-started"',
@@ -1209,17 +1249,9 @@ test("the pages' mastheads read as one navigation", () => {
   ];
   // The link each page marks as the one the reader is on.
   const CURRENT = new Map([
-    ["usage.html", /<a href="\/usage" aria-current="page">Usage<\/a>/],
     ["get-started.html", /<a href="\/get-started" aria-current="page">Get started<\/a>/],
-    ["files.html", /<a href="\/files" aria-current="page">Your files<\/a>/],
-    ["devices.html", /<a href="\/devices" aria-current="page">Devices<\/a>/],
   ]);
-  for (const [name, html] of [
-    ["usage.html", page],
-    ["get-started.html", getStartedPage],
-    ["files.html", filesPage],
-    ["devices.html", devicesPage],
-  ]) {
+  for (const [name, html] of [["get-started.html", getStartedPage]]) {
     // The header's own links, and not the page's: a link elsewhere must not
     // satisfy this gate, and must not fail it either. The header is the markup
     // between its open and close tags, the same slice test/pricing-copy.test.mjs
@@ -1229,7 +1261,7 @@ test("the pages' mastheads read as one navigation", () => {
     assert.deepEqual(
       links,
       nav,
-      `${name}'s header carries the site's six links, and nothing else, in the same order`,
+      `${name}'s header carries the site's seven links, and nothing else, in the same order`,
     );
     assert.match(header, /<header class="masthead">/, `${name} carries the shared masthead header`);
     assert.doesNotMatch(header, /<header class="topbar">/, `${name} has no top bar of its own`);
@@ -1264,6 +1296,21 @@ test("the pages' mastheads read as one navigation", () => {
       /name="step" value="signout-all"/,
       `${name}'s form posts sign-out everywhere`,
     );
+  }
+  for (const [name, html] of [
+    ["usage.html", page],
+    ["files.html", filesPage],
+    ["devices.html", devicesPage],
+  ]) {
+    assert.match(html, /<nav class="app-side" aria-label="Main">/, `${name} carries the sidebar`);
+    assert.match(html, /id="nav-signin">Sign in<\/a>/, `${name} keeps Sign in as the default`);
+    assert.match(
+      html,
+      /id="nav-signout" hidden>/,
+      `${name} carries Sign out, hidden until signed in`,
+    );
+    assert.match(html, /id="nav-signout-all" hidden>/, `${name} carries Sign out everywhere`);
+    assert.match(html, /<noscript>/, `${name} keeps the Sign out forms for no script`);
   }
   // The posts live in each page's own script. get-started.html is a Vite
   // entry, so its script is src/get-started.js rather than an inline block.
@@ -1344,6 +1391,13 @@ test("the upload-progress line is the endpoint's words, rendered and nothing els
     /uploadLineEl\.textContent = summary\.uploadLine === null \? "" : summary\.uploadLine;/,
   );
   assert.match(page, /uploadLineEl\.hidden = summary\.uploadLine === null;/);
+  assert.match(page, /<p class="upload-line" id="fair-use-line" hidden><\/p>/);
+  assert.match(page, /summary\.fairUseLine !== null && typeof summary\.fairUseLine !== "string"/);
+  assert.match(
+    page,
+    /fairUseLineEl\.textContent = summary\.fairUseLine === null \? "" : summary\.fairUseLine;/,
+  );
+  assert.match(page, /fairUseLineEl\.hidden = summary\.fairUseLine === null;/);
   // No byte arithmetic and no word table of its own: the page never formats a
   // size for this line, and never spells the fragments it renders.
   const script = page.slice(page.indexOf("<script>"));
@@ -1631,4 +1685,22 @@ test("the usage line names the bytes still leaving when another device is paused
   await store.remove(signedInAccount.id, "device-a");
   const oneLeft = await (await read()).json();
   assert.equal(oneLeft.uploadLine, uploadProgress(paused).label);
+});
+
+test("an unreachable read offers a Try again button that other states hide", async () => {
+  const down = runPage({}, { ok: false });
+  await settle();
+  assert.equal(down.elements.get("usage-retry")?.hidden, false);
+  assert.match(page, /id="usage-retry"[^>]*>Try again</);
+});
+
+test("closing an account offers a copy-your-folder step and a pause first, and hides them once closed", () => {
+  const html = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
+  assert.match(
+    html,
+    /id="close-alternatives"[^>]*>Before you go: your files are already in your drive folder/,
+  );
+  assert.match(html, /<a href="#cap-section">pause instead<\/a>/);
+  assert.match(html, /id="cap-section"/);
+  assert.match(html, /document\.getElementById\("close-alternatives"\)\.hidden = closed;/);
 });

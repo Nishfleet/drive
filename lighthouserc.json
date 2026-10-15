@@ -5,6 +5,7 @@
       "url": [
         "http://localhost/index.html",
         "http://localhost/signin.html",
+        "http://localhost/home.html",
         "http://localhost/files.html",
         "http://localhost/usage.html",
         "http://localhost/upload.html",

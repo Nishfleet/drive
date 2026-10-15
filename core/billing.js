@@ -1,70 +1,15 @@
-// The month's money, worked out in one place (drive issues #7 and #53, build
-// step 6).
-//
-// Plain data and pure functions: no Worker, no D1, no clock. The api Worker
-// reads size30 and calls these; the usage page and `drive usage` / `drive cap`
-// read the same numbers, so the invoice, the page and the CLI cannot disagree.
-// The one fetch handler at the bottom serves GET /api/usage with the standard
-// Response, which node --test provides.
-//
-// The rule (drive#642, Nish 2026-10-05: pay for the biggest size in 30 days):
-//
-//     size30_GB    = the largest stored size in the trailing 30 days
-//     storage      = min(rate x size30_GB, maxPerTb x max(1, size30_GB / 1000))
-//                    rate 2¢/GB-month, maxPerTb $15, the same for everyone
-//     downloads    = 1¢/GB above 3x size30
-//     monthly_bill = storage + downloads
-//     daily_draw   = monthly_bill / 30, remainder carried in millicents
-//
-// So you pay 2¢ per GB until the bill reaches $15 (at 750 GB), a flat $15 from
-// there to 1 TB, and above 1 TB never more than $15 for each TB, prorated to
-// the GB (1.5 TB is $22.50, 4 TB is $60). A file uploaded and deleted the next
-// day still sets size30 for 30 days. An empty drive that was empty for 30 days
-// pays nothing.
-//
-// monthBillCents() is the one function that returns this bill, in integer
-// millicents (and whole cents for the cent fields), so the invoice, the usage
-// page and the cap all read the same number. The numbers come from
-// core/pricing.js (PRICE), the one price source.
-//
-// The cap line (`drive status`'s cap, and the usage response's `capLine`) is
-// in this file too, because it is the money's words: it reads the same
-// capStatus() number the CLI and the page do, and it takes its capped-drive
-// sentence from the one message table (core/messages.js) rather than carrying a
-// second copy of it.
-//
-// The finished labels `usageSummary()` carries are formatted here for the same
-// reason: one place formats each number, so the usage page and `drive usage`
-// cannot print the same money two different ways.
-
 import { DEFAULT_CAP_USD } from "./cap-default.js";
-import { failureMessage } from "./messages.js";
-// The price's numbers come from core/pricing.js, the one price source: the
-// metered rate and the maximum per TB are declared there
-// once, so this file's arithmetic and the page's copy cannot disagree. What is
-// added here is operational: the default cap and the download allowance.
-import { PRICE, usualPlanMonthlyUsd } from "./pricing.js";
-import { formatBytes, unauthorizedResponse, uploadProgress } from "./status.js";
+import { PAYMENT_FEE_BPS, PRICE, usualPlanMonthlyUsd } from "./pricing.js";
 import { BYTES_PER_GB, MINUTE_MS } from "./units.js";
 
 export { BYTES_PER_GB, MINUTE_MS };
 
-// The month's average divides by the minutes in that UTC calendar month
-// (drive#531): 40,320 for a 28-day February up to 44,640 for a 31-day month.
-// A fixed 43,800-minute "average month" read 1 TB held all of October as
-// 1.019 TB, which broke "never more than $10 per TB" (the maximum then; it is $15 now). So
-// there is no month constant: every function below takes the month's length
-// as input, and minutesInMonth() is the one place it is worked out.
 const VALID_MONTH_MINUTES = Object.freeze([28, 29, 30, 31].map((days) => days * 1440));
-// Exported so a docs example and an invoice example cannot disagree about
-// what a TB is.
 export const GB_PER_TB = 1000;
+export const BYTES_PER_TB = GB_PER_TB * BYTES_PER_GB;
 
-/** 1/1000 of a cent: 10 MB a month is 20 millicents ($0.0002). */
 export const MILLICENTS_PER_CENT = 1000;
-/** Trailing window and the daily divisor: monthly millicents / 30. */
 export const DRAW_DAYS = 30;
-/** Trailing 30 days in milliseconds, the size30 window. */
 export const SIZE30_MS = DRAW_DAYS * 24 * 60 * 60 * 1000;
 
 /**
@@ -75,19 +20,10 @@ export const SIZE30_MS = DRAW_DAYS * 24 * 60 * 60 * 1000;
  */
 export function billingConfigFor(price) {
   return Object.freeze({
-    // From the one price source: the metered rate, in dollars per GB-month,
-    // billed on the biggest size in the last 30 days.
     rateUsdPerGbMonth: price.rateUsdPerGbMonth,
-    // The maximum: maxUsdPerTb for each TB of size30, never less than one TB's
-    // worth. One config value (drive#642).
     maxUsdPerTb: price.maxUsdPerTb,
-    // Kept for the card-less write cap until every account has a card (#387).
     freeMonthlyUsd: price.freeMonthlyUsd,
-    // The default spending cap (drive#464), from core/cap-default.js. The
-    // customer's own guardrail, not the price maximum: the cap counts
-    // min(metered so far, maximum), so it cannot pass what the invoice will be.
     defaultCapUsd: DEFAULT_CAP_USD,
-    // Downloads are free up to 3x the month's average stored data, then 1¢/GB.
     freeDownloadMultiplier: 3,
     downloadRateUsdPerGb: 0.01,
   });
@@ -111,7 +47,7 @@ export const BILLING_CONFIG = billingConfigFor(PRICE);
  * @param {unknown} config
  * @returns {BillingConfig}
  */
-function billingConfig(config) {
+export function billingConfig(config) {
   if (
     typeof config !== "object" ||
     config === null ||
@@ -122,34 +58,15 @@ function billingConfig(config) {
   return /** @type {BillingConfig} */ (config);
 }
 
-// The usage read's route (drive issue #53): the one path the api Worker routes
-// to handleUsageRequest. Exported so index.js, the page and the tests cannot
-// each spell it their own way.
 export const USAGE_ENDPOINT = "/api/usage";
 
-// The one size a "you saved" line may be quoted at or above: a usual plan
-// charges the same $15 a TB our maximum does from 1 TB up, so a cheaper-than
-// comparison is false from there. Declared from PRICE.usualPlan.includedTb
-// rather than typed, so a plan that moves the included size moves this floor
-// with it (drive#642).
 const USUAL_PLAN_TB = PRICE.usualPlan.includedTb;
 
-// The public savings calculator (drive issue #14): a size in, this month's
-// bill, our maximum and the usual 1 TB plan out. Public on purpose — it quotes
-// the price, not an account — and monthBillCents() is the only arithmetic, so
-// the page cannot drift from the invoice.
 export const QUOTE_ENDPOINT = "/api/quote";
 const QUOTE_MAX_TB = 10000;
 
-// The stored-GB line chart's window (build-spec.md "Screens", Usage: "stored
-// GB (line chart, last 30 days)"). The summary keeps at most this many days,
-// oldest first, and the page's chart heading counts the same number.
 export const USAGE_HISTORY_DAYS = 30;
 
-// The "you saved" sentences (drive#463: against the maximum and against the
-// usual 1 TB plan), as templates, so the copy has one source: savedLine fills
-// {amount} from the computed saving, and the usage page renders the finished
-// sentence from the endpoint instead of carrying its own money copy.
 export const SAVED_COPY = Object.freeze({
   capped: "Our maximum saved you {amount}.",
   uncapped: "You saved {amount} against our maximum.",
@@ -162,7 +79,7 @@ export const SAVED_COPY = Object.freeze({
  * @param {{min?: number}} [options]
  * @returns {number}
  */
-function checked(value, name, { min = 0 } = {}) {
+export function checked(value, name, { min = 0 } = {}) {
   if (typeof value !== "number" || !Number.isFinite(value) || value < min) {
     throw new TypeError(`${name} must be a number of ${min} or more, got ${String(value)}`);
   }
@@ -321,9 +238,6 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
   }
   const bill = monthlyBillForStoredTb(size, config);
   const planUsd = usualPlanMonthlyUsd(size);
-  // drive#642: no saving is quoted for 1 TB and above. The usual plan is $15
-  // for 1 TB and $6 for each extra 500 GB, so at $15 a TB we are dearer than a
-  // plan from 1.5 TB up; a saving there is a cheaper-than claim that is false.
   const savedUsd = savingAllowed(size30BytesFromTb(size))
     ? Math.max(0, Math.round((planUsd - bill.billUsd) * 100) / 100)
     : 0;
@@ -342,10 +256,6 @@ export function quoteForStoredTb(tb, config = BILLING_CONFIG) {
   });
 }
 
-// Fields the bill no longer reads (drive#642). A caller still passing one is
-// on the old per-minute average rule, so it is refused rather than silently
-// ignored. gbMinutes/monthMinutes were the average; peakGb/peakBytes were
-// already retired by #463; the membership's first-month discount is gone.
 const RETIRED_MONTH_FIELDS = Object.freeze([
   "gbMinutes",
   "monthMinutes",
@@ -355,9 +265,6 @@ const RETIRED_MONTH_FIELDS = Object.freeze([
   "monthNumber",
   "averageStoredGb",
 ]);
-// Founding pricing is gone (drive#586, Nish 2026-10-05): everyone pays the one
-// rate. A caller still passing a founding field is refused, never ignored, so
-// nothing can believe it is halving a bill that is no longer halved.
 const FOUNDING_MONTH_FIELDS = Object.freeze([
   "foundingMember",
   "payingAccountNumber",
@@ -368,7 +275,7 @@ const FOUNDING_MONTH_FIELDS = Object.freeze([
  * @param {object} input the month or usage object a caller passed
  * @param {string} name "month" or "usage", for the message
  */
-function refuseFoundingFields(input, name) {
+export function refuseFoundingFields(input, name) {
   for (const retired of FOUNDING_MONTH_FIELDS) {
     if (/** @type {Record<string, unknown>} */ (input)[retired] !== undefined) {
       throw new TypeError(
@@ -383,7 +290,7 @@ function refuseFoundingFields(input, name) {
  * @param {string} name
  * @returns {bigint}
  */
-function checkedBytes(value, name) {
+export function checkedBytes(value, name) {
   if (typeof value === "bigint") {
     if (value < 0n) {
       throw new TypeError(`${name} must be 0 or more whole bytes, got ${value}`);
@@ -405,7 +312,7 @@ function checkedBytes(value, name) {
  * @param {bigint} value
  * @returns {number|string}
  */
-function jsonBytes(value) {
+export function jsonBytes(value) {
   return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value.toString();
 }
 
@@ -607,9 +514,6 @@ export function monthBillCents(month) {
   if (!Number.isSafeInteger(downloadBytes)) {
     throw new TypeError(`month.downloadBytes must be 0 or more whole bytes, got ${downloadBytes}`);
   }
-  // An empty or missing size30 has no free-download allowance, so any download
-  // would be billed in full. Refuse it: a bill is never guessed from a window
-  // that read as empty while transfer bytes exist (drive#642).
   if (downloadBytes > 0 && size30Bytes === 0n) {
     throw new TypeError(
       "month.downloadBytes needs month.size30Bytes above 0: a month with downloads cannot have an empty size30 window",
@@ -660,149 +564,73 @@ export function monthBillCents(month) {
 }
 
 /** @param {number|bigint} size30Bytes */
-function savingAllowed(size30Bytes) {
+export function savingAllowed(size30Bytes) {
   return BigInt(size30Bytes) < size30BytesFromTb(USUAL_PLAN_TB);
 }
 
 /**
- * The "you saved $X" line (drive#463), from a monthBillCents() result:
- *   - against our maximum: a capped month (metered over the maximum) saved
- *     metered - storage, copy "Our maximum saved you $X."; otherwise the
- *     storage bill sits under the maximum by maximum - storage, copy "You
- *     saved $X against our maximum.";
- *   - against the usual 1 TB plan for the same average size, when that plan
- *     costs more: "You saved $X against a usual 1 TB plan."
- * Both sentences ride in `copy`, one after the other. `null` means "no line to
- * show": an empty month (a $0 bill is not a saving against anything), no
- * saving at all, or a size30 of 1 TB and above, where drive#642 turned the
- * comparison against a usual plan negative and every cheaper-than claim off.
- *
- * The 1 TB floor is one shared answer (`savingAllowed`), read by
- * quoteForStoredTb too, so the calculator and this line cannot disagree about
- * where a saving may be quoted.
- * @param {unknown} bill a monthBillCents() result
- * @param {number|bigint} size30Bytes the same size30 the bill was worked from
- * @returns {{usd: number, planUsd: number, copy: string}|null}
+ * Whole bytes, or a throw: the pause compares in bytes, so a fractional
+ * count cannot be a limit or a used total.
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {number}
  */
-export function savedLine(bill, size30Bytes) {
-  if (typeof bill !== "object" || bill === null) {
-    throw new TypeError(`savedLine needs a monthBillCents result, got ${String(bill)}`);
+export function wholeBytes(value, name) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${name} must be 0 or more whole bytes, got ${String(value)}`);
   }
-  const fields =
-    /** @type {{meteredCents?: unknown, maximumCents?: unknown, storageCents?: unknown}} */ (bill);
-  const metered = checked(fields.meteredCents, "bill.meteredCents");
-  const maximum = checked(fields.maximumCents, "bill.maximumCents");
-  const storage = checked(fields.storageCents, "bill.storageCents");
-  const bytes = checkedBytes(size30Bytes, "size30Bytes");
-  const size30Tb = Number(bytes) / (GB_PER_TB * BYTES_PER_GB);
-  if (storage === 0 || !savingAllowed(bytes)) {
-    return null;
-  }
-  const capped = metered > maximum;
-  const savedCents = Math.max(0, (capped ? metered : maximum) - storage);
-  const planCents = Math.max(0, Math.round(usualPlanMonthlyUsd(size30Tb) * 100) - storage);
-  if (savedCents === 0 && planCents === 0) {
-    return null;
-  }
-  const sentences = [];
-  if (savedCents > 0) {
-    const amount = formatUsd(savedCents / 100);
-    sentences.push((capped ? SAVED_COPY.capped : SAVED_COPY.uncapped).replace("{amount}", amount));
-  }
-  if (planCents > 0) {
-    sentences.push(
-      SAVED_COPY.plan
-        .replace("{amount}", formatUsd(planCents / 100))
-        .replace("{plan}", PRICE.usualPlan.label),
-    );
-  }
-  return Object.freeze({
-    usd: savedCents / 100,
-    planUsd: planCents / 100,
-    copy: sentences.join(" "),
-  });
+  return value;
 }
 
 /**
- * The bill so far, compared with the cap, and whether the drive is read-only.
- * The cap counts the total of monthBillCents() — the storage line, min(metered
- * so far, maximum), plus the download line — not the raw meter, so the cap can
- * never pass what the invoice will be, and a month of downloads alone reaches
- * the cap the way a month of storage does (drive#496). At the cap the api
- * Worker deletes each write-capable key and mints read-only ones; the CLI
- * restarts the mount. Nothing is deleted.
- * @param {unknown} size30Bytes size30 in bytes
- * @param {unknown} capUsd the account's cap in dollars
- * @param {BillingConfig} [config=BILLING_CONFIG]
- * @param {{downloadBytes?: number}} [downloads] the month's download bytes;
- *   omitted is a storage-only month
- * @returns {{capUsd: number, countedUsd: number, remainingUsd: number, state: "active"|"read_only"}}
+ * Storage-provider numbers the pause reads. A partial object is refused
+ * rather than filled in, so a test cannot silently drop the floor or the
+ * stay.
+ * @param {unknown} storage
  */
-export function capStatus(size30Bytes, capUsd, config = BILLING_CONFIG, downloads = {}) {
-  const bytes = checkedBytes(size30Bytes, "size30Bytes");
-  const cap = checked(capUsd, "capUsd");
-  const counted =
-    monthBillCents({
-      size30Bytes: bytes,
-      downloadBytes: downloads.downloadBytes ?? 0,
-      config: billingConfig(config),
-    }).totalCents / 100;
-  // Read-only when the counted spend would exceed the cap, not at it: a bill
-  // that lands exactly on the cap is what the person agreed to pay. Passing the
-  // cap is what cuts writes off.
-  const atCap = counted > cap;
-  return Object.freeze({
-    capUsd: cap,
-    countedUsd: counted,
-    remainingUsd: Math.max(0, cap - counted),
-    // "read_only" once the cap is hit; the drive stays read-only until the cap
-    // is raised. `active` is the one state a live mount acts on.
-    state: atCap ? "read_only" : "active",
-  });
-}
-
-/**
- * The cap line `drive status` prints for the spending cap, one per state. The
- * numbers come straight from a capStatus() result, so the CLI cannot print a
- * line the invoice would not match; the capped-drive sentence is the message
- * table's `cap-reached` entry verbatim, so the page, the CLI and the api cannot
- * each write their own version of the same news (docs/build-spec.md,
- * "Every failure path maps to one plain message with one next step").
- *
- * The CLI is Go and cannot import this module, so the line travels in the
- * /api/usage response (see handleUsageRequest) and `drive status` prints it as
- * it arrives.
- * @param {unknown} cap a capStatus() result
- * @returns {string}
- */
-export function capLine(cap) {
-  if (typeof cap !== "object" || cap === null) {
-    throw new TypeError(`capLine needs a capStatus result, got ${String(cap)}`);
+export function storageConfig(storage) {
+  if (typeof storage !== "object" || storage === null) {
+    throw new TypeError(`a storage config must be an object, got ${String(storage)}`);
   }
   const fields =
-    /** @type {{state?: unknown, capUsd?: unknown, countedUsd?: unknown, remainingUsd?: unknown}} */ (
-      cap
+    /** @type {{minimumStayDays?: unknown, fairUseFloorMultiple?: unknown, idriveCostCentsPerTbMonth?: unknown, backupCostCentsPerTbMonth?: unknown}} */ (
+      storage
     );
-  if (fields.state !== "active" && fields.state !== "read_only") {
+  if (
+    typeof fields.minimumStayDays !== "number" ||
+    !Number.isInteger(fields.minimumStayDays) ||
+    fields.minimumStayDays < 0
+  ) {
     throw new TypeError(
-      `capLine needs a cap whose state is "active" or "read_only", got ${String(fields.state)}`,
+      `storage.minimumStayDays must be 0 or more whole days, got ${String(fields.minimumStayDays)}`,
     );
   }
-  const capUsd = checked(fields.capUsd, "cap.capUsd");
-  const countedUsd = checked(fields.countedUsd, "cap.countedUsd");
-  const remainingUsd = checked(fields.remainingUsd, "cap.remainingUsd");
-  if (fields.state === "active") {
-    return `Cap ${formatUsd(capUsd)}: ${formatUsd(countedUsd)} counted this month, ${formatUsd(remainingUsd)} left.`;
+  if (
+    typeof fields.fairUseFloorMultiple !== "number" ||
+    !Number.isInteger(fields.fairUseFloorMultiple) ||
+    fields.fairUseFloorMultiple < 1
+  ) {
+    throw new TypeError(
+      `storage.fairUseFloorMultiple must be a whole number of 1 or more, got ${String(fields.fairUseFloorMultiple)}`,
+    );
   }
-  // Two sentences: the message table's words first (what happened, and the one
-  // thing to do), then the numbers and the promise that matters most at the
-  // cap: nothing was deleted, and the uploads still waiting in the VFS cache
-  // go up once the cap is raised (build-spec.md, "Keys and safety").
-  return (
-    failureMessage("cap-reached") +
-    `\nCap ${formatUsd(capUsd)} reached: ${formatUsd(countedUsd)} counted this month. ` +
-    "Uploads waiting in the cache stay on this Mac and go up once the cap is raised."
-  );
+  return /** @type {import("./pricing.js").StorageConfig} */ (storage);
+}
+
+/**
+ * What we keep after the payment fee, in integer cents. Floor is the honest
+ * leftover: a fractional cent is not money we received.
+ * @param {number} payCents
+ * @param {number} [feeBps]
+ */
+export function payAfterFeeCents(payCents, feeBps = PAYMENT_FEE_BPS) {
+  if (!Number.isSafeInteger(payCents) || payCents < 0) {
+    throw new TypeError(`payCents must be 0 or more whole cents, got ${String(payCents)}`);
+  }
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps >= 10000) {
+    throw new TypeError(`feeBps must be a whole number below 10000, got ${String(feeBps)}`);
+  }
+  return Math.floor((payCents * (10000 - feeBps)) / 10000);
 }
 
 /**
@@ -830,361 +658,9 @@ export function downloadCostUsd(downloadBytes, averageStoredGb, config = BILLING
  * @param {number} usd
  * @returns {string}
  */
-function formatUsd(usd) {
-  // Two decimals, so $12.80 reads as $12.80 and not $12.8: Nish's 1.6 TB
-  // example is $12.80, so the cents always show. A non-finite value is a
-  // broken config, not a price, and fails here instead of printing $NaN.
+export function formatUsd(usd) {
   if (!Number.isFinite(usd)) {
     throw new TypeError(`formatUsd needs a finite number, got ${String(usd)}`);
   }
   return `$${usd.toFixed(2)}`;
-}
-
-/**
- * Everything the usage page and `drive usage` show for one month, read from
- * the same numbers in one call so the page cannot show a bill the invoice
- * would not match, and neither surface has to work out money itself
- * (drive issues #7 and #53).
- *
- * The shape carries both the raw sizes the surfaces read (storedGb,
- * gbMonths, storedDaily) and the finished labels for every number, so the
- * static page renders strings instead of repeating the arithmetic. The
- * labels are the same strings `drive usage` prints.
- *
- * @param {unknown} usage
- * @param {BillingConfig} [config]
- */
-export function usageSummary(usage, config = BILLING_CONFIG) {
-  if (typeof usage !== "object" || usage === null) {
-    throw new TypeError(`usageSummary needs a usage object, got ${String(usage)}`);
-  }
-  const fields =
-    /** @type {{size30Bytes?: unknown, size30ReachedDay?: unknown, size30DropsOutDay?: unknown, todayDrawMillicents?: unknown, gbMinutes?: unknown, monthMinutes?: unknown, peakGb?: unknown, storedGb?: unknown, storedDaily?: unknown, downloadBytes?: unknown, averageStoredGb?: unknown, capUsd?: unknown, cardAdded?: unknown, cardOnFile?: unknown}} */ (
-      usage
-    );
-  if (fields.peakGb !== undefined) {
-    throw new TypeError(
-      "usage.peakGb is no longer part of the bill (drive#642): the charge follows size30",
-    );
-  }
-  if (fields.gbMinutes !== undefined) {
-    throw new TypeError(
-      "usage.gbMinutes is no longer part of the bill (drive#642): the charge follows usage.size30Bytes",
-    );
-  }
-  refuseFoundingFields(usage, "usage");
-  if (fields.size30Bytes === undefined) {
-    throw new TypeError("usage.size30Bytes is the bill (drive#642)");
-  }
-  const size30Bytes = checkedBytes(fields.size30Bytes, "usage.size30Bytes");
-  const storedGb = checked(fields.storedGb, "usage.storedGb");
-  const downloadBytes = checked(fields.downloadBytes, "usage.downloadBytes");
-  const capUsd = checked(fields.capUsd, "usage.capUsd");
-  const series = storedSeries(fields.storedDaily);
-  const size30ReachedDay =
-    fields.size30ReachedDay === undefined || fields.size30ReachedDay === null
-      ? null
-      : isDay(fields.size30ReachedDay)
-        ? fields.size30ReachedDay
-        : (() => {
-            throw new TypeError(
-              `usage.size30ReachedDay must be a real YYYY-MM-DD date, got ${String(fields.size30ReachedDay)}`,
-            );
-          })();
-  const size30DropsOutDay =
-    fields.size30DropsOutDay === undefined || fields.size30DropsOutDay === null
-      ? null
-      : isDay(fields.size30DropsOutDay)
-        ? fields.size30DropsOutDay
-        : (() => {
-            throw new TypeError(
-              `usage.size30DropsOutDay must be a real YYYY-MM-DD date, got ${String(fields.size30DropsOutDay)}`,
-            );
-          })();
-  const todayDrawMillicents =
-    fields.todayDrawMillicents === undefined
-      ? // The monthly figure the draw divides by 30 is the same total main
-        // already draws from (storage on size30 plus download overage, as
-        // monthBillCents works it out), the same number core/prepaid.js uses.
-        dailyDrawMillicents(
-          monthBillCents({ size30Bytes, downloadBytes, config }).totalMillicents,
-          0,
-        ).drawMillicents
-      : checked(fields.todayDrawMillicents, "usage.todayDrawMillicents");
-  const effectiveCap = fields.cardAdded ? capUsd : Math.min(capUsd, config.freeMonthlyUsd);
-  const cardOnFile =
-    fields.cardOnFile === undefined ? fields.cardAdded === true : fields.cardOnFile === true;
-  const size30Gb = Number(size30Bytes) / BYTES_PER_GB;
-  const downloads = downloadCostUsd(downloadBytes, size30Gb, config);
-  const bill = monthBillCents({
-    size30Bytes,
-    downloadBytes,
-    config,
-  });
-  return Object.freeze({
-    size30Bytes: jsonBytes(size30Bytes),
-    size30Gb,
-    size30ReachedDay,
-    size30DropsOutDay,
-    todayDrawMillicents,
-    storedGb,
-    storedDaily: series,
-    meteredUsd: bill.meteredCents / 100,
-    maximumUsd: bill.maximumCents / 100,
-    billUsd: bill.totalCents / 100,
-    billCents: bill,
-    saved: savedLine(bill, size30Bytes),
-    downloads: Object.freeze({
-      freeBytes: downloads.freeBytes,
-      usedBytes: downloadBytes,
-      billableBytes: downloads.billableBytes,
-      usd: downloads.usd,
-    }),
-    cap: capStatus(size30Bytes, effectiveCap, config, {
-      downloadBytes,
-    }),
-    labels: Object.freeze({
-      storedNow: formatBytes(storedGb * BYTES_PER_GB),
-      size30: formatBytes(size30Bytes),
-      size30Reached: size30ReachedDay ?? "",
-      size30DropsOut: size30DropsOutDay ?? "",
-      todayDraw: formatUsd(todayDrawMillicents / MILLICENTS_PER_CENT / 100),
-      downloads: `${formatBytes(downloadBytes)} of ${formatBytes(downloads.freeBytes)} free`,
-      cost: cardOnFile ? formatUsd(bill.totalCents / 100) : PRICE.noChargeYet,
-      cap: formatUsd(effectiveCap),
-      accountCap: formatUsd(capUsd),
-    }),
-    cardOnFile,
-  });
-}
-
-/**
- * A real calendar day in YYYY-MM-DD form. The pattern alone would accept
- * 2026-09-40; the parse-and-round-trip rejects a day the meter's rollup could
- * not have produced, including a day a month does not have.
- * @param {unknown} value
- * @returns {value is string}
- */
-function isDay(value) {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return false;
-  }
-  const time = Date.parse(`${value}T00:00:00.000Z`);
-  return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
-}
-
-/**
- * The last-30-days stored-GB series, validated and ordered oldest first. The
- * meter feeds it one row per day; a later day never before an earlier one, so
- * the line chart reads left to right whatever order the rollup returns.
- * @param {unknown} entries
- */
-function storedSeries(entries) {
-  if (!Array.isArray(entries)) {
-    throw new TypeError(`usage.storedDaily must be an array of days, got ${String(entries)}`);
-  }
-  const rows = entries.map((entry, index) => {
-    if (typeof entry !== "object" || entry === null) {
-      throw new TypeError(
-        `usage.storedDaily[${index}] must be a {day, gb} day, got ${String(entry)}`,
-      );
-    }
-    const day = /** @type {{day?: unknown, gb?: unknown}} */ (entry);
-    if (!isDay(day.day)) {
-      throw new TypeError(
-        `usage.storedDaily[${index}].day must be a real YYYY-MM-DD date, got ${String(day.day)}`,
-      );
-    }
-    return Object.freeze({ day: day.day, gb: checked(day.gb, `usage.storedDaily[${index}].gb`) });
-  });
-  rows.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
-  return Object.freeze(rows.slice(-USAGE_HISTORY_DAYS));
-}
-
-const USAGE_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-/**
- * Handles GET /api/usage, the usage page's and the CLI's read. It answers with
- * the month's summary, for the signed-in account and nobody else: the account
- * is a required argument and a request that cannot prove one is a 401 with the
- * message table's words, never another account's money (drive issue #73,
- * north star: Safe). The one gate is signedInAccount() in core/status.js, the
- * same one /api/first-run-status uses.
- *
- * Until the meter and the account store land (issues #6 and #2), a signed-in
- * account has no usage rows, so the true answer is the empty month: nothing
- * metered, nothing held, the cap the default. The shape is the one a metered
- * account gets from the real rollup, so the page and the CLI can be written
- * against it now. Any other method is a 405 with the one allowed method named,
- * like the other endpoints — after the gate, so an anonymous request is told
- * only that it is not signed in, never which methods exist.
- *
- * `uploadLine` rides on the answer beside `capLine` (drive issue #308): the
- * live upload-progress line the usage page shows, the same words `drive status`
- * and the first-run page print. It is assembled here by `uploadProgress()` from
- * `UPLOAD_LABEL` in core/status.js, the one word table and the one byte
- * formatter, so the page sets a finished string and carries no second copy of
- * either. It is null when there is no queue to report — the queue is rclone's,
- * on the Mac, and the Worker has no device store yet — and a payload that is
- * not a queue is refused rather than rendered, so the line can never be a
- * default the drive did not ask for.
- * @param {Request} request
- * @param {{id: string, name: string, capUsd?: number, cardOnFile?: boolean, usage?: Record<string, unknown>|null, openPublicLinks?: number}|null} account the signed-in account, or null when signed out. `usage` is the
- *   month's own metered numbers, read by the route from the account store's
- *   `monthUsage` (drive#496); without it this answers the empty month.
- * @param {unknown} [upload] the live rclone upload queue, or null when there is none to report
- * @param {string|null} [balanceLine] the prepaid balance line (core/topup.js balanceLine, drive#586), or null when there is no balance store
- * @param {string} [monthIso] the month's own first instant as the Worker sends it ("2026-10-01T00:00:00.000Z"), from the one boundary the meter, the cap walk and the invoice read (src/index.js, core/meter.js monthStart). The caller owns the month so this module carries no second answer to what month the numbers belong to. It sits behind the two defaults above, so it is written `[monthIso]` and defaults to empty: a caller that leaves it out is refused below by name, the same as one that sends a day that is not an instant.
- */
-export function handleUsageRequest(
-  request,
-  account,
-  upload = null,
-  balanceLine = null,
-  monthIso = "",
-) {
-  // The gate is first, before the method: an anonymous request learns nothing
-  // about whether it could write, only that it is not signed in.
-  if (!account) {
-    return unauthorizedResponse();
-  }
-  if (request.method !== "GET") {
-    return new Response("Method not allowed. GET this endpoint for monthly usage.", {
-      status: 405,
-      headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
-    });
-  }
-  const capUsd =
-    typeof account.capUsd === "number" && Number.isFinite(account.capUsd)
-      ? account.capUsd
-      : BILLING_CONFIG.defaultCapUsd;
-  // The month these numbers belong to, named (drive#559): the first instant of
-  // the UTC month, sent by the caller (src/index.js) from the one boundary the
-  // meter, the cap walk and the invoice read. A month that is not one is a
-  // caller bug, so it fails the read rather than shipping a page with a
-  // heading nobody can check a statement against.
-  if (typeof monthIso !== "string" || Number.isNaN(new Date(monthIso).getTime())) {
-    throw new TypeError(
-      `handleUsageRequest needs the month's first instant, got ${String(monthIso)}`,
-    );
-  }
-  // The month's own numbers, when the route read them (drive#496). The route
-  // passes the account store's `monthUsage` result — `monthUsageThrough` behind
-  // `usageSummary`'s shape, the same metered month the cap and the invoice
-  // read — so /api/usage reports what the drive actually holds and has
-  // downloaded rather than the empty month this used to build. Without it
-  // (the unit tests that call the handler directly, and a deployment with no
-  // DRIVE_DB) the empty month stands and the response is still well formed;
-  // a real deployment always has the binding, and the route passes the read
-  // whenever it can.
-  const metered = account.usage;
-  const empty =
-    metered !== null && typeof metered === "object"
-      ? usageSummary(
-          /** @type {Parameters<typeof usageSummary>[0]} */ (
-            /** @type {Record<string, unknown>} */ (metered)
-          ),
-        )
-      : usageSummary({
-          size30Bytes: 0,
-          storedGb: 0,
-          storedDaily: [],
-          downloadBytes: 0,
-          capUsd,
-          // The write-cap basis is a provisioned account's own (unchanged): the cap
-          // line this endpoint reports still matches the cap enforceCap() stops
-          // writes at (src/index.js capStateFor). The card on file is the account's
-          // own stamp, read from the accounts row (drive#417); until it is really on
-          // file there is no charge to report, so the honest label is "no charge
-          // yet" and the page shows no bill. It is absent (false) for a caller that
-          // names no card, so the check fails closed.
-          cardAdded: true,
-          cardOnFile: account.cardOnFile === true,
-        });
-  // The cap line rides on the response rather than inside usageSummary(): the
-  // summary is money (numbers only, which is what the usage page's chart and
-  // the invoice read), and building the line here is what lets the Go CLI print
-  // the Worker's words instead of carrying its own copy of them.
-  //
-  // The upload line rides beside it for the same reason (drive issue #308): the
-  // page renders a string the Worker assembled from the one word table, so no
-  // surface ships a second spelling of "Uploading 3 files" or a second byte
-  // formatter. A queue is checked on the way in by uploadProgress(), which
-  // throws on a value that is not a queue, so a broken report fails the read
-  // rather than printing a plausible line about bytes nobody counted.
-  const uploadLine = upload === null ? null : uploadProgress(upload).label;
-  // The month rides on the answer finished: the instant, not a name, because
-  // the page writes the month's name in the browser's own words and a date
-  // rendered on the server is a UTC date (drive#559).
-  const openPublicLinks =
-    typeof account.openPublicLinks === "number" &&
-    Number.isFinite(account.openPublicLinks) &&
-    account.openPublicLinks >= 0
-      ? Math.floor(account.openPublicLinks)
-      : 0;
-  const body = {
-    ...empty,
-    monthIso,
-    capLine: capLine(empty.cap),
-    uploadLine,
-    balanceLine,
-    openPublicLinks,
-  };
-  return new Response(JSON.stringify(body), { status: 200, headers: USAGE_HEADERS });
-}
-
-const QUOTE_HEADERS = Object.freeze({
-  "content-type": "application/json; charset=utf-8",
-  "cache-control": "no-store",
-});
-
-function quoteSizeError() {
-  return new Response(JSON.stringify({ error: failureMessage("quote-size") }), {
-    status: 400,
-    headers: QUOTE_HEADERS,
-  });
-}
-
-/**
- * Handles GET /api/quote, the public savings calculator (drive issue #14).
- * `tb` is a size in TB held all month; `gb` is the same size in GB. Exactly
- * one of the two. The numbers are quoteForStoredTb(), which is monthBillCents
- * plus the maximum, so a later price edit moves the calculator with the
- * invoice. Any other method is 405. A size the quote cannot use is 400 with
- * the message table's quote-size words, never a stack.
- * @param {Request} request
- */
-export function handleQuoteRequest(request) {
-  if (request.method !== "GET") {
-    return new Response("Method not allowed. GET this endpoint with tb or gb.", {
-      status: 405,
-      headers: { allow: "GET", "content-type": "text/plain; charset=utf-8" },
-    });
-  }
-  const url = new URL(request.url);
-  const tbRaw = url.searchParams.get("tb");
-  const gbRaw = url.searchParams.get("gb");
-  let raw = null;
-  if (tbRaw !== null && gbRaw === null) {
-    raw = tbRaw;
-  } else if (gbRaw !== null && tbRaw === null) {
-    raw = gbRaw;
-  }
-  if (raw === null || raw.trim() === "") {
-    return quoteSizeError();
-  }
-  const parsed = Number(raw);
-  const tb = tbRaw !== null ? parsed : parsed / GB_PER_TB;
-  try {
-    const quote = quoteForStoredTb(tb);
-    return new Response(JSON.stringify(quote), { status: 200, headers: QUOTE_HEADERS });
-  } catch (err) {
-    if (err instanceof TypeError) {
-      return quoteSizeError();
-    }
-    throw err;
-  }
 }

@@ -1,11 +1,3 @@
-// Tests for the prepaid pause at $0 on mount and device keys (drive#589).
-//
-// The swap arithmetic is core/cap.js `capSwapPlan` / `applyCapSwap`; this
-// file pins the pause's own rules on top of that: the record a restore reads
-// is the pause's, a second run is a no-op, a customer-made read-only key
-// stays read-only, and a restore while the spending cap still holds the
-// account is skipped.
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { READ_ONLY_CAPABILITIES } from "../core/cap.js";

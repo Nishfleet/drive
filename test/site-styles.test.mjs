@@ -1,22 +1,3 @@
-// The shared site stylesheet (drive issue #71). The pricing page, the
-// first-run page, the Web Files page and the usage page each used to carry
-// their own copy of the palette, the reset and the page chrome, so one edit to
-// a token had to be made in every file or the pages drifted apart. They link
-// public/site.css now, and this is the gate the refactor did not have:
-//
-// 1. The shared file declares the palette and the font stacks with the values
-//    the product was reviewed at. html.drive may alias the old names onto the
-//    home-page tokens (drive#458); that is the only second declaration allowed.
-// 2. Every page links the shared file before its own <style> block, so the
-//    page's per-page values can still override the base.
-// 3. No page declares a custom property it does not own. A token is the thing
-//    a page-by-page edit gets wrong, so a page is allowed only the page-local
-//    tokens listed in PAGE_LOCAL, and any other --* declaration fails — even
-//    one that does not exist yet.
-// 4. The shared header and menu are declared in the shared file, not restated
-//    per page. drive#425 found five pages restating the header — this gate
-//    catches that drift.
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -219,10 +200,14 @@ test("the shared stylesheet declares every token once, with the reviewed values"
     // the only second declaration allowed, and it must point at a --drive-*
     // or --font-* token.
     if (values.length > 1) {
-      assert.equal(values.length, 2, `${token} is declared at most twice (:root and html.drive)`);
+      // The dark block (polish gap 3) is a third declaration, a plain colour.
+      assert.ok(
+        values.length <= 3,
+        `${token} is declared at most three times (:root, html.drive, dark)`,
+      );
       assert.match(
         values[1],
-        /^var\(--(?:drive|font)-/,
+        /^(?:var\(--(?:drive|font)-|#[0-9a-f]{6}$)/,
         `${token}'s second declaration is the html.drive alias onto a --drive-* or --font-* token`,
       );
     }
@@ -281,7 +266,7 @@ test("the shared header is declared once, in the shared stylesheet", () => {
     for (const block of styleBlocks(readFileSync(url, "utf8"))) {
       for (const [selector, body] of ruleBodies(block)) {
         const shared = sharedProperties.get(selector);
-        if (!shared) continue; // page-level rule with no shared counterpart — free
+        if (!shared) continue;
         for (const part of body.split(";")) {
           if (!part.trim() || !part.includes(":")) continue;
           const property = part.split(":")[0].trim();

@@ -1,21 +1,12 @@
-// The message table is the single source for every failure string the CLI and
-// the web pages show. These tests pin its shape, the "one next step" rule and
-// the safety rules (no secrets, no keys, no other-user paths, no raw error
-// text) so a new entry cannot ship a stack, a token or a two-step fix-it list.
-// The last two tests walk the handlers the way the two page tests walk the
-// shipped pages: a handler's answer has to be the table's exact words, and no
-// module may carry a second copy of one of its sentences (drive#158).
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createMemoryStore, FILES_ENDPOINT, handleFilesRequest } from "../core/files.js";
+import { FILES_ENDPOINT } from "../core/files.js";
+import { handleFilesRequest } from "../core/files-handlers.js";
+import { createMemoryStore } from "../core/files-memory.js";
 import { FAILURE_MESSAGES, failureMessage, SIGN_IN_COMMAND } from "../core/messages.js";
-import {
-  BRANCHES_ENDPOINT,
-  createMemorySnapshotStore,
-  handleBranchesRequest,
-} from "../src/branches.js";
+import { BRANCHES_ENDPOINT, createMemorySnapshotStore } from "../src/branches.js";
+import { handleBranchesRequest } from "../src/branches-routes.js";
 import { readSigninRequest } from "../src/signin.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");

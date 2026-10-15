@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// usage is the command list from docs/build-spec.md. Step 2 of that spec ships
-// mount, unmount and status; later steps add the rest.
 const usage = `drive - a Finder drive for people and their agents
 
 Usage:
@@ -41,6 +39,8 @@ Usage:
   drive cache              show the disk the mount's cache uses and its limit
   drive cache --max 5G     change that limit
   drive cache --clear      empty the cache; uploads still waiting and files kept offline stay
+  drive restore <file>     list the earlier copies of a file saved over or deleted (3 days, free)
+  drive restore <file> --latest  put back the newest earlier copy (--copy N for another)
   drive share <file>       make a link anyone can open, logged out
   drive request <folder>   make a page anyone can drop files onto
   drive share --list       list this account's links (also on drive request)
@@ -122,6 +122,11 @@ Link flags (share, request):
   --list        list this account's links instead of minting one
   --revoke      revoke the link with this token (a full link URL also works)
 
+Restore flags:
+  --api     drive api base URL (env DRIVE_API_URL)
+  --latest  put back the newest earlier copy
+  --copy N  put back the Nth copy in the list (1 is the newest)
+
 Cache flags:
   --max     the cache limit, a size like 5G or 500M (default 20G)
   --clear   empty the cache now; uploads waiting and files kept offline stay
@@ -152,13 +157,6 @@ Logout flags:
   --yes         answer yes to --all's confirm step
 `
 
-// commands is the drive's command table: one entry per subcommand, and the
-// one place a command exists. main dispatches through it, `drive --help`
-// (usage) documents every entry in it, and the agent notes (noteBody,
-// access.go; skillBody, skill.go) name only entries from it. The gate tests
-// in command_table_test.go hold the help text and the notes to this table,
-// so neither can drift from what actually runs (drive#461: both notes
-// advertised `drive restore`, which no step has shipped).
 var commands = map[string]func([]string) error{
 	"login":     runLogin,
 	"init":      runInit,
@@ -182,6 +180,7 @@ var commands = map[string]func([]string) error{
 	"cap":       runCap,
 	"cache":     runCache,
 	"share":     runShare,
+	"restore":   runRestore,
 	"request":   runRequest,
 	"logout":    runLogout,
 	"export":    runExport,
@@ -191,10 +190,6 @@ var commands = map[string]func([]string) error{
 	"renew":     runRenew,
 }
 
-// version is the fallback when the toolchain records no module version
-// in this binary (a checkout build: go build, go run, go test). A released
-// binary carries the tag goreleaser stamped, and `drive version` prints
-// that instead (cmd/drive/update.go versionText).
 var version = "0.1.0"
 
 func main() {
@@ -202,6 +197,7 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+	installAccessTransport()
 	var err error
 	switch os.Args[1] {
 	case "version", "--version", "-v":
@@ -217,24 +213,16 @@ func main() {
 		err = run(os.Args[2:])
 	}
 	if err != nil {
-		// A FlagSet with ContinueOnError has already printed the parse error
-		// and the usage to stderr. --help is a success, and any other parse
-		// error exits 2 (usage), not 1, so the shell can tell usage from
-		// failure.
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
 		if errors.Is(err, errFlagParse) {
 			os.Exit(2)
 		}
-		// Every failure a person reads goes through the message table:
-		// what happened, then the exact next step (drive#117).
 		os.Exit(printFailure(os.Stderr, err))
 	}
 }
 
-// errFlagParse marks an error the flag package has already printed, so main
-// does not print it a second time.
 var errFlagParse = errors.New("flag parse")
 
 type commonFlags struct {
@@ -249,66 +237,33 @@ func addCommonFlags(fs *flag.FlagSet) *commonFlags {
 	return c
 }
 
-// `drive init` registers the same flags (drive#105: init checks rclone, starts
-// the mount at login and connects the agent tools in one command), so the
-// storage values a machine needs are accepted in one place and parsed one way,
-// and a new mount setting cannot reach one command and miss the other.
 type mountFlags struct {
 	endpoint, bucket, prefix, region string
 	downloadURL                      string
 	device, rcAddr, driveLetter      string
-	// refusedSecret holds the removed --secret-key value. It is never read or
-	// printed: the value exists only so the flag package parses the command
-	// line correctly, and its presence is the thing that is refused.
-	refusedSecret string
-	secretStdin   bool
-	foreground    bool
-	dryRun        bool
-	common        *commonFlags
+	refusedSecret                    string
+	secretStdin                      bool
+	foreground                       bool
+	dryRun                           bool
+	common                           *commonFlags
 }
 
-// addStorageFlags registers the storage settings on fs and returns them. The dl
-// Worker (drive issue #58) is one of them: absent, the mount reads from the
-// endpoint and counts nothing; set, every read streams through the dl Worker so
-// the account's download bytes are counted (docs/build-spec.md "The pieces",
-// items 2 and 4). `drive mount` and `drive init` both register exactly this
-// set; only `drive mount` adds the run-shape flags below, because `drive init`
-// never runs a foreground or dry-run mount.
 func addStorageFlags(fs *flag.FlagSet) *mountFlags {
 	m := &mountFlags{}
 	fs.StringVar(&m.endpoint, "endpoint", "", "S3 endpoint URL")
 	fs.StringVar(&m.bucket, "bucket", "", "storage bucket")
 	fs.StringVar(&m.prefix, "prefix", "", "key prefix this device mounts")
 	fs.StringVar(&m.region, "region", "", "S3 region name")
-	// The old secret flag is registered only so the flag package consumes it
-	// correctly and can report whether it was passed; the value lands in a
-	// variable that is never read or printed, and any use is refused with the
-	// ways that are safe. A value like --bucket secret-key=x is a bucket, not
-	// a refusal: the flag package, not a hand-rolled scan, decides what a flag
-	// is, and nothing after the first `--` reaches it.
 	fs.StringVar(&m.refusedSecret, "secret-key", "", "removed: the storage secret is never read from the command line")
 	fs.BoolVar(&m.secretStdin, "secret-key-stdin", false, "read one line of the secret access key from stdin; what is already in the pipe after the first newline is a mistake, not a second try")
 	fs.StringVar(&m.downloadURL, "download-url", "", "dl Worker to stream reads through")
-	// The device name is what a conflict copy is called (issue #30): a
-	// person's two devices need to be told apart by name, so the flag is
-	// here rather than only in the environment, and the plan sanitizes
-	// whatever it carries into a filename both platforms accept.
 	fs.StringVar(&m.device, "device", "", "name for this device in a conflict copy")
-	// rclone's remote control is how the background fill, the conflict
-	// guard and `drive status` all reach the one mount. Two mounts on the
-	// same host (the two-machine proof, issue #30) cannot both bind one
-	// loopback address, so the address is a flag and an environment
-	// variable with a constant default; a non-loopback value is refused.
 	fs.StringVar(&m.rcAddr, "rc-addr", "", "loopback address the mount's remote control binds")
 	fs.StringVar(&m.driveLetter, "drive-letter", "", "Windows: the drive letter to mount (first free letter from D:)")
 	m.common = addCommonFlags(fs)
 	return m
 }
 
-// resolve turns the parsed mount settings into the rclone binary path and the
-// storage config. It is the one place `drive mount` and `drive init` both come
-// to before they mount, so the secret's safe sources and the config validation
-// behave the same on both commands.
 func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 	refused := false
 	fs.Visit(func(f *flag.Flag) {
@@ -317,21 +272,11 @@ func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 		}
 	})
 	if refused {
-		// The value did land in this process's command line before it was
-		// refused — the shell history and ps already hold it — so the refusal
-		// cannot unsay that. It says so, and it says to replace the key, because
-		// a value that has been through argv is a value that has been exposed.
 		return "", StorageConfig{}, fmt.Errorf("--secret-key is not accepted: %s\nnote: the value just typed is in the shell history and in ps for this run, so treat that key as exposed and roll it (then set the new one the safe way above)", secretWays(RcloneConfigPath(m.common.home)))
 	}
-	// A drive letter is a Windows mount point. On Mac and Linux the mount is a
-	// folder, so the flag is refused there rather than silently ignored, which
-	// would leave a person believing their mount went somewhere it did not.
 	if m.driveLetter != "" && CurrentGOOS() != "windows" {
 		return "", StorageConfig{}, errors.New("--drive-letter is only for Windows; on Mac and Linux the drive mounts at the drive folder")
 	}
-	// The secret's sources are the config file this CLI wrote (mode 0600), the
-	// environment, or stdin (--secret-key-stdin). None of them is argv, which
-	// is world-readable in ps for the life of the process.
 	secretKey, err := ReadSecretKey(RcloneConfigPath(m.common.home), m.secretStdin, os.Stdin)
 	if err != nil {
 		return "", StorageConfig{}, err
@@ -344,18 +289,10 @@ func (m *mountFlags) resolve(fs *flag.FlagSet) (string, StorageConfig, error) {
 	if err != nil {
 		return "", StorageConfig{}, err
 	}
-	// DRIVE_DEVICE is read here, beside the flag, so both sources of the
-	// device name live in one place; Mount sanitizes whatever it is given.
 	if strings.TrimSpace(m.device) != "" {
 		_ = os.Setenv(deviceEnvName, m.device)
 	}
 	if strings.TrimSpace(m.rcAddr) != "" {
-		// A remote-control address that is not loopback is refused here
-		// rather than silently replaced by the shipped one: rclone's
-		// remote control is unauthenticated by design, so a value that
-		// would bind it off this machine is a named failure at the
-		// operator's own command. The background login item still
-		// falls back, because it is not a command and cannot answer.
 		if !IsLoopbackAddr(m.rcAddr) {
 			return "", StorageConfig{}, fmt.Errorf("--rc-addr %s is not a loopback address: the mount's remote control "+
 				"binds loopback only, so it stays on this machine", m.rcAddr)
@@ -380,9 +317,6 @@ func runMount(args []string) error {
 	if err != nil {
 		return err
 	}
-	// rclone's version is checked before anything is written, so a machine
-	// whose rclone is too old hears it here, at the command that was run,
-	// with the command that fixes it (drive#105).
 	if err := CheckRclone(CurrentGOOS(), rclone); err != nil {
 		return err
 	}
@@ -420,9 +354,7 @@ func runUnmount(args []string) error {
 	return nil
 }
 
-// countEntries lists a mount dir with a deadline. A FUSE mount whose backing
-// store has gone away can block a plain ReadDir forever, and `drive status` is
-// exactly the command a user runs when that happens, so it must still answer.
+// A FUSE mount whose backing store has gone away can block a plain ReadDir forever.
 func countEntries(dir string, wait time.Duration) (int, error) {
 	type result struct {
 		n   int

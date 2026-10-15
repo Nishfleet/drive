@@ -1,45 +1,14 @@
-// Tests for the one-click rewind (drive issue #13, build step 11's undo half).
-//
-// The per-agent spending cap and daily-request cap this file used to cover
-// were deleted by drive #169: they shipped with no caller outside these tests,
-// so no agent key was ever stopped, and there is no live request path that
-// spends money for an agent key to hook a cap into yet (the meter is still an
-// open PR, and the api Worker's storage route is a read-only stand-in). They
-// come back with the meter, on the real path — tracked in drive #171.
-//
-// The rewind's own acceptance, in the order the tests below walk it:
-//
-//   1. "Changed by <agent or person>" and the rewind that reads the same value
-//      (issue #13's third comment): the attribution column on the branch row
-//      is read by both, and there is no second store.
-//   2. The rewind itself: what the agent changed is listed before anything is
-//      touched, one click discards it, the original folder is left exactly as
-//      it was, and a branch past the 30-day window cannot be rewound at all —
-//      enforced on the server, not by hiding a button.
-//
-// The rewind needs a real database: the branches table is exercised against a
-// real SQLite engine via node:sqlite with the shipped migrations applied,
-// which is the same adapter test/branches.test.mjs uses, and storage is the
-// in-memory FileStore whose `copy` stands in for S3's CopyObject.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import {
-  createMemoryStore,
-  createS3Store,
-  scopeStore,
-  storageBucketForKey,
-} from "../core/files.js";
+import { createMemoryStore, storageBucketForKey } from "../core/files-memory.js";
+import { createS3Store } from "../core/files-s3.js";
+import { scopeStore } from "../core/files-scope.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import { decodeEntities } from "../core/s3-listing.js";
-import {
-  createBranch,
-  createKvSnapshotStore,
-  handleBranchesRequest,
-  snapshotKey,
-} from "../src/branches.js";
+import { createKvSnapshotStore, snapshotKey } from "../src/branches.js";
+import { createBranch, handleBranchesRequest } from "../src/branches-routes.js";
 import {
   handleRewindRequest,
   REWIND_ENDPOINT,
@@ -339,10 +308,10 @@ test("the rewind screen lists what the agent changed before anything is touched"
   // Attribution is on the same row the rewind reads, so the screen can say
   // whose work this is with no second store.
   assert.equal(preview.changedBy, "k-claude");
-  // The window is the drive's own 30 days, read from core/files.js rather than
+  // The window is the drive's own 3 days, read from core/files.js rather than
   // declared here, so the two promises are one number.
-  assert.equal(REWIND_WINDOW_DAYS, 30);
-  assert.equal(preview.windowDays, 30);
+  assert.equal(REWIND_WINDOW_DAYS, 3);
+  assert.equal(preview.windowDays, 3);
   assert.equal(preview.ageDays, 0);
   // The files are still exactly as they were: a preview touches nothing.
   const after = scopeStore(raw, ACCOUNT);
@@ -404,10 +373,10 @@ test("rewind refuses an unavailable snapshot before it discards the copy", async
   assert.equal(await text(scoped, "/.branches/fix/a.txt"), "agent rewrote a");
 });
 
-test("the 30-day window is the server's, not a hidden button", async () => {
+test("the 3-day window is the server's, not a hidden button", async () => {
   // The window is enforced where the rewind happens, so a caller who ignores
-  // the page cannot rewind a branch whose old versions are gone. Day 30 is
-  // still inside; day 31 is not.
+  // the page cannot rewind a branch whose old versions are gone. Day 3 is
+  // still inside; day 4 is not.
   const { raw, db, snapshots } = await agentBranch();
   const scoped = scopeStore(raw, ACCOUNT);
   const row = await rewindBranchRowFor(db, snapshots, raw, "fix");
@@ -415,20 +384,20 @@ test("the 30-day window is the server's, not a hidden button", async () => {
   // `assert.ok` narrows the null the lookup honestly returns.
   assert.ok(row);
 
-  const inside = await rewindPreview(scoped, row, AT + 30 * DAY_MS, snapshots);
+  const inside = await rewindPreview(scoped, row, AT + 3 * DAY_MS, snapshots);
   assert.equal(inside.canRewind, true);
-  assert.equal(inside.ageDays, 30);
+  assert.equal(inside.ageDays, 3);
 
-  const outside = await rewindPreview(scoped, row, AT + 31 * DAY_MS, snapshots);
+  const outside = await rewindPreview(scoped, row, AT + 4 * DAY_MS, snapshots);
   assert.equal(outside.canRewind, false);
   assert.equal(outside.unavailableReason, "window-closed");
   // The screen still says what happened and when it stops being true, so a
   // person is not left guessing why a button vanished.
-  assert.equal(outside.windowDays, 30);
-  assert.match(outside.restorableUntil, /^2026-10-30T/);
+  assert.equal(outside.windowDays, 3);
+  assert.match(outside.restorableUntil, /^2026-10-03T/);
 
   // And the POST is refused with the message table's own sentence.
-  const refused = await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT + 31 * DAY_MS);
+  const refused = await rewindBranch(db, snapshots, scoped, ACCOUNT, "fix", AT + 4 * DAY_MS);
   assert.equal(failedStatus(refused), 409);
   assert.equal(
     /** @type {{error: string}} */ (refused).error,

@@ -135,9 +135,6 @@ func TestForegroundArgsPassRCUserAndPass(t *testing.T) {
 	}
 }
 
-// TestUnauthenticatedConfigDumpIsRejectedOnALiveMount is finish line 3:
-// an unauthenticated config/dump against a live mount the product started
-// gets 401/403, so a local process cannot read secret_access_key.
 func TestUnauthenticatedConfigDumpIsRejectedOnALiveMount(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stand-in proof skipped in -short mode")
@@ -174,9 +171,6 @@ func TestUnauthenticatedConfigDumpIsRejectedOnALiveMount(t *testing.T) {
 	t.Logf("unauthenticated config/dump on live mount at %s: HTTP %d", addr, resp.StatusCode)
 }
 
-// TestTwoStandinMountsDoNotCollideOnRC is drive#807 finish line 3: two
-// product mounts on one machine each bind their own stored loopback port,
-// and each client's core/version reaches that mount, not the other.
 func TestTwoStandinMountsDoNotCollideOnRC(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stand-in proof skipped in -short mode")

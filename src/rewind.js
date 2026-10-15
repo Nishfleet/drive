@@ -1,56 +1,16 @@
-// Agent undo: the one-click rewind (drive issue #13, build step 11's undo
-// half). "Make 'let an AI loose on your files, undo it in one click' a
-// headline feature."
-//
-// A rewind is a branch discarded, and nothing here re-does the work
-// src/branches.js already does. That module owns the branch lifecycle: the
-// server-side copy, the snapshot, the diff, the approve, and the discard that
-// removes an agent's copy and leaves the original untouched. The planner for
-// this issue was explicit about the risk — "if rewind data doesn't exist, file
-// the gap rather than invent a parallel mechanism" — and it does exist: the
-// snapshot is the exact set of files the agent changed, and `discardBranch` is
-// the exact one call that throws that work away. So a rewind is that call, plus
-// the three things the issue asks for around it:
-//
-//   1. The screen shows what the agent changed before anything is touched, so
-//      the button is a decision and not a leap of faith. The list is the
-//      branch's own live diff (src/branches.js `diffBranch`), so it cannot
-//      drift from what a discard would actually remove.
-//   2. The 30-day window, and it is enforced on the server rather than by
-//      hiding a button: a branch older than the window answers that it cannot
-//      be rewound, so a caller who ignores the page cannot rewind it either.
-//      The window is the drive's own (core/files.js RECENTLY_DELETED_DAYS, the
-//      same 30 days the 30-day undo promises), read from there so the two
-//      cannot disagree about how long a rewind lasts.
-//   3. Who changed what, from the same row the rewind reads: the key on the
-//      branch is who made the change, and the same value answers the activity
-//      list's "changed by <agent or person>" (issue #13's third comment, "same
-//      log the undo reads; no second store").
-//
-// The route is /api/rewind* behind the same account gate as every other read
-// that names files (src/index.js `signedInAccount()`), and every read and write
-// is scoped to the signed-in account's own rows and prefix, so one account can
-// never read or rewind another's branch — the same isolation the branches
-// module already has, and the gate test/account-gate.test.mjs walks.
-
-import { RECENTLY_DELETED_DAYS, scopeStore } from "../core/files.js";
+import { RECENTLY_DELETED_DAYS } from "../core/files.js";
+import { scopeStore } from "../core/files-scope.js";
 import { json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 import { unauthorizedResponse } from "../core/status.js";
 import { DAY_MS } from "../core/units.js";
-import {
-  diffBranch,
-  discardBranch,
-  listBranches,
-  readSnapshot,
-  readSnapshotObject,
-} from "./branches.js";
+import { discardBranch, listBranches } from "./branches-routes.js";
+import { diffBranch, readSnapshot, readSnapshotObject } from "./branches-snapshot.js";
 
-/** The route family the rewind screen and the CLI read. */
 export const REWIND_ENDPOINT = "/api/rewind";
 
 /** How long a rewind stays available, in days. Read from the drive's own
- * 30-day undo window (core/files.js) rather than declared here, so the screen's
+ * 3-day undo window (core/files.js) rather than declared here, so the screen's
  * promise and Recently deleted's promise are the same number. */
 export const REWIND_WINDOW_DAYS = RECENTLY_DELETED_DAYS;
 
@@ -70,13 +30,6 @@ function plain(message, status, headers = {}) {
     },
   });
 }
-
-// rewind.js used to read a JSON body from the rewind routes; nothing has wired
-// one since the rewind screen moved its input to the query string, and
-// src/branches.js owns the reader for the one route that still takes a body.
-// Removed by the drive#92 lint pass rather than renamed: a linter-clean unused
-// function is still unused, and the note is here so the next reader stops
-// looking for the helper they half remember.
 
 /**
  * What a rewind of this branch would undo, as the screen shows it: the files
@@ -121,19 +74,7 @@ export async function rewindPreview(store, branch, now, snapshots) {
   }
   const ageDays = Math.max(0, (now - createdAt) / DAY_MS);
   const withinWindow = ageDays <= REWIND_WINDOW_DAYS;
-  // A closed branch has nothing to undo: its work was already approved into
-  // the original or already thrown away, so there is no copy to rewind and the
-  // screen says so rather than offering a button that would do nothing.
   const open = branch.state === "open";
-  // The diff is the live one, the same read the discard's own listFiles walk
-  // covers, so a preview taken a moment before the rewind is the list the
-  // rewind acts on. A closed branch still gets its count read from the row so
-  // the screen can say "already closed" with a number, without walking a copy
-  // that is gone.
-  // The branch row from `listBranches` carries a pointer, not the snapshot's
-  // JSON (drive#252), so a preview resolves this one branch's snapshot through
-  // the same reader every other diff uses before it walks the copy. A closed
-  // branch needs none: its count is on the row.
   const diff = open
     ? await diffBranch(store, {
         ...branch,
@@ -157,10 +98,6 @@ export async function rewindPreview(store, branch, now, snapshots) {
     ageDays: Math.floor(ageDays),
     windowDays: REWIND_WINDOW_DAYS,
     restorableUntil: new Date(createdAt + REWIND_WINDOW_DAYS * DAY_MS).toISOString(),
-    // Two reasons a rewind is unavailable, and the screen says which: the
-    // window closed, or the work is already settled. Both are answers, not
-    // failures — the screen renders them, so the two reasons stay separate
-    // rather than collapsing into one "no".
     canRewind: open && withinWindow,
     unavailableReason: open ? (withinWindow ? null : "window-closed") : "already-closed",
     files,
@@ -193,7 +130,7 @@ async function rewindBranchRow(db, snapshots, store, account, name) {
 
 /**
  * The one-click rewind: the branch's copy is discarded and the original is left
- * exactly as it is. The window is checked first, so a branch past 30 days
+ * exactly as it is. The window is checked first, so a branch past 3 days
  * answers the same sentence the screen showed rather than quietly removing work
  * whose old versions are gone.
  *
@@ -217,19 +154,6 @@ export async function rewindBranch(db, snapshots, store, account, name, now, que
   if (!branch) {
     return { error: failureMessage("branch-not-found"), status: 404 };
   }
-  // A rewind the queue's retries used up (drive#844). The row is claimed in
-  // `rewinding`, its message was dead-lettered, and `rewindPreview` below
-  // refuses it, because a branch whose row already says `rewinding` does not
-  // read as an open branch — so nothing moves the row and the name stays held
-  // by the one-active-name index for good. Finishing a rewind is not starting
-  // one: it removes this branch's own copies and never names the original, so
-  // neither the open state nor the 30-day window decides it, and the batches
-  // run from the cursor the row carries, the way the queue would have
-  // continued them. This sits above the snapshot check below for the same
-  // reason: a row stuck long enough to lose its snapshot can still be
-  // cleaned up, and refusing it would keep the name held for good over a
-  // snapshot the cleanup never reads. Cancelling it instead is the discard
-  // door, which has taken a `rewinding` row since this change.
   if (branch.state === "rewinding" && branch.jobKind === "rewind") {
     const resumed = await discardBranch(db, snapshots, store, account, name, {
       kind: "rewind",
@@ -260,8 +184,6 @@ export async function rewindBranch(db, snapshots, store, account, name, now, que
     kind: "rewind",
     queue,
   });
-  // `result` is a union; the failure arm is the one carrying a status, and
-  // `"error" in result` is its discriminator and narrows the success arm.
   if ("error" in result) {
     return result;
   }
@@ -310,19 +232,9 @@ export async function handleRewindRequest(
     return json({ error: failureMessage("unexpected") }, 503);
   }
   if (!snapshots) {
-    // A rewind names the files it would undo by diffing against the branch's
-    // snapshot, and that snapshot has exactly one source now, so a missing
-    // namespace is the "a dependency the drive cannot serve without" answer and
-    // not a rewind that reports nothing changed.
     console.error?.("rewind: BRANCH_SNAPSHOTS is not bound");
     return json({ error: failureMessage("storage-down") }, 503);
   }
-  // The store arrives unscoped, exactly as src/index.js hands it over, and the
-  // walk below is all drive paths. An S3 store maps every key through
-  // storageBucketForKey, which refuses a drive path, so the scope goes on
-  // here, after the account gate — the same handling handleBranchesRequest
-  // gives its own store, so no caller can hand the rewind an unscoped store
-  // and turn `drive undo` into a 500 (drive#854).
   const scoped = scopeStore(store, account);
   const url = new URL(request.url);
   const rest = url.pathname.slice(REWIND_ENDPOINT.length).replace(/\/$/, "");
@@ -333,9 +245,6 @@ export async function handleRewindRequest(
         allow: "GET",
       });
     }
-    // The list is built from the same previews the single-branch read returns,
-    // so the screen's list and its detail cannot disagree about what a rewind
-    // would undo or whether one is still possible.
     const previews = [];
     for (const branch of await listBranches(db, snapshots, scoped, account)) {
       previews.push(await rewindPreview(scoped, branch, at, snapshots));

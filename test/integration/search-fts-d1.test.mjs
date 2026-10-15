@@ -1,16 +1,8 @@
-// 0039 adds the FTS5 trigram table `file_index_fts` so a search reads only
-// the rows it matches instead of scanning the whole account (drive issue
-// #571). This file applies the real migration files in order against
-// node:sqlite — the same engine D1 runs — and asserts the new READ path
-// (the search answers from the trigram index), the WRITE path (an upload,
-// an overwrite and a delete all keep the trigram table in step with
-// `file_index`), and the backfill the migration does so a search is correct
-// the moment it lands rather than after the nightly rebuild.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createMemoryStore, scopeStore } from "../../core/files.js";
+import { createMemoryStore } from "../../core/files-memory.js";
+import { scopeStore } from "../../core/files-scope.js";
 import { reconcileIndex, searchDrive, searchSql, withIndex } from "../../src/search.js";
 import { createTestD1, DRIVE_MIGRATIONS } from "../harness.mjs";
 

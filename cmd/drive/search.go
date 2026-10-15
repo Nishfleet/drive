@@ -12,24 +12,12 @@ import (
 	"time"
 )
 
-// `drive search` (drive issue #18): find any file by name in under a second.
-// The command is one HTTP GET against the api Worker's /api/search, which
-// answers from the D1 file-name index and never lists the bucket; this file
-// only renders what that endpoint already knows, so the words a person types
-// are parsed once, in src/search.js.
-
-// SEARCH_PATH is the api Worker's search endpoint (src/search.js
-// SEARCH_ENDPOINT). One endpoint for the CLI and the agent tool, so both see
-// the same index.
+// SEARCH_PATH is the api Worker's search endpoint (src/search.js SEARCH_ENDPOINT).
 const SEARCH_PATH = "/api/search"
 
-// searchTimeout bounds the query. A search is an interactive command; a
-// request that hangs must not turn it into a hung terminal.
 const searchTimeout = 10 * time.Second
 
-// SearchHit is one file the index found. ModifiedAt is a pointer because the
-// index stores null until the reconciler filled it in — an absent time is a
-// real state, not a zero.
+// SearchHit is one file the index found.
 type SearchHit struct {
 	Path       string  `json:"path"`
 	Name       string  `json:"name"`
@@ -37,8 +25,7 @@ type SearchHit struct {
 	ModifiedAt *string `json:"modifiedAt"`
 }
 
-// SearchResults is the shape GET /api/search returns (src/search.js
-// `searchDrive`).
+// SearchResults is the shape GET /api/search returns (src/search.js `searchDrive`).
 type SearchResults struct {
 	Words     []string    `json:"words"`
 	TookMs    float64     `json:"tookMs"`
@@ -48,10 +35,6 @@ type SearchResults struct {
 	Error     string      `json:"error"`
 }
 
-// runSearch is `drive search <words>`: the query goes to the api Worker's
-// index and the answer is printed one file a line. The endpoint and the
-// account live in the Worker's config (--api / DRIVE_API_URL), so pointing
-// the CLI at a different deployment needs no code change.
 func runSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
 	common := addCommonFlags(fs)
@@ -77,10 +60,6 @@ func runSearch(args []string) error {
 	return nil
 }
 
-// fetchSearch runs the one GET and decodes the one answer shape. Every
-// non-200 is a named error, never a quiet zero: 400 carries the Worker's own
-// next step, 401 says the drive is not signed in on this machine, and a
-// 5xx is passed through so an outage is not mistaken for "no matches".
 func fetchSearch(apiBase, query string, limit int) (*SearchResults, error) {
 	if strings.TrimSpace(apiBase) == "" {
 		return nil, fail("no-api")
@@ -120,9 +99,6 @@ func fetchSearch(apiBase, query string, limit int) (*SearchResults, error) {
 	return &results, nil
 }
 
-// printSearchResults renders the answer: one line a file, the way Finder
-// orders a folder listing, then a summary line that carries the time the
-// index took — the number the issue's done-when is measured by.
 func printSearchResults(r *SearchResults) {
 	for _, hit := range r.Results {
 		modified := "unknown time"
@@ -138,8 +114,6 @@ func printSearchResults(r *SearchResults) {
 	fmt.Println(headline)
 }
 
-// fileSize renders a file size the way the usage page does (core/status.js
-// formatBytes): one decimal under 10 KB, none above.
 func fileSize(bytes int64) string {
 	units := []string{"B", "KB", "MB", "GB", "TB"}
 	value := float64(bytes)

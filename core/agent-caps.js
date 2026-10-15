@@ -1,41 +1,8 @@
-// The per-agent cap, read from the database and decided in one place (drive
-// issue #171).
-//
-// This is the half of the cap that needs a database. The decision itself is
-// core/agentcaps.js, which knows nothing about D1 and is tested as pure logic;
-// this module supplies the two numbers it needs and nothing else:
-//
-//   - the key's own `agent_caps` row, whose request counter is stamped with the
-//     UTC day it belongs to, and
-//   - the account's size30 (`size30Through`, core/meter.js), which is the same
-//     peak the bill, the usage page and the account cap read (drive#642).
-//
-// No second money rule and no second ledger. The two columns migration 0004
-// wrote for this — `month_key` and `month_spend_cents` — are deliberately left
-// unread and unwritten: a spend total kept beside the meter would be a second
-// place for the same number to live, and `capStatus` has to agree with the
-// invoice. The follow-up that drops those columns is a migration on its own,
-// because a column drop cannot ride in the same deploy as the code that stops
-// reading it.
-//
-// The count is stamped before the answer is asked for, so the request that
-// passes a ceiling is the request that is refused (drive#171: the cap holds on
-// the request that would cross it, not after it). A refused request is still
-// counted: the counter answers "how many requests did this key make today",
-// and a tool still looping after its first refusal is exactly what the number
-// should show.
-
 import { agentCapPlan, agentCapStatus, asMillis, dayKey } from "./agentcaps.js";
 import { size30Window } from "./billing.js";
 import { bucketForKeyPrefix } from "./keyprovider.js";
-import { size30Through } from "./meter.js";
+import { size30Through } from "./meter-usage.js";
 
-// Only this kind is capped. A `device` key is the person's own mount, an `s3`
-// key is an integration and a `branch` key is the app's own undo credential:
-// the caps exist because nobody is watching an agent work, and none of those
-// three is an agent. The account cap (core/cap.js, the nightly sweep) is what
-// bounds the person's own keys, so a daily request cap here would stop
-// somebody's own uploads, which is the failure these caps must not have.
 const AGENT_KEY_KIND = "agent";
 
 /** @param {{kind?: string}|null|undefined} device */
@@ -97,16 +64,6 @@ export async function readAgentCaps(db, accountId, keyId) {
 export async function stampAgentRequest(db, accountId, keyId, at) {
   const time = asMillis(at);
   const day = dayKey(time);
-  // The upsert writes the counter and nothing else. `monthly_cap_usd` and
-  // `daily_requests` keep whatever the row already carries (a person's setting,
-  // if they set one) because neither is named in this statement: a request that
-  // counts itself can never rewrite a limit. `monthly_cap_usd` is NULL on a row
-  // nobody has set a cap on, which is the code default (drive#534), and this
-  // statement leaves it that way.
-  //
-  // `agent_caps.day_key` in the CASE is the row's value before this update, so
-  // the comparison is against the day already stamped, not the one being
-  // written: same day increments, a new day starts at one.
   await db
     .prepare(
       `INSERT INTO agent_caps (account_id, key_id, day_key, day_requests, updated_at)
@@ -157,12 +114,9 @@ export async function agentCapGate(db, device, at) {
   const window = size30Window(time);
   const size30 = await size30Through(db, device.accountId, window.from, time);
   return agentCapStatus({
-    // The bill reads size30 (drive#642), so that is all the cap counts.
     usage: { size30Bytes: size30.size30Bytes, downloadBytes: size30.downloadBytes },
     caps: caps ?? undefined,
     requestsToday: today.requests,
-    // The day the count belongs to, so the decision can tell this day's count
-    // from one stamped on the row and left there overnight.
     day: today.day,
     at: time,
   });
@@ -181,8 +135,6 @@ export function capKeyRow(device) {
     keyId: device.id,
     kind: device.kind ?? AGENT_KEY_KIND,
     prefix: device.prefix,
-    // The bucket the swap mints its replacement in: the account's own for an
-    // account key, the team's for a key on a team prefix (drive#462).
     bucket: bucketForKeyPrefix(device.accountId, device.prefix),
     capabilities: device.capabilities,
     ...(device.cappedFrom ? { cappedFrom: device.cappedFrom } : {}),

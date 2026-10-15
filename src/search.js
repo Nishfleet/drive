@@ -1,108 +1,29 @@
-// Search: find any file by name in under a second (drive issue #18,
-// build-spec.md "Against the competitor"). One D1 table (`file_index`, migration
-// 0002) holds one row per file the drive knows about, and the search reads
-// only that table and the trigram index beside it (`file_index_fts`,
-// migration 0039) — it never lists the bucket. The two feeds the spec names
-// are here too:
-//
-//   * the write path — `withIndex(store, db, account)` wraps a FileStore so
-//     every upload, delete and restore keeps the one row current, and the
-//     metered storage-event intake (core/meter.js) upserts the one row for a
-//     file an event names, so the two feeds a file can arrive on both end in
-//     this table (drive#566); and
-//   * the nightly reconciler — `reconcileIndex(db, store, account)` walks the
-//     store once and rebuilds the account's rows, so an event the drive
-//     missed is corrected within a day. The Worker's scheduled trigger
-//     enqueues one message per account on the reindex queue
-//     (REINDEX_SCHEDULE, src/index.js); no request can.
-//
-// A rebuild is staged rather than written in place. Its rows are written to
-// `file_index_staging` (migration 0045), each stamped with that attempt's
-// generation number, then upserts the finished set and deletes vanished
-// paths in bounded batches. It never deletes the live rows first. A rebuild that dies half-way therefore leaves
-// this account's rows as they were, and the next attempt clears the
-// generation that died: before drive#566 the rebuild deleted the live rows
-// first, so one crash left an account with no rows and the index no longer
-// listing the account, which is how a customer stayed unsearchable for ever.
-//
-// The search itself is a trigram FTS5 match (drive issue #571). It used to be
-// `name LIKE '%word%'`, which no B-tree index can serve, so every search read
-// every row the account had — about a million rows on a million-file drive.
-// The trigram index reads the words a search names and the rows they match,
-// and the bar in test/search.test.mjs is measured on a million-file account.
-//
-// Nothing here writes the trigram table. Three triggers on `file_index`
-// (migration 0039) mirror every row change into it inside the statement that
-// made the change, so the index row and its search row are written, deleted or
-// fail together, and every writer of `file_index` — including
-// src/account-close.js's purge — is mirrored without knowing the table exists.
-//
-// Plain data and functions, no Worker-only import: node --test exercises the
-// query, the feeds and every route against a real SQLite engine (the D1
-// adapter in test/search.test.mjs), so the number the issue asks for is
-// measured on the same SQL the Worker runs.
-//
-// Two rules the endpoint carries, both from the 2026-09-30 safety review:
-// a search answers only for the signed-in account (`handleSearchRequest`
-// takes the account, never a request), and the rebuild has no route at all —
-// `reconcileIndex` is reached from the nightly cron, one queue message per
-// account, and never from a request.
 import { deleteStatement, fileRow, locate, upsertStatements } from "../core/file-index.js";
-import { drivePathFromKey, TRASH_PATH, validatePath } from "../core/files.js";
+import { TRASH_PATH, validatePath } from "../core/files.js";
+import { drivePathFromKey } from "../core/files-scope.js";
 import { json } from "../core/http.js";
 import { failureMessage } from "../core/messages.js";
 
-/** One account's file store, the shape core/files.js exports and every helper
- * here takes: `reconcileIndex` walks it, `withIndex` wraps it. */
 /** @typedef {import("../core/files.js").FileStore} FileStore */
-/** One row of the file index, as it is written to D1. */
 /**
  * @typedef {{account_id: string, path: string, name: string, parent: string,
  *   size_bytes: number, modified_at: string|null, indexed_at: string}} FileRow
  */
 
-/** The listing the CLI and the agent tool read. */
 export const SEARCH_ENDPOINT = "/api/search";
-/**
- * The nightly reconciler's schedule, in the Worker's cron syntax (the
- * `triggers.scheduled` entry in cloudflare.config.ts). 03:00 UTC is the quiet
- * hour the spec's reconciler runs in; the job is the only way a rebuild
- * starts, so a web request cannot spend the walk a 100,000-file drive costs
- * (issue #18 safety review, 2026-09-30).
- *
- * The cron only enqueues, one `{accountId}` message per account on the reindex
- * queue, and the queue consumer does the walk. Before drive#566 the cron
- * walked every account in one serial loop, so one drive past the cron
- * invocation limit left every account after it unsearchable and unvisited.
- */
 export const REINDEX_SCHEDULE = "0 3 * * *";
 
-/** The queue the 03:00 cron produces on and the Worker consumes
- * (`cloudflare.config.ts` `triggers.queue` / `REINDEX_QUEUE`). */
 export const REINDEX_QUEUE_NAME = "drive-reindex";
 
-/**
- * How many messages the cron sends per `sendBatch` call. The queues API
- * accepts at most 100 per call, so a drive with more accounts than that is
- * sent in as many calls as it needs, not in one rejected one. */
 export const REINDEX_SEND_BATCH = 100;
 
-/** How long a query may be, and how many words it may hold. Far above a
- * person's pace, low enough that a query cannot become a table scan with
- * hundreds of LIKE clauses. */
 const MAX_QUERY_LENGTH = 256;
 export const MAX_WORDS = 8;
 const MAX_WORD_LENGTH = 64;
-/** How many results one search returns, and the most a caller may ask for. */
 export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 200;
-/** Statements per db.batch call, so a 100,000-file drive does not build one
- * giant batch. */
 const STATEMENTS_PER_BATCH = 64;
-// Shortest word the FTS5 trigram index can find. Shorter words take the LIKE path.
 const MIN_FTS_WORD_LENGTH = 3;
-
-// ---------------------------------------------------------------- the query
 
 /** A LIKE pattern for one word. User text may hold % and _; escaping them
  * with a backslash and naming ESCAPE '\' matches those characters literally,
@@ -148,43 +69,17 @@ export function parseQuery(input) {
   return { words };
 }
 
-// One word as an FTS5 query term. FTS5 reads a bare word as text with its own
-// operators, so a word is wrapped in double quotes and an embedded quote is
-// doubled; that makes every character in it literal, which is the fold the
-// LIKE path gave for free. A space between two quoted terms is FTS5's AND, so
-// every word appearing in the name is the same rule the search already ran.
 /** @param {string[]} words
  * @returns {string} */
 function ftsQuery(words) {
   return words.map((word) => `"${word.replace(/"/g, '""')}"`).join(" ");
 }
 
-// True when every word is long enough for the trigram index to hold it. One
-// word of fewer than MIN_FTS_WORD_LENGTH characters sends the whole query
-// down the LIKE path, because FTS5 would answer it with nothing.
 /** @param {string[]} words */
 function ftsCanAnswer(words) {
   return words.every((word) => [...word].length >= MIN_FTS_WORD_LENGTH);
 }
 
-// The one SQL the search runs, in one of two shapes.
-//
-// The FTS5 shape (the one a normal query takes) matches through the trigram
-// index on `file_index_fts`, so the database reads the index and the rows it
-// names rather than every row the account has. Ranking is unchanged: a
-// whole-name match first, then a prefix match, then a match in the middle,
-// then the name. The two columns a result carries but the trigram index does
-// not keep — the size and the date — are read back from `file_index` by a
-// correlated subquery on its (account_id, path) primary key, which SQLite
-// evaluates only for the rows that survive the LIMIT.
-//
-// The LIKE shape answers a query with a word of one or two characters, which
-// the trigram tokenizer cannot index at all. It is the old statement, kept
-// whole, so a short query is still correct.
-//
-// `params` is returned so a test can assert the statement and the caller
-// cannot build SQL from input; `engine` names the shape so the caller and the
-// test can tell which one ran.
 /** @param {string[]} words
  * @param {{accountId: string, limit: number}} options
  * @returns {{sql: string, params: Array<string|number>, engine: "fts"|"like"}} */
@@ -195,30 +90,11 @@ export function searchSql(words, { accountId, limit }) {
   const whole = words.join(" ");
   const escaped = escapeLike(whole);
   if (ftsCanAnswer(words)) {
-    // Params are [accountId (?1), the MATCH expression (?2), the whole query
-    // (?3), the whole query as a prefix (?4), the limit (?5)], so the two
-    // ranking parameters are ?3 and ?4 and the limit is ?5.
-    //
-    // ?3 is bound clean and ?4 is LIKE-escaped, because they are different
-    // comparisons: `name = ?3` is string equality, so a name holding % or _
-    // must be compared against the name as written, while `name LIKE ?4` takes
-    // a pattern, where the same characters mean something. Binding the escaped
-    // string to both left those names unable to rank as a whole-name match.
     const exact = 3;
     const prefix = exact + 1;
     return {
       sql:
         `SELECT path, name, ` +
-        // The two facts the trigram table does not carry are read back from
-        // file_index by its (account_id, path) primary key, and the EXISTS
-        // in the WHERE is what keeps the two tables in step from the reader's
-        // side. The triggers that maintain the trigram table (migration 0039)
-        // write both rows inside one statement, so they cannot drift; the
-        // EXISTS is the reader's own assertion of the same invariant, and it
-        // costs one seek on the primary key SQLite already uses for the two
-        // subqueries, so it reads no row the search did not already read. A
-        // file the drive stopped having must never answer a search with
-        // NULL size and date.
         `(SELECT size_bytes FROM file_index ` +
         `WHERE account_id = ?1 AND path = file_index_fts.path) AS size_bytes, ` +
         `(SELECT modified_at FROM file_index ` +
@@ -238,8 +114,6 @@ export function searchSql(words, { accountId, limit }) {
   const clauses = words.map((_, index) => `name LIKE ?${index + 2} ESCAPE '\\'`).join(" AND ");
   const exact = params.length + 1;
   const prefix = exact + 1;
-  // Same split as the trigram shape: the whole-name rank compares two strings,
-  // and only the prefix test is a pattern.
   params.push(whole, `${escaped}%`, limit + 1);
   return {
     sql:
@@ -298,12 +172,7 @@ export async function searchDrive(db, account, query, options = {}) {
   };
 }
 
-// ---------------------------------------------------------------- the feeds
-
-/** Eight bound columns a staging row and at most twelve of them in one
- * statement, because D1 caps a statement at 100 bound parameters (12 x 8 = 96).
- * The live table inserts fourteen seven-column rows (14 x 7 = 98); one more
- * column, three fewer rows. */
+// D1 caps a statement at 100 bound parameters (https://developers.cloudflare.com/d1/platform/limits/).
 const STAGING_ROWS_PER_STATEMENT = 12;
 const STAGING_PLACEHOLDERS = `(${Array.from({ length: 8 }, (_, i) => `?${i + 1}`).join(", ")})`;
 
@@ -462,11 +331,6 @@ export async function reconcileIndex(db, store, account, options = {}) {
       }
     }
   }
-  // Staged first, so a crash during the walk or the staging writes leaves
-  // the live rows as they were. The swap then upserts those rows in the
-  // same bounded batches the write feed uses, and only then deletes paths
-  // the walk did not see. A 100,000-file drive never runs one DELETE of
-  // every live row (drive#566).
   const generation = openStagingGeneration();
   for (let start = 0; start < rows.length; start += batchSize * STAGING_ROWS_PER_STATEMENT) {
     const slice = rows.slice(start, start + batchSize * STAGING_ROWS_PER_STATEMENT);
@@ -483,9 +347,6 @@ export async function reconcileIndex(db, store, account, options = {}) {
       .prepare("DELETE FROM file_index_staging WHERE account_id = ?1 AND generation = ?2")
       .bind(account.id, generation),
   ]);
-  // Leftover rows from a crashed attempt stay until they are two days old,
-  // so a walk still running for this account (a retry overlapping the next
-  // night) is never swept out from under its own swap.
   const staleBefore = new Date(at - 2 * 24 * 60 * 60 * 1000).toISOString();
   await db.batch([
     db
@@ -516,9 +377,6 @@ export async function reconcileIndex(db, store, account, options = {}) {
  */
 function countedBody(body) {
   if (body === null || body === undefined) {
-    // A request with no body at all stores an empty object; an empty byte
-    // array is that same zero bytes, and the one shape the store's own
-    // `write` type accepts.
     return { body: new Uint8Array(0), bytes: () => 0 };
   }
   if (typeof body === "string") {
@@ -555,9 +413,6 @@ function countedBody(body) {
               : chunk.byteLength;
           controller.enqueue(chunk);
         },
-        // The one moment the source has nothing left: a store that stops
-        // reading before then stored fewer bytes than `seen` counts, so the
-        // count is only a size once the stream has ended.
         flush() {
           ended = true;
         },
@@ -625,29 +480,13 @@ export function withIndex(store, db, account, now = () => Date.now()) {
      * @param {string} contentType
      * @param {{contentLength?: number}} [options] */
     async write(key, body, contentType, options) {
-      // The row the search reads is written after the store has read the body,
-      // and the body is counted on the way through (a stream carries no length
-      // a store would answer back), so a file is searchable with the size and
-      // the date the file list shows — not zero and nothing until the nightly
-      // walk corrects them (drive#426). The body is one a store writes: bytes,
-      // a Blob, a string, a stream, or nothing at all. A `BodyInit` outside
-      // that set carries no length, and it is refused by name rather than
-      // indexed as a size of 0.
       const counted = countedBody(body);
       await write(key, counted.body, contentType, options);
       const path = drivePathFromKey(key, account);
       if (locate(path).trashed) {
         return;
       }
-      // One instant for both meanings: the date the row shows as the file's
-      // own, and the date the row was written. It is taken after the store
-      // returned, which is as close to the object's own timestamp as a
-      // wrapper gets without a second request for a HEAD — the same second a
-      // folder listing renders.
       const at = now();
-      // One batch, one statement pair: the row and its trigram row are written
-      // inside the upsert itself by the AFTER INSERT/UPDATE triggers (migration
-      // 0039), so a save cannot land the index row and lose the search row.
       await db.batch(
         upsertStatements(db, [fileRow(account, path, { size: counted.bytes(), modified: at }, at)]),
       );
@@ -659,8 +498,6 @@ export function withIndex(store, db, account, now = () => Date.now()) {
     },
   };
 }
-
-// --------------------------------------------------------------- the accounts
 
 /**
  * The accounts a nightly rebuild visits — the drive's customers, not the
@@ -699,8 +536,6 @@ export async function indexAccounts(db) {
   return rows.map((row) => ({ id: row.id }));
 }
 
-// ---------------------------------------------------------------- the route
-
 /**
  * @param {string} message
  * @param {number} status
@@ -736,9 +571,6 @@ function plain(message, status) {
  * @param {() => number} [now]
  */
 export async function handleSearchRequest(request, db, account, now = () => Date.now()) {
-  // The gate answers first, even for a method the route does not serve: a
-  // stranger must not learn from 405 that a path it cannot read is routed at
-  // all, and 401-before-405 is the rule every account route follows.
   if (!account) {
     return json({ error: failureMessage("unauthorized") }, 401, {
       "www-authenticate": "Cookie",

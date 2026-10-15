@@ -1,27 +1,5 @@
-// The prepaid pause at $0, applied to the account's keys (drive#589,
-// follow-up to #586).
-//
-// #586 already pauses uploads on the web route, the public upload-request
-// page and agent-key writes that go through the api Worker. The Mac mount
-// (and any other storage key) writes at the provider directly, so nothing
-// on that path reads the balance. This module is the missing half: when
-// PREPAID_PAUSE is on and the balance is $0, swap those keys to read-only
-// the same way the spending cap does (core/cap.js `capSwapPlan` /
-// `applyCapSwap`). A top-up that brings the balance above $0 swaps them
-// back. Reads, downloads and restore keep working. Nothing is deleted.
-//
-// The record a restore may read is `prepaid_paused_from`, not `capped_from`.
-// That is the whole point of a second column: a top-up gives back exactly
-// what the pause took, and the cap's own record stays the cap's to read.
-// The keys are presented to `capSwapPlan` with that record in the plan's
-// own field (`cappedFrom`), so this module does not copy the swap arithmetic.
-//
-// Restore is skipped while the spending cap still has the account read-only,
-// so a top-up of an over-cap account does not hand write keys back. The
-// hourly cap walk and `drive cap` run this again after they decide, so a
-// later raise still finds the pause record on the live row and restores.
-
-import { usageSummary } from "./billing.js";
+// The prepaid pause at $0, applied to the account's keys.
+import { usageSummary } from "./billing-report.js";
 import { applyCapSwap, capSwapPlan } from "./cap.js";
 import { balanceCents } from "./ledger.js";
 

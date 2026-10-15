@@ -1,188 +1,14 @@
-import { storageVarsFromEnv } from "../core/files.js";
-import { meterFreshness } from "../core/meter.js";
-
-// The health endpoint the outage alert watches (drive issue #96, north star
-// "Reliable": we hear about an outage before customers do). `GET /api/health`
-// answers one question honestly — can this Worker reach the things a request
-// needs? — and nothing else: no account data, no configuration, no stack, no
-// query text. The outside monitor (#36) polls it and alerts when the answer
-// stops being yes, so a green here has to mean the drive can actually serve
-// traffic, not that the isolate is merely alive.
-//
-// What "what it depends on" means here, and why the list is not the whole env:
-//
-//   - Every D1 database the Worker binds, found by reading the bindings on
-//     `env` and asking which kind of binding each one is, so a database added
-//     to cloudflare.config.ts is checked the day it is added. The trivial read
-//     is the one statement D1 answers whatever the schema is, so a database
-//     whose migrations are ahead of the Worker (still healthy) passes and an
-//     unreachable one fails. Two databases today: the waitlist's, holding
-//     only the sign-up table, and the customer drive's, holding the file
-//     index, branches and agent caps (drive issue #170).
-//     Asking which kind it is, rather than looking for one method, is what
-//     makes that discovery safe (drive#144): every binding that is not a
-//     database is a Fetcher, and a Fetcher answers a function to every
-//     property name, so looking only for `prepare` collected the asset binding
-//     as a database and every poll answered 503 {"failing":"ASSETS"} with a
-//     DataCloneError in the log.
-//
-//   - The bindings named in REQUIRED_BINDINGS below, which discovery cannot
-//     do: a binding the deploy lost is not on `env` at all, and a check that
-//     only saw what was there would answer `ok` for a Worker that cannot
-//     serve a page or accept a sign-up.
-//
-//   - The asset layer. A landing page that 500s while the API is fine is an
-//     outage, and the asset binding is what serves it, so the check is a
-//     fetch of the 404 path: it proves the asset Worker is reachable without
-//     charging a Worker invocation for a page load and without asserting on
-//     the content of a page that will change.
-//
-//   - The waitlist's rate limiter. Missing, the waitlist endpoint fails closed
-//     (src/waitlist.js answers 503 rather than accept unbounded sign-ups), so
-//     it is a binding the Worker needs to serve one of its requests. The
-//     sign-in endpoint's two edge limits (drive issue #147) are the same
-//     argument for the same reason: src/signin.js answers 503 without them
-//     rather than mail an unbounded number of sign-in links, so a deploy that
-//     lost either is an outage this endpoint names. It has no
-//     read, so the check is the one callable operation, `limit()`, on a key
-//     nothing else uses and that changes every call. Two things follow: a real
-//     client key (a client IP) can never collide with the probe, and a
-//     stranger hammering this public endpoint cannot exhaust a shared probe
-//     key and push the endpoint into a false 503. The one name the result
-//     reports is the binding, never the key. GET /s/<token> is the same
-//     argument for the same reason (drive issue #506): src/share.js answers
-//     503 without SHARE_DOWNLOAD_RATE_LIMITER rather than serve an unbounded
-//     public download, so a deploy that lost it is an outage this endpoint
-//     names. The share and upload-request mint routes are the same argument
-//     for the same reason (drive issue #549): src/share.js answers 503 without
-//     SHARE_MINT_RATE_LIMITER or REQUEST_MINT_RATE_LIMITER rather than let one
-//     account mint links without bound.
-//
-//   - The branch snapshot namespace. A branch's snapshot moved out of the D1
-//     row into KV (drive issue #252), so every diff and every approve reads this
-//     namespace, and a namespace that cannot be read stops branches without any
-//     other endpoint failing. The probe is a `get` on a key nothing writes —
-//     branch snapshot keys are account-scoped (`snapshotKey` in
-//     src/branches.js), so no customer key can collide with the probe and the
-//     probe reveals nothing, because a missing key reads back null. The
-//     question the check asks is only whether the binding answers, not whether
-//     it holds anything.
-//
-//   - The meter's watermark (drive issue #520). The meter can answer every
-//     hour while billing nothing — a lost watermark, a dead trigger, a
-//     backlog the catch-up cap is still draining — and no request path
-//     notices, because billing is a cron's job. The check is one D1 read on
-//     METER_DB (src/meter.js meterFreshness): versions with no watermark, or
-//     a watermark METER_STALE_AFTER_HOURS behind the last closed hour, is a
-//     503 naming "meter". A binding that cannot answer at all keeps its own
-//     name, METER_DB, from the generic database check above.
-//
-//   - The storage endpoint (drive issue #520). With no S3 endpoint among the
-//     per-deployment vars, the Files handlers answer from the in-memory
-//     store: a drive that forgets everything on redeploy and shares nothing
-//     between isolates, while every page still renders. That is the exact
-//     failure a health check exists to name, so it is a 503 naming
-//     "storage". The question is asked through src/files.js's one reader,
-//     storageVarsFromEnv, so this endpoint and the store cannot disagree
-//     about what "no endpoint" means. In local dev without storage vars this
-//     check is red by design; the runbook says so.
-//
-// Reported, but NOT a 503 (drive#522): the sender address. Every customer
-// email (close receipts, reminders, the welcome, sign-in links) is sent from
-// MAIL_FROM, and with it unset or unusable each one fails at the customer's
-// click while the site serves. Until launch the deploy only warns about it
-// (drive#752 turns that back into a block), so this endpoint is where the
-// gap stays visible: `"email":"not-ready"` rides on the answer, ok or not.
-// It is not a failing dependency, because the deploy smoke rolls back on any
-// answer that is not ok, and a pre-launch drive with no sending domain yet
-// (#199) would then never ship. The check reads the address through
-// src/email-send.js replyToFor, the same reader every send uses, so this and
-// the mail path cannot disagree, and the answer is one word: never the
-// address itself.
-//
-// Deliberately NOT checked, because a false 503 pages a human for nothing:
-//   - Other secrets. Their presence is a deployment shape, not a reachability
-//     question, and a value cannot be probed without risking disclosure.
-//     A missing secret makes the one route that needs it answer 403/503 by
-//     name already (core/email-send.js, src/waitlist.js).
-//   - The email binding. Only the token-gated internal send route uses it
-//     (core/email-send.js); no customer request needs it, and its only
-//     operation would really send mail.
-//   - The reindex queue (drive#566). Only the nightly cron produces on it,
-//     a customer request cannot observe whether it answers, and a probe
-//     would have to enqueue a real reindex walk to find out; a cron that
-//     cannot send is a failed trigger, which the platform alerts on.
-//   - HEALTH_RATE_LIMITER. It is this route's own gate (handleHealthRequest
-//     runs enforceEdgeLimits before any probe), not a dependency another
-//     route fails closed without. Probing it with a fresh random key would
-//     not prove the per-IP bucket and would add a billed op on every poll
-//     (drive#539).
-//
-// The check is bounded once, with one deadline shared by every dependency, so
-// a hung dependency cannot make the monitor's own poll hang (which would read
-// as "no data" rather than "down") and cannot make it late: three slow
-// dependencies still answer inside HEALTH_TIMEOUT_MS, not three times it.
-// A dependency that does not answer in its share reports itself by name, so
-// the alert says which dependency rather than "unhealthy".
-
 import { replyToFor } from "../core/email-send.js";
+import { storageVarsFromEnv } from "../core/files-memory.js";
+import { meterFreshness } from "../core/meter-events.js";
 import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 
-/** The path the outside monitor (#36) polls. Public, and reads no account. */
 export const HEALTH_PATH = "/api/health";
 
-/**
- * How long the whole check gets, and so how much of that each dependency
- * gets: the checks share one deadline, so three slow dependencies still
- * answer in 2s, not 6s. A monitor that polls every few minutes needs an
- * answer well inside its own timeout, and a Worker that answers nothing is
- * worse than one that answers "down": the first loses the alert, the second
- * raises it.
- */
 export const HEALTH_TIMEOUT_MS = 2000;
 
-/**
- * The statement every check runs. D1 answers it whatever the schema is: it
- * reads no table, so it passes on a database whose migrations are ahead of
- * the Worker (still healthy) and fails on one that is unreachable or has no
- * database behind the binding. `SELECT 1` is the stock liveness probe; there
- * is nothing product-specific to ask.
- */
 const LIVENESS_QUERY = "SELECT 1";
 
-/**
- * The bindings this Worker needs to answer a customer request, by the names
- * cloudflare.config.ts declares. Auto-discovery (d1Bindings below) covers
- * "every bound database", but it cannot see a database that is not bound: a
- * deploy that lost WAITLIST_DB would otherwise answer `{"ok":true}` while
- * every sign-up 503s. This list is what makes that a 503 naming the binding.
- *
- * test/health.test.mjs reads cloudflare.config.ts and fails if a name here is
- * not declared there, so a rename in the config cannot silently leave this
- * list pointing at a binding that no longer exists.
- *
- * ASSETS is on the list because every page load goes through it. The rate
- * limiters are on it because the waitlist, the sign-in endpoint and the
- * public upload-request route fail closed without them (src/waitlist.js,
- * src/signin.js, src/share.js). METER_DB is on it because the
- * meter's event intake and the hourly rollup both fail closed without it
- * (core/meter.js), and a deploy that lost it would silently stop billing.
- * DRIVE_DB is on it because a deploy that lost it
- * would serve every page and sign-up while every file, search and branch
- * request failed, which is exactly the outage this endpoint exists to catch
- * (drive issue #170). The email binding is not: only the token-gated internal
- * send route uses it, no customer request needs it, and its one operation
- * would really send mail. The reindex queue is not, and for the same reason:
- * only the nightly cron produces on it, no customer request can observe
- * whether it answers, and a probe's one operation would really be to enqueue
- * a walk (drive#566). A cron that cannot send is a failed trigger in
- * Cloudflare's logs, which is its own alert; the queue's consumer does fail
- * the search-reindex trip, and that shows as accounts not being reindexed,
- * which the reindex's own log line names. METER_JOBS and BRANCH_JOBS are
- * producer bindings (drive#519, drive#563): without them the work runs
- * in-process, and a health probe cannot exercise a queue without sending a
- * real job.
- */
 export const REQUIRED_BINDINGS = Object.freeze([
   "WAITLIST_DB",
   "METER_DB",
@@ -202,8 +28,6 @@ export const REQUIRED_BINDINGS = Object.freeze([
 
 const JSON_HEADERS = Object.freeze({
   "content-type": "application/json; charset=utf-8",
-  // The monitor must never be answered from a cache: a cached 200 during an
-  // outage is exactly the false all-clear this endpoint exists to prevent.
   "cache-control": "no-store",
 });
 
@@ -311,11 +135,7 @@ export function d1Bindings(env) {
  */
 async function checkD1(name, db, timeoutMs) {
   await withTimeout(
-    db
-      .prepare(LIVENESS_QUERY)
-      // AbortSignal.timeout is the runtime's own cancellation, so a query
-      // that never returns is stopped at D1 rather than left running.
-      .all({ signal: AbortSignal.timeout(timeoutMs) }),
+    db.prepare(LIVENESS_QUERY).all({ signal: AbortSignal.timeout(timeoutMs) }),
     timeoutMs,
     name,
   );
@@ -358,12 +178,8 @@ async function checkAssets(assets, timeoutMs) {
     "ASSETS",
   );
   if (!response) {
-    // A binding that resolves without a Response is not an asset layer.
     throw new Error("ASSETS.fetch did not return a Response");
   }
-  // Drain the body so the runtime is not holding a connection open for a
-  // probe nothing reads. A HEAD has none; a real asset layer may answer with
-  // one, and cancelling it is a no-op when there is nothing to cancel.
   if (response.body) {
     await response.body.cancel();
   }
@@ -452,19 +268,12 @@ export function emailReadiness(env) {
  */
 export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   const deadline = Date.now() + timeoutMs;
-  // A required binding that is not bound is the first thing named: the whole
-  // point of the endpoint is that a deploy which cannot serve says so.
   for (const name of REQUIRED_BINDINGS) {
     if (env === null || env === undefined || env[name] === undefined) {
       return { ok: false, failing: name };
     }
   }
-  // The storage endpoint (issue #520): with no S3 endpoint among the
-  // per-deployment vars, the Files handlers answer from the in-memory store
-  // (src/files.js storageVarsFromEnv is the one reader this and storeFor use).
-  // That drive forgets everything on redeploy, so it fails here by name
-  // rather than serving a silently empty Files page.
-  const storageEnv = /** @type {import("../core/files.js").StorageEnv} */ (
+  const storageEnv = /** @type {import("../core/files-memory.js").StorageEnv} */ (
     /** @type {unknown} */ (env)
   );
   if (storageVarsFromEnv(storageEnv).endpoint === undefined) {
@@ -474,12 +283,6 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   for (const { name, db } of d1Bindings(env)) {
     checks.push({ name, run: (left) => checkD1(name, db, left) });
   }
-  // The meter's watermark (issue #520), read through the binding the generic
-  // loop above already liveness-checked: a read that throws keeps the
-  // binding's name (METER_DB) from that check, and a read that answers
-  // "behind" reports "meter" — the job, not the database. The shape guard is
-  // the same isDatabaseBinding the discovery used, so the cast below is the
-  // check that was just made.
   const meterDb = env.METER_DB;
   if (isDatabaseBinding(meterDb)) {
     checks.push({
@@ -493,8 +296,6 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
         ),
     });
   }
-  // The binding is read off the untyped env and checked by shape, exactly as
-  // d1Bindings does: the cast is the check that was just made, not a default.
   const assets = env.ASSETS;
   if (
     typeof assets !== "object" ||
@@ -502,9 +303,6 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     !("fetch" in assets) ||
     typeof assets.fetch !== "function"
   ) {
-    // The landing page is served by this binding on every request that is
-    // not /api/*, so its absence is an outage, not a configuration nit: a
-    // Worker that cannot serve the page cannot say the site is up.
     return { ok: false, failing: "ASSETS" };
   }
   checks.push({
@@ -519,9 +317,6 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     !("limit" in limiter) ||
     typeof limiter.limit !== "function"
   ) {
-    // The waitlist fails closed without this binding (src/waitlist.js), so a
-    // binding that is present but has no `limit` is as broken as a missing
-    // one and gets the same name.
     return { ok: false, failing: "WAITLIST_RATE_LIMITER" };
   }
   checks.push({
@@ -533,13 +328,6 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
         "WAITLIST_RATE_LIMITER",
       ),
   });
-  // The sign-in endpoint's two edge limits (drive issue #147) and the public
-  // upload-request pair (drive issue #208), probed the same way: each route
-  // fails closed without its bindings, so a deploy that lost one is an
-  // outage, and a binding that is present but has no `limit` is as broken as a
-  // missing one and gets the same name. The guard is written out rather than
-  // trusting the REQUIRED_BINDINGS pass above, so a future edit that reorders
-  // these checks cannot turn a missing binding into a TypeError.
   for (const name of [
     "SIGNIN_RATE_LIMITER",
     "SIGNIN_GLOBAL_RATE_LIMITER",
@@ -569,9 +357,6 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
         ),
     });
   }
-  // The branch snapshot namespace (drive issue #252), guarded by shape for the
-  // same reason as the limiters above: a binding that is present but is not a
-  // namespace is as broken as a missing one, and both get the same name.
   const snapshots = env.BRANCH_SNAPSHOTS;
   if (
     typeof snapshots !== "object" ||
@@ -592,23 +377,14 @@ export async function checkHealth(env, { timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   });
 
   for (const check of checks) {
-    // One deadline for the whole check, not one per dependency: a Worker
-    // holding three slow dependencies still answers inside HEALTH_TIMEOUT_MS,
-    // which is the number the monitor's own timeout is set against.
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      // The check that never got its turn is the one that did not answer.
       console.error("health: out of time before checking a dependency", check.name);
       return { ok: false, failing: check.name };
     }
     try {
       await check.run(remaining);
     } catch (error) {
-      // The raw error is the operator's, and it goes to the log with the
-      // binding's name attached; the response gets the name alone. Never the
-      // message: a D1 error string can carry the query, an account id or a
-      // host. Reporting the name the caller was running, not the error's own
-      // text, is what makes the name trustworthy.
       console.error("health: a dependency did not answer", check.name, error);
       return { ok: false, failing: check.name };
     }
@@ -639,10 +415,6 @@ export async function handleHealthRequest(request, env) {
       headers: { allow: "GET", ...JSON_HEADERS },
     });
   }
-  // The probe fans out to every D1, five rate-limit bindings, KV and ASSETS.
-  // The per-IP gate runs first so a stranger cannot spend those billed ops
-  // in a loop (drive#539). A missing binding fails closed, the same posture
-  // every other limited route uses.
   const limited = await enforceEdgeLimits(
     [
       {
@@ -660,9 +432,6 @@ export async function handleHealthRequest(request, env) {
     return limited;
   }
   const result = await checkHealth(env);
-  // The email part (drive#522) is reported beside the verdict, never as it:
-  // only when it is not ready, so a deployment that can send answers exactly
-  // as before, and one that cannot says so on every poll.
   const email = emailReadiness(env) === "ready" ? {} : { email: "not-ready" };
   if (result.ok) {
     return new Response(JSON.stringify({ ok: true, ...email }), {

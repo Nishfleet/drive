@@ -1,23 +1,3 @@
-// Which workflow job may read which repository secret (drive#507).
-//
-// A repository-wide secret is readable by any workflow pushed to any branch.
-// The fix is to keep the deploy credentials in the `production` environment,
-// limited to `main`, so only a job that names that environment gets them.
-// Moving the values is a settings change for the repo owner, and it only
-// works if every job that reads them already names the environment: a
-// secret held only in an environment is empty in a job without one, and the
-// deploy would fail at the first `cf` call. This file is the gate on the
-// code side. It fails when a job reads a deploy secret without
-// `environment: production`, and when a workflow reads a secret this table
-// does not list, so a new credential cannot slip in as a repo-wide secret
-// without a reviewer seeing it here.
-//
-// The fleet-ops dispatch call stays on `@main` (finish line 3 of drive#507).
-// Runner group 3 only admits jobs from fleet-ops' workflows at `@main`, so a
-// SHA pin here drifts from agent.yml@main and strands every dispatched job
-// (Nishfleet/0509#5231). fleet-ops is Nish's own repository and its `main`
-// is protected, so the trust is the same as for this repo's own `main`.
-
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -63,7 +43,7 @@ const OTHER_SECRETS = new Set([
  */
 const jobsOf = (text) => {
   const lines = text.split("\n");
-  const start = lines.findIndex((line) => line === "jobs:");
+  const start = lines.indexOf("jobs:");
   if (start === -1) return [];
   /** @type {{ id: string, body: string[] }[]} */
   const jobs = [];

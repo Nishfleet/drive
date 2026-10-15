@@ -1,37 +1,3 @@
-// The three home-page demos (drive issue #113), each one really run on a
-// drive folder: an agent editing files, a multi-GB video opening and scrubbing,
-// and a 3D file opening and saving back. Every number the home page prints is
-// produced by this file, and test/home-demos.test.mjs's own assertions are the
-// gate: docs/demos.md is read here and a number that drifts from a run fails
-// CI.
-//
-// What "the drive" is here: one stock `rclone serve s3` endpoint (the same
-// stand-in test/two-mount-sync.test.mjs and test/standin-search.test.mjs use)
-// with one `rclone mount` in front of it, carrying the product's own flags from
-// cmd/drive/mount.go (VFSArgs plus the config and cache-dir paths), so the
-// agent reads and writes through the same mounted folder a person's apps use.
-// Set DRIVE_STANDIN_ENDPOINT and friends and the identical code runs against
-// the real iDrive e2 account with no change; the drive#173 run did exactly
-// that, and it is why the iDrive figures are not the ones this page carries
-// (docs/build-spec.md: iDrive e2 does not make the primary seat).
-//
-//   DRIVE_STANDIN_ENDPOINT / _BUCKET / _PREFIX / _ACCESS_KEY / _SECRET_KEY
-//   DRIVE_STANDIN_VIDEO_GB   video size (default 5; the issue says multi-GB)
-//   DRIVE_STANDIN_BLENDER    path to a Blender binary, when one is installed
-//   DRIVE_STANDIN_AGENT_CLI  path to an agent CLI to drive (default claude)
-//   DRIVE_DEMO_VIDEO_BUDGET_MS / DRIVE_DEMO_SAVE_BUDGET_MS  the budgets below
-//
-// Each demo writes its own recording (the commands, the figures, the date) to
-// docs/demos.md, so the page's copy and the run that produced it are one file
-// and the test that reads it is the gate between them. The Mac-only half (a
-// real Finder window, a real Final Cut scrub) is out of reach here and is
-// listed on the issue as an open check, never faked: these are Linux numbers
-// through the same mount, and the page says so.
-//
-// Every step is a proven tool called directly: rclone for the mount and the
-// stand-in, ffmpeg for the video, Blender for the 3D file, the agent's own CLI
-// for the agent. Nothing is hand-rolled and no helper script is added.
-
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";

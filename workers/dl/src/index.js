@@ -1,51 +1,10 @@
-// The dl Worker (drive issue #58, build step 5 piece 4; hardened by #517): the
-// download hostname. It sits in front of storage, streams a read straight
-// through to the caller, and adds the bytes it served to that account's
-// download counter.
-//
-// Five rules decide everything here:
-//
-//   1. **No read without proof of access (#517).** A request path is
-//      `/k/<grant>/u/<id>/<file>`: the base URL the api mints beside a storage
-//      key (grant.js), with the in-bucket path rclone appends to it. The grant
-//      must carry the signing secret's HMAC, and the key it names must be a
-//      live row in `devices` for that same account, with `read`, whose prefix
-//      covers the file. Anything else is the one 404, before storage is
-//      touched, so a stranger can learn nothing about which accounts exist.
-//
-//   2. **Stream, never buffer.** The body goes to the caller as the upstream
-//      stream itself. The Workers Free plan allows 10 ms of CPU per request,
-//      and waiting on storage is not CPU, so the pass-through is what fits.
-//
-//   3. **One range, the right bytes, and only those billed.** A single
-//      `Range` is forwarded to storage: a satisfiable one answers 206 with
-//      `Content-Range`, an unsatisfiable one answers 416, and the counter adds
-//      the slice's length, never the whole object's. rclone reads a mounted
-//      file in ranged chunks, so billing `size` per GET would bill the whole
-//      file on every chunk.
-//
-//   4. **The account comes from the path, and the bucket from the account.**
-//      `u/<id>/…` is the storage key, the account is its first segment
-//      (`folderAccount`, core/meter.js), and the bucket is that account's own
-//      `drv-<id>` (`storageBucketForKey`, core/files.js; drive#371). A path
-//      cannot climb into another account's folder: `..` is refused and a
-//      second `u/<id>/` is part of the file's own name.
-//
-//   5. **The deployed Worker is the tested Worker.** The default export builds
-//      the same context the tests build, from the Worker's bindings
-//      (`contextFromEnv`), so a deploy cannot answer 404 to everything while
-//      the tests pass.
-//
-// The counter is `usage_minutes.download_bytes` for the current UTC hour
-// (migrations/drive/0005_meter.sql), written by `recordDownloadBytes`
-// (core/meter.js) in a `waitUntil`, after the response is handed back.
-
 import { Hono } from "hono";
 
-import { createS3Store, storageBucketForKey, storageVarsFromEnv } from "../../../core/files.js";
+import { storageBucketForKey, storageVarsFromEnv } from "../../../core/files-memory.js";
+import { createS3Store } from "../../../core/files-s3.js";
 import { GRANT_SEGMENT, readGrant } from "../../../core/grant.js";
 import { failureMessage } from "../../../core/messages.js";
-import { folderAccount, recordDownloadBytes } from "../../../core/meter.js";
+import { folderAccount, recordDownloadBytes } from "../../../core/meter-usage.js";
 
 /**
  * The storage the Worker streams from: the same `FileStore` the site Worker
@@ -73,14 +32,11 @@ import { folderAccount, recordDownloadBytes } from "../../../core/meter.js";
  * `IDRIVE_S3_*` (or `FILES_S3_*`) four are the storage master credential the
  * site Worker reads too, and `DL_SIGNING_SECRET` is the grant secret the api
  * Worker signs with.
- * @typedef {import("../../../core/files.js").StorageEnv & {DRIVE_DB?: D1Database, DL_SIGNING_SECRET?: string}} DlEnv
+ * @typedef {import("../../../core/files-memory.js").StorageEnv & {DRIVE_DB?: D1Database, DL_SIGNING_SECRET?: string}} DlEnv
  */
 
-/** How a download is served: an attachment, with the file's own bytes. */
 const DOWNLOAD_HEADERS = Object.freeze({
   "content-disposition": "attachment",
-  // The bytes are whatever the customer uploaded, so they go out as
-  // octet-stream with nosniff beside them: never a document on our origin.
   "content-type": "application/octet-stream",
   "x-content-type-options": "nosniff",
   "accept-ranges": "bytes",
@@ -170,8 +126,6 @@ export function keyAccessCheck(db, secret, now) {
       return false;
     }
     const prefix = typeof r.prefix === "string" ? r.prefix : "";
-    // A prefix is always a folder (`u/<id>/`, `u/<id>/.branches/<name>/`); an
-    // empty or slash-less one covers nothing rather than everything.
     if (!prefix.endsWith("/") || !named.key.startsWith(prefix)) {
       return false;
     }
@@ -227,7 +181,6 @@ export async function handleDownload(request, ctx) {
     });
   }
   if (!ctx.store || !ctx.db || typeof ctx.authorize !== "function") {
-    // A deployment that cannot check access or count bytes serves nothing.
     return notFound();
   }
   let pathname;
@@ -241,14 +194,10 @@ export async function handleDownload(request, ctx) {
     return notFound();
   }
   if (!(await ctx.authorize(named.grant, { accountId: named.accountId, key: named.key }))) {
-    // No grant, a forged one, another account's, or a dead key: the one 404,
-    // with no storage read.
     return notFound();
   }
 
   if (request.method === "HEAD") {
-    // A HEAD transfers no body, so it is answered from a storage HEAD and
-    // counts nothing.
     let stat;
     try {
       stat = await ctx.store.stat(named.key);
@@ -265,7 +214,7 @@ export async function handleDownload(request, ctx) {
   }
 
   const range = request.headers.get("range");
-  /** @type {import("../../../core/files.js").FileRead} */
+  /** @type {import("../../../core/files-scope.js").FileRead} */
   let object;
   try {
     object = await ctx.store.read(named.key, range ? { range } : {});
@@ -277,8 +226,6 @@ export async function handleDownload(request, ctx) {
   }
   const status = object.status ?? 200;
   if (status === 416) {
-    // No byte of the range exists. Nothing is served, so nothing is counted,
-    // and the answer names the size a client can pick a range inside.
     let total = object.contentRange?.split("/")[1];
     if (total === undefined) {
       try {
@@ -296,10 +243,6 @@ export async function handleDownload(request, ctx) {
   if (status !== 200 && status !== 206) {
     return storageDown(new Error(`storage answered ${status}`));
   }
-  // The bytes this response carries: the slice on a 206 (its length, or the
-  // span its Content-Range names), the whole object on a 200. A length
-  // storage did not report bills nothing and sends no content-length, rather
-  // than a guess.
   const served =
     status === 206 ? (object.contentLength ?? rangeLength(object.contentRange)) : object.size;
   const known = Number.isSafeInteger(served) && /** @type {number} */ (served) >= 0;
@@ -307,8 +250,6 @@ export async function handleDownload(request, ctx) {
   if (bytes > 0) {
     ctx.waitUntil(
       recordDownloadBytes(ctx.db, named.accountId, bytes, ctx.now()).catch((error) => {
-        // A failed meter write is logged, not rethrown: the bytes are already
-        // on their way, and a rejection in the background slot helps no one.
         console.error("dl: could not record download bytes", error);
       }),
     );
@@ -421,7 +362,6 @@ export function contextFromEnv(env, platform) {
  */
 export function createApp(contextFor) {
   const app = new Hono({ strict: false });
-  // Every method reaches the handler, which answers the 405 itself.
   app.all("/*", (c) => handleDownload(c.req.raw, contextFor(c)));
   return app;
 }

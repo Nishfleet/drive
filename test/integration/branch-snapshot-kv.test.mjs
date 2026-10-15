@@ -1,48 +1,10 @@
-// A 100,000-file branch, end to end, over the real schema (drive issue #252,
-// the phase 2 of drive#157).
-//
-// The unit proof in test/branches-snapshot.test.mjs measures the snapshot and
-// pins the numbers, and test/branches.test.mjs drives the lifecycle over a
-// three-file tree. Neither can make the claim this file makes, which is the
-// issue's own acceptance line: a branch of 100,000 files, created, listed,
-// diffed and approved, against the shipped migrations and a real KV namespace,
-// with a timestamp and a branch name to cite.
-//
-// What the stand-ins here are, and are not:
-//   * the D1 is a real SQLite engine with the real migration files applied
-//     (test/harness.mjs createTestD1 applies every file in
-//     migrations/drive/, 0012_branch_snapshot_kv.sql and the
-//     0017_drop_branches_snapshot.sql that dropped `snapshot` included). The
-//     row this test reads back is read with plain node:sqlite, so a store that
-//     answered from a Map would leave the table empty and fail here — the rule
-//     test/integration/share-links-d1.test.mjs follows;
-//   * the KV namespace is the stand-in test/harness.mjs createTestKv builds:
-//     the same two methods createKvSnapshotStore calls, and the value is read
-//     off the namespace itself rather than through the module;
-//   * the FILE store is the in-memory FileStore, so 100,000 files of real bytes
-//     are not written. That is stated, not hidden, and it is why the file count
-//     below is asserted on the SNAPSHOT (which is the thing this issue is
-//     about) rather than on the copy's bytes.
-//
-// The claim that the file count is real, and not a fixture: `createBranch` is
-// handed a store whose listing answers 100,000 real entries under one folder,
-// so the snapshot the module builds is the snapshot a 100,000-file folder
-// produces, and the row it writes is the row the Worker writes. The only thing
-// standing in is the object storage behind the listing, and this issue is about
-// the metadata path, not the bytes (drive#157 measured the copy side).
-
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMemoryStore, scopeStore } from "../../core/files.js";
-import {
-  approveBranch,
-  createBranch,
-  createKvSnapshotStore,
-  diffBranch,
-  listBranches,
-  readSnapshot,
-  snapshotKey,
-} from "../../src/branches.js";
+import { createMemoryStore } from "../../core/files-memory.js";
+import { scopeStore } from "../../core/files-scope.js";
+import { createKvSnapshotStore, snapshotKey } from "../../src/branches.js";
+import { approveBranch, createBranch, listBranches } from "../../src/branches-routes.js";
+import { diffBranch, readSnapshot } from "../../src/branches-snapshot.js";
 import { createTestD1, createTestKv } from "../harness.mjs";
 
 const ACCOUNT = { id: "acct-252", name: "The 100k drive" };
