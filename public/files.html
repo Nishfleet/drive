@@ -156,6 +156,69 @@ main {
   display: none;
 }
 
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 12px;
+}
+
+.toolbar .filter {
+  flex: 1 1 200px;
+  margin: 0;
+}
+
+.bulk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.bulk[hidden] {
+  display: none;
+}
+
+.row .pick {
+  flex: 0 0 auto;
+}
+
+.row[data-picked="true"] {
+  background: var(--accent-soft);
+}
+
+.list.is-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+  border-top: 0;
+  padding-top: 4px;
+}
+
+.list.is-grid .row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+
+.list.is-grid .row .icon {
+  font-size: 28px;
+}
+
+.list.is-grid .row .actions {
+  flex-wrap: wrap;
+}
+
 .list {
   margin: 0;
   padding: 0;
@@ -598,7 +661,21 @@ dialog.viewer::backdrop {
     </nav>
     <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
     <p class="page-line" id="page-line">Tap a file to preview or download it. Delete sends it to Recently deleted, where one tap puts it back.</p>
-    <input class="field filter" type="search" id="file-filter" aria-label="Filter this folder by name" placeholder="Filter this folder" autocomplete="off">
+    <div class="toolbar" id="toolbar">
+      <input class="field filter" type="search" id="file-filter" aria-label="Filter this folder by name" placeholder="Filter this folder" autocomplete="off">
+      <select class="field" id="sort" aria-label="Sort files">
+        <option value="name">Name</option>
+        <option value="newest">Newest first</option>
+        <option value="largest">Largest first</option>
+      </select>
+      <button type="button" class="btn" id="view-toggle" aria-pressed="false">Grid</button>
+    </div>
+    <div class="bulk" id="bulk" role="status" aria-live="polite" hidden>
+      <span id="bulk-count"></span>
+      <button type="button" class="btn btn-sm" id="bulk-download">Download</button>
+      <button type="button" class="btn btn-sm btn-danger" id="bulk-delete">Delete</button>
+      <button type="button" class="btn btn-sm btn-ghost" id="bulk-clear">Clear</button>
+    </div>
     <p class="filter-none" id="filter-none" hidden>No file here matches that. Clear the box to see them all.</p>
     <p class="status" id="status" role="status" aria-live="polite"></p>
     <ul class="uploads" id="uploads" aria-label="Uploads" hidden></ul>
@@ -857,6 +934,20 @@ function rowFor(row) {
   const li = document.createElement("li");
   li.className = "row";
 
+  if (row.kind !== "folder") {
+    const pick = document.createElement("input");
+    pick.type = "checkbox";
+    pick.className = "check pick";
+    pick.setAttribute("aria-label", `Select ${row.name}`);
+    pick.checked = picked.has(row.path);
+    li.dataset.picked = String(pick.checked);
+    pick.addEventListener("change", () => {
+      setPicked(row.path, pick.checked);
+      li.dataset.picked = String(pick.checked);
+    });
+    li.append(pick);
+  }
+
   const icon = document.createElement("span");
   icon.className = "icon";
   icon.setAttribute("aria-hidden", "true");
@@ -1062,11 +1153,59 @@ function trashRowFor(row) {
   return li;
 }
 
-function appendRows(rows) {
+let loaded = [];
+const picked = new Set();
+const SORTS = {
+  name: (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }),
+  newest: (a, b) => String(b.modifiedIso).localeCompare(String(a.modifiedIso)),
+  largest: (a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0),
+};
+
+function sortedRows(rows) {
+  const compare = SORTS[sortEl?.value] || SORTS.name;
+  const folders = rows.filter((row) => row.kind === "folder").sort(SORTS.name);
+  const files = rows.filter((row) => row.kind !== "folder").sort(compare);
+  return [...folders, ...files];
+}
+
+function drawRows() {
+  list.textContent = "";
+  const rows = view === "deleted" ? loaded : sortedRows(loaded);
   for (const row of rows) {
     list.append(view === "deleted" ? trashRowFor(row) : rowFor(row));
   }
   applyFilter();
+}
+
+const bulkEl = document.getElementById("bulk");
+const bulkCount = document.getElementById("bulk-count");
+function setPicked(rowPath, on) {
+  if (on) {
+    picked.add(rowPath);
+  } else {
+    picked.delete(rowPath);
+  }
+  updateBulk();
+}
+
+function updateBulk() {
+  if (!bulkEl || !bulkCount) {
+    return;
+  }
+  bulkEl.hidden = picked.size === 0;
+  bulkCount.textContent = `${picked.size} selected`;
+}
+
+function clearPicked() {
+  picked.clear();
+  for (const item of list.querySelectorAll(".row")) {
+    item.dataset.picked = "false";
+    const box = item.querySelector(".pick");
+    if (box) {
+      box.checked = false;
+    }
+  }
+  updateBulk();
 }
 
 const filterEl = document.getElementById("file-filter");
@@ -1207,6 +1346,9 @@ async function rewindThis(preview) {
 
 function renderRows(rows) {
   list.textContent = "";
+  picked.clear();
+  updateBulk();
+  loaded = [...rows];
   if (rows.length === 0) {
     const state = view === "deleted" ? EMPTY_STATES.trash : path === "/" ? EMPTY_STATES.root : EMPTY_STATES.folder;
     emptyWhat.textContent = state.what;
@@ -1215,7 +1357,7 @@ function renderRows(rows) {
     return;
   }
   empty.hidden = true;
-  appendRows(rows);
+  drawRows();
 }
 
 async function listPage(cursor) {
@@ -1239,7 +1381,8 @@ async function loadMore() {
   try {
     const payload = await listPage(nextCursor);
     nextCursor = payload.nextCursor ?? null;
-    appendRows(payload.rows || []);
+    loaded = loaded.concat(payload.rows || []);
+    drawRows();
     showMore(nextCursor);
   } catch (error) {
     reportFailure(error);
@@ -1511,6 +1654,95 @@ function setTab() {
   document.getElementById("page-line").textContent =
     view === "rewind" ? REWIND_PAGE_LINE : PAGE_LINE;
 }
+
+const sortEl = document.getElementById("sort");
+if (sortEl) {
+  sortEl.addEventListener("change", () => drawRows());
+}
+
+const viewToggle = document.getElementById("view-toggle");
+function setGrid(on) {
+  list.classList.toggle("is-grid", on);
+  if (viewToggle) {
+    viewToggle.setAttribute("aria-pressed", String(on));
+    viewToggle.textContent = on ? "List" : "Grid";
+  }
+  try {
+    localStorage.setItem("files-grid", on ? "1" : "0");
+  } catch (_error) {}
+}
+if (viewToggle) {
+  viewToggle.addEventListener("click", () => setGrid(!list.classList.contains("is-grid")));
+}
+try {
+  setGrid(localStorage.getItem("files-grid") === "1");
+} catch (_error) {}
+
+async function deleteSelected() {
+  const rows = loaded.filter((row) => picked.has(row.path));
+  if (rows.length === 0) {
+    return;
+  }
+  const gone = [];
+  try {
+    for (const row of rows) {
+      await api(DELETE_ENDPOINT, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: row.path }),
+      });
+      gone.push(row);
+    }
+  } catch (error) {
+    reportFailure(error);
+  }
+  if (gone.length > 0) {
+    say(gone.length === 1 ? DELETE_COPY.done : `Deleted ${gone.length} files. They stay in Recently deleted.`, "done");
+    const undo = document.createElement("button");
+    undo.type = "button";
+    undo.className = "btn btn-sm undo";
+    undo.textContent = "Undo";
+    undo.addEventListener("click", async () => {
+      undo.disabled = true;
+      for (const row of gone) {
+        await restoreFile(row);
+      }
+    });
+    statusLine.append(" ", undo);
+  }
+  picked.clear();
+  refresh(true);
+}
+
+document.getElementById("bulk-delete")?.addEventListener("click", deleteSelected);
+document.getElementById("bulk-clear")?.addEventListener("click", clearPicked);
+document.getElementById("bulk-download")?.addEventListener("click", () => {
+  for (const row of loaded.filter((item) => picked.has(item.path))) {
+    const link = document.createElement("a");
+    link.href = `${DOWNLOAD_ENDPOINT}?path=${encodeURIComponent(row.path)}`;
+    link.download = row.name;
+    link.click();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  const target = event.target;
+  const typing = target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) && target.type !== "checkbox";
+  if (typing || event.metaKey || event.ctrlKey || event.altKey || viewer.open) {
+    return;
+  }
+  if (event.key === "/") {
+    event.preventDefault();
+    filterEl?.focus();
+  } else if (event.key === "u" || event.key === "U") {
+    fileInput.click();
+  } else if (event.key === "Delete" && picked.size > 0) {
+    event.preventDefault();
+    deleteSelected();
+  } else if (event.key === "Escape") {
+    clearPicked();
+  }
+});
 
 tabFiles.addEventListener("click", () => {
   view = "folder";

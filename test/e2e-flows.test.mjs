@@ -290,3 +290,45 @@ test("dropping files on the Files page uploads them, with a bar for each", OPTIO
     return text.includes("first.txt") && text.includes("second.txt");
   });
 });
+
+test("drag three files in, sort by size, select two, delete them, and Undo", OPTIONS, async (t) => {
+  const site = await startSite();
+  t.after(() => site.close());
+  const browser = await launchChrome(site.origin);
+  t.after(() => browser.close());
+  const page = await browserSignIn(browser, site, "sorter@example.com");
+
+  await page.goto(`${site.origin}/files`, { waitUntil: "load" });
+  await page.waitForSelector("#upload-button:not([disabled])");
+  await page.evaluate(() => {
+    const data = new DataTransfer();
+    data.items.add(new File(["1"], "small.txt", { type: "text/plain" }));
+    data.items.add(new File(["22222222"], "big.txt", { type: "text/plain" }));
+    data.items.add(new File(["333"], "mid.txt", { type: "text/plain" }));
+    document.dispatchEvent(new DragEvent("drop", { dataTransfer: data, cancelable: true }));
+  });
+  await page.waitForFunction(
+    () => document.querySelectorAll("#uploads li[data-state='done']").length === 3,
+  );
+  const names = () =>
+    page.$$eval("#file-list .row:not(.is-shell) .meta a", (items) =>
+      items.map((item) => item.textContent),
+    );
+  await page.waitForFunction(() => document.querySelectorAll("#file-list .row .pick").length === 3);
+
+  await page.select("#sort", "largest");
+  assert.deepEqual(await names(), ["big.txt", "mid.txt", "small.txt"]);
+  await page.select("#sort", "name");
+  assert.deepEqual(await names(), ["big.txt", "mid.txt", "small.txt"]);
+
+  const picks = await page.$$("#file-list .row .pick");
+  await picks[0].click();
+  await picks[2].click();
+  assert.equal(await page.$eval("#bulk-count", (node) => node.textContent), "2 selected");
+  await page.click("#bulk-delete");
+  await page.waitForFunction(() => document.querySelectorAll("#file-list .row .pick").length === 1);
+  assert.deepEqual(await names(), ["mid.txt"]);
+
+  await page.click("#status .undo");
+  await page.waitForFunction(() => document.querySelectorAll("#file-list .row .pick").length === 3);
+});

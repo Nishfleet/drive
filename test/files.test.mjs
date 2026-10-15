@@ -169,12 +169,14 @@ test("a file row carries the size and the time a person reads", () => {
     path: "/Photos",
     kind: "folder",
     sizeLabel: "",
+    sizeBytes: 0,
     // A folder has no write time, so it sends no instant: the page writes
     // "Folder" and nothing else, rather than a moment that is not its own
     // (drive#559).
     modifiedIso: "",
   });
   assert.equal(rows[1].sizeLabel, "2.4 KB");
+  assert.equal(rows[1].sizeBytes, 2400);
   // The instant, not words. "11:00" written here is a UTC clock, which is the
   // wrong clock for every customer who is not at Greenwich — the hour a file
   // was written is exactly what a browser has to say in its own zone
@@ -3427,7 +3429,7 @@ test("the page renders a row, previews a kind and restores in one tap", () => {
   assert.ok(script.includes("if (!keepStatus)"));
   assert.equal(
     (script.match(/refresh\(true\);/g) || []).length,
-    5,
+    6,
     "delete, restore, put-back-an-earlier-copy, upload and rewind all reload under their own result line",
   );
   // An upload failure says what happened; it never reads as done.
