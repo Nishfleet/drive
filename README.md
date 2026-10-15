@@ -50,6 +50,8 @@ agents.
   version 1 does not do
 - [API reference](https://storagebun.com/docs/api) — every
   route behind the `drive` command, with a curl example
+- [Webhooks](https://storagebun.com/docs/webhooks) — signed
+  calls to your own server when your balance changes
 - [Benchmarks](https://storagebun.com/docs/benchmarks) —
   measured speed, including where we lose
 - [Security](https://storagebun.com/docs/security) — who
