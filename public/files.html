@@ -455,6 +455,12 @@ body.is-dragging .drop-hint {
   z-index: 15;
 }
 
+@media (max-width: 899px) {
+  .upload {
+    bottom: calc(76px + env(safe-area-inset-bottom));
+  }
+}
+
 .upload button {
   min-height: 52px;
   padding: 0 26px;
@@ -576,12 +582,12 @@ dialog.viewer::backdrop {
   }
 
   .row .meta {
-    flex: 1 1 calc(100% - 44px);
+    flex: 1 1 calc(100% - 84px);
   }
 
   .row .actions {
     flex: 1 0 100%;
-    padding-left: 40px;
+    padding-left: 72px;
   }
 }
 
