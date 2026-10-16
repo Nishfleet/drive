@@ -331,6 +331,7 @@ main {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 18px;
+  margin-bottom: 14px;
   font-size: 15px;
 }
 
