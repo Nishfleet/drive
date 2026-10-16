@@ -963,15 +963,14 @@ body:has(.app-side) main {
   margin: 16px 0;
 }
 
-<<<<<<< HEAD
 body:has(.app-side) main h2 {
   font-family: var(--serif);
   font-size: 26px;
   font-weight: 800;
   letter-spacing: -0.01em;
-=======
+}
+
 body:has(.app-side) main a:not([class]) {
   color: var(--accent);
   text-underline-offset: 3px;
->>>>>>> origin/main
 }
