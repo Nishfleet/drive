@@ -621,8 +621,12 @@ body:has(.app-side) main {
     gap: 8px;
   }
 
-  body:has(.app-side) .app-top-mark {
+  body:has(.app-side) .wordmark.app-top-mark {
     font-size: 0;
+  }
+
+  body:has(.app-side) .palette-open {
+    display: none;
   }
 
   body:has(.app-side) .balance-chip {
@@ -959,9 +963,15 @@ body:has(.app-side) main {
   margin: 16px 0;
 }
 
+<<<<<<< HEAD
 body:has(.app-side) main h2 {
   font-family: var(--serif);
   font-size: 26px;
   font-weight: 800;
   letter-spacing: -0.01em;
+=======
+body:has(.app-side) main a:not([class]) {
+  color: var(--accent);
+  text-underline-offset: 3px;
+>>>>>>> origin/main
 }
