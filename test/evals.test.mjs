@@ -840,3 +840,12 @@ test("the agent eval runs on a clock with a pass bar, and the release reads its 
   assert.match(deploy, /exit 1/, "…and a red score stops the deploy");
   assert.match(deploy, /gate is not armed/, "…and warns, not fails, before the first run exists");
 });
+
+test("a failed eval answer does not stop the job before the pass bar step (drive#1017)", () => {
+  const wf = read(".github/workflows/agent-eval.yml");
+  const exit = wf.search(/PROMPTFOO_FAILED_TEST_EXIT_CODE=0\b/);
+  const bar = wf.search(/- name: Score the held-out split against the pass bar/);
+  assert.notEqual(exit, -1, "the eval step sets PROMPTFOO_FAILED_TEST_EXIT_CODE to 0");
+  assert.notEqual(bar, -1, "the pass bar step exists");
+  assert.ok(exit < bar, "the bar step comes after the eval step that sets the exit code");
+});
