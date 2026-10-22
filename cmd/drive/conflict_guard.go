@@ -39,16 +39,15 @@ const conflictCopyLimit = 99
 const conflictStateFresh = 5 * time.Second
 
 type pendingSave struct {
-	hash            string
-	previous        string
-	stat            mountFileInfo
-	reason          string
-	reported        bool
-	polls           int
-	winPolls        int
-	byFingerprint   bool
-	hashFails       int
-	baselineUnknown bool
+	hash          string
+	previous      string
+	stat          mountFileInfo
+	reason        string
+	reported      bool
+	polls         int
+	winPolls      int
+	byFingerprint bool
+	hashFails     int
 }
 
 type conflictBackend interface {
@@ -126,11 +125,6 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			continue
 		}
 		if save, ok := g.seen[e.Name]; ok {
-			if save.baselineUnknown {
-				if previous, unknown, err := g.previousHash(ctx, b, e.Name, listings); err == nil {
-					save.previous, save.baselineUnknown = previous, unknown
-				}
-			}
 			if save.reason == "" && g.mountChanged(e.Name, save) {
 				if save.byFingerprint {
 					info, err := g.mountStat(e.Name)
@@ -305,11 +299,7 @@ func (g *conflictGuard) sight(ctx context.Context, b conflictBackend, name strin
 	if info.size > conflictProtectMax {
 		fp := fmt.Sprintf("size:%d:mtime:%d", info.size, info.modTime.UnixNano())
 		save := &pendingSave{hash: fp, stat: info, byFingerprint: true}
-		previous, unknown, err := g.previousHash(ctx, b, name, listings)
-		if err != nil {
-			return nil, ConflictSkip{}, err
-		}
-		save.previous, save.baselineUnknown = previous, unknown
+		save.previous = g.previousHash(ctx, b, name, listings)
 		return save, ConflictSkip{}, nil
 	}
 	hash, err := g.hashMountFile(name)
@@ -321,11 +311,7 @@ func (g *conflictGuard) sight(ctx context.Context, b conflictBackend, name strin
 		return nil, ConflictSkip{}, fmt.Errorf("conflict: read %s from the mount: %w", name, err)
 	}
 	save := &pendingSave{hash: hash, stat: info}
-	previous, unknown, err := g.previousHash(ctx, b, name, listings)
-	if err != nil {
-		return nil, ConflictSkip{}, err
-	}
-	save.previous, save.baselineUnknown = previous, unknown
+	save.previous = g.previousHash(ctx, b, name, listings)
 	return save, ConflictSkip{}, nil
 }
 
@@ -376,14 +362,6 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 	case landed == "" || landed == save.previous:
 		if save.polls >= conflictClaimPolls {
 			return true, nil, nil, nil
-		}
-		return false, nil, nil, nil
-	case save.baselineUnknown:
-		if save.polls >= conflictClaimPolls {
-			return true, &ConflictSkip{
-				Remote: name,
-				Reason: "the version before this save could not be read, so an overwrite could not be told apart",
-			}, nil, nil
 		}
 		return false, nil, nil, nil
 	default:
@@ -513,26 +491,26 @@ func (g *conflictGuard) mountChanged(name string, save *pendingSave) bool {
 	return !info.modTime.Equal(save.stat.modTime) || info.size != save.stat.size
 }
 
-func (g *conflictGuard) previousHash(ctx context.Context, b conflictBackend, name string, listings map[string]map[string]bool) (string, bool, error) {
+func (g *conflictGuard) previousHash(ctx context.Context, b conflictBackend, name string, listings map[string]map[string]bool) string {
 	if previous := g.synced[name]; previous != "" {
-		return previous, false, nil
+		return previous
 	}
 	present, err := g.parentListing(ctx, b, parentDir(name), listings)
 	if err != nil {
 		hash, herr := b.remoteHash(ctx, name)
 		if herr != nil {
-			return "", true, nil
+			return ""
 		}
-		return hash, false, nil
+		return hash
 	}
 	if !present[remoteBase(name)] {
-		return "", false, nil
+		return ""
 	}
 	hash, err := b.remoteHash(ctx, name)
 	if err != nil {
-		return "", true, nil
+		return ""
 	}
-	return hash, false, nil
+	return hash
 }
 
 func (g *conflictGuard) parentListing(ctx context.Context, b conflictBackend, dir string, listings map[string]map[string]bool) (map[string]bool, error) {
