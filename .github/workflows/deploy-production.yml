@@ -162,6 +162,7 @@ jobs:
         # returns to (docs/runbook.md has the steps; running one is Nish's).
         # A failed capture fails the deploy here, before any migration ran:
         # no restore point, no migration.
+        id: bookmark
         run: |
           headers="$RUNNER_TEMP/d1-headers"
           trap 'rm -f "$headers"' EXIT
@@ -240,6 +241,7 @@ jobs:
         # needs an Access service token (drive#520). Until that token is on
         # the production environment the health call is skipped with a
         # warning on the run, and the version check still gates.
+        id: smoke
         run: |
           vid=$(npx cf workers deployments list --worker drive-pricing --per-page 1 --quiet |
             node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")).deployments[0];process.stdout.write(d.versions.find((v)=>v.percentage===100)?.version_id??"")')

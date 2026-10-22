@@ -828,7 +828,7 @@ test("the agent eval runs on a clock with a pass bar, and the release reads its 
   );
   assert.match(
     wf,
-    /steps:\n\s+- uses: Nishfleet\/fleet-ops\/\.github\/actions\/runner-probe@/,
+    /steps:\n\s+- uses: Nishfleet\/fleet-ops\/\.github\/actions\/runner-probe@[0-9a-f]{40}/,
     "…and its first step checks the runner hides the paths it should",
   );
   assert.match(wf, /DRIVE_EVAL_SPLIT/, "…on the held-out split");

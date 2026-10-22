@@ -49,9 +49,8 @@ jobs:
         # repo: the split so the hill-climber (#223) cannot read it from a
         # checkout, the key so no secret sits in this file. The key is read
         # into the one env var the eval tools read and is never printed.
-        # The end-state suite runs in the stock container sandbox its
-        # compose.yaml declares; Inspect fails the run when Docker is broken
-        # instead of falling back to a shell on the host (drive#526).
+        # The end-state suite runs in its compose.yaml sandbox on the runner's rootless podman (DOCKER_HOST, fleet-ops#9983);
+        # Inspect fails the run when that engine is down instead of falling back to a shell on the host (drive#526).
         run: |
           OPENAI_API_KEY="$(<"$HOME/.config/fleet-ops/litellm-keys/worker")"
           export OPENAI_API_KEY
