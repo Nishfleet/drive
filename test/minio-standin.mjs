@@ -40,7 +40,7 @@ let signalHandlersInstalled = false;
 
 /** @param {{engine: string, name: string, volume: string}} container */
 function removeContainer(container) {
-  spawnSync(container.engine, ["rm", "-f", container.name], { stdio: "ignore" });
+  spawnSync(container.engine, ["rm", "-f", "-v", container.name], { stdio: "ignore" });
   spawnSync(container.engine, ["volume", "rm", "-f", container.volume], { stdio: "ignore" });
 }
 
@@ -207,7 +207,7 @@ export async function startMinioStandin({ name, environment, port }, t) {
     return null;
   }
   const volume = `${name}-data`;
-  spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
+  spawnSync(engine, ["rm", "-f", "-v", name], { stdio: "ignore" });
   spawnSync(engine, ["volume", "create", volume], { stdio: "ignore" });
   const tracked = { engine, name, volume };
   liveContainers.add(tracked);
