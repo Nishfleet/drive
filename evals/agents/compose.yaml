@@ -10,10 +10,12 @@
 # back to a shell on the host.
 #
 # `network_mode: host` puts the container on the host's loopback, which is
-# where the stand-in serves: the endpoint the prompt carries,
-# http://127.0.0.1:<port>, is the same host the eval process runs on.
-# RCLONE_BIN lets a host whose rclone lives elsewhere point at its binary;
-# the default is this VPS's own.
+# where the stand-in serves: the endpoint the prompt carries is
+# DRIVE_EVAL_SANDBOX_HOST (default 127.0.0.1) on that port. Under rootless
+# Docker that is 10.0.2.2, because the container's host network is rootlesskit's
+# own namespace and slirp4netns forwards the host's loopback there. RCLONE_BIN
+# lets a host whose rclone lives elsewhere point at its binary; the default is
+# this VPS's own.
 services:
   default:
     image: python:3.12-bookworm

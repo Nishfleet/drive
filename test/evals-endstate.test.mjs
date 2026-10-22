@@ -158,3 +158,53 @@ test("the agent's prompt carries the same docs and help the reading suite carrie
     assert.ok(!prompt.includes(leaked), `the prompt must not leak ${leaked} into the agent`);
   }
 });
+
+test("the container dials the stand-in at a configurable host, the grader stays on the host", () => {
+  const source = module();
+  // The stand-in binds the host's loopback and the grader reads it there, so a
+  // container engine whose "host" network is its own namespace cannot move the
+  // graded facts: the agent is given the port at another host, and the grader
+  // never follows it.
+  assert.match(source, /"127\.0\.0\.1:0"/, "the stand-in serves on the host's loopback");
+  assert.match(source, /f"http:\/\/127\.0\.0\.1:\{ports\[-1\]}"/, "the host endpoint is loopback");
+  const readBody = source.slice(source.indexOf("def read(self"), source.indexOf("def keys(self"));
+  assert.ok(
+    readBody.includes("self.endpoint"),
+    "a read of the account's bytes goes to the host endpoint",
+  );
+  const keysBody = source.slice(source.indexOf("def keys(self"), source.indexOf("def _rclone"));
+  assert.ok(keysBody.includes("self.endpoint"), "the whole inventory goes to the host endpoint");
+  // The container side is the same port at a host the environment names, and
+  // the default leaves a container that shares the host's network dialing
+  // 127.0.0.1 exactly as it did before the setting existed.
+  assert.match(
+    source,
+    /DRIVE_EVAL_SANDBOX_HOST"\) or "127\.0\.0\.1"/,
+    "the container host comes from the environment, defaulting to loopback",
+  );
+  assert.match(
+    source,
+    /def container_endpoint\(self\)[\s\S]*?rpartition\(":"\)/,
+    "the container endpoint keeps the server's own port",
+  );
+  // The prompt is the one channel the endpoint reaches the agent by, and the
+  // sample records what the agent was given. The scorer follows neither.
+  assert.match(
+    source,
+    /endpoint=standin\.container_endpoint\(\)/,
+    "the prompt carries the container endpoint",
+  );
+  assert.match(
+    source,
+    /"endpoint": standin\.container_endpoint\(\),/,
+    "the sample records the endpoint the agent was given",
+  );
+  const scorerBody = source.slice(
+    source.indexOf("async def score"),
+    source.indexOf("def expected_keys"),
+  );
+  assert.ok(
+    !scorerBody.includes("container_endpoint"),
+    "the grader never dials the container endpoint",
+  );
+});
