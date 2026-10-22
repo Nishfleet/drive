@@ -141,9 +141,10 @@ function configuredStorage() {
 
 /**
  * @param {string} dir
+ * @param {string} configPath the stand-in's own rclone config, outside `dir`
  * @returns {Promise<StorageCfg>}
  */
-async function startStandin(dir) {
+async function startStandin(dir, configPath) {
   const bucket = "bucket";
   await run("mkdir", ["-p", path.join(dir, bucket)]);
   const accessKey = "drive-standin-access-key";
@@ -152,9 +153,13 @@ async function startStandin(dir) {
   // only and requires none, so the mount carries this placeholder pair in the
   // 0600 config file below rather than in anyone's argv.
   const port = await freePort();
-  const server = spawnTracked(rcloneBin, ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`], {
-    stdio: ["ignore", "ignore", "pipe"],
-  });
+  const server = spawnTracked(
+    rcloneBin,
+    ["serve", "s3", dir, "--config", configPath, "--addr", `127.0.0.1:${port}`],
+    {
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
   let stderr = "";
   server.stderr?.on("data", (chunk) => {
     stderr += chunk;
@@ -787,9 +792,11 @@ async function proof(t, workDir) {
 
   /** @type {Measurement[]} */
   const measurements = [];
+  const configPath = path.join(workDir, "rclone-standin.conf");
+  await writeFile(configPath, "");
   let cfg = configuredStorage();
   if (!cfg) {
-    standin = await startStandin(path.join(workDir, "standin"));
+    standin = await startStandin(path.join(workDir, "standin"), configPath);
     cfg = standin;
   }
   t.diagnostic(`storage: ${cfg.source}`);
