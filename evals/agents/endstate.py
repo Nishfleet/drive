@@ -42,6 +42,7 @@ from __future__ import annotations
 import atexit
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -110,6 +111,10 @@ class Standin:
         # The log lives inside the stand-in's own directory, so two stand-ins
         # cannot read each other's port off a shared file.
         self.log_file = self.root / "rclone-serve.log"
+        self.config_dir = Path(tempfile.mkdtemp(prefix="drive-eval-rclone-config-"))
+        self.config_file = self.config_dir / "rclone.conf"
+        self.config_file.write_text("", encoding="utf-8")
+        atexit.register(shutil.rmtree, self.config_dir, ignore_errors=True)
         self.endpoint = ""
 
     def start(self) -> None:
@@ -127,6 +132,8 @@ class Standin:
                 "serve",
                 "s3",
                 str(self.root),
+                "--config",
+                str(self.config_file),
                 "--addr",
                 "127.0.0.1:0",
                 # The server's own directory cache: without zeroing it a
@@ -248,11 +255,16 @@ class Standin:
             f":s3:{target}",
             "--s3-provider=Other",
             f"--s3-endpoint={endpoint}",
+            "--config",
+            str(self.config_file),
         ]
 
     def close(self) -> None:
         if getattr(self, "proc", None) is not None and self.proc.poll() is None:
             self.proc.kill()
+        config_dir = getattr(self, "config_dir", None)
+        if config_dir is not None:
+            shutil.rmtree(config_dir, ignore_errors=True)
 
 
 # The stand-ins this process started, by account prefix, so a scorer can reach
