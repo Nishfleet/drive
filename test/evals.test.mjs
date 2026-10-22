@@ -823,8 +823,13 @@ test("the agent eval runs on a clock with a pass bar, and the release reads its 
   assert.match(wf, /workflow_dispatch:/, "…and can be run by hand before a release");
   assert.match(
     wf,
-    /runs-on: \[self-hosted, fleet-ci\]/,
-    "…on the fleet-ci runners, where the split, the key and docker live",
+    /runs-on: \{ group: drive-eval \}/,
+    "…on the drive-eval runner group, where the split, the key and a rootless container engine live",
+  );
+  assert.match(
+    wf,
+    /steps:\n\s+- uses: Nishfleet\/fleet-ops\/\.github\/actions\/runner-probe@/,
+    "…and its first step checks the runner hides the paths it should",
   );
   assert.match(wf, /DRIVE_EVAL_SPLIT/, "…on the held-out split");
   assert.match(wf, /HELDOUT_PASS_BAR/, "…with the pass bar named");
