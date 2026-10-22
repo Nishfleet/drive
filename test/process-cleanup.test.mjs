@@ -42,7 +42,7 @@ if (engine) {
   );
   if (started) container = name;
 }
-console.log(\`READY rclone=\${server.pid} container=\${container} dir=\${dir}\`);
+console.log(\`READY rclone=\${server.pid} container=\${container} dir=\${dir} config=\${configPath}\`);
 setInterval(() => {}, 1000);
 `;
 
@@ -99,6 +99,7 @@ test("a signalled test process leaves no container and no rclone serve behind", 
   // direct removal is the belt for a child that could not clean up itself.
   let rclonePid = 0;
   let container = "";
+  let configDir = "";
   t.after(async () => {
     if (typeof child.pid === "number" && alive(child.pid)) {
       child.kill("SIGTERM");
@@ -114,6 +115,7 @@ test("a signalled test process leaves no container and no rclone serve behind", 
       }
     }
     removeContainer(engine, container);
+    if (configDir) await rm(configDir, { recursive: true, force: true }).catch(() => {});
     await rm(workDir, { recursive: true, force: true });
   });
 
@@ -128,11 +130,11 @@ test("a signalled test process leaves no container and no rclone serve behind", 
 
   // The child reports the exact fixtures it owns, so the assertions below
   // check those, never whatever else the host happens to be running.
-  const ready = /READY rclone=(\d+) container=(\S*) dir=(\S+)/.exec(
+  const ready = /READY rclone=(\d+) container=(\S*) dir=(\S+) config=(\S+)/.exec(
     await new Promise((resolve, reject) => {
       const deadline = Date.now() + 120_000;
       const poll = setInterval(() => {
-        const match = /READY rclone=(\d+) container=(\S*) dir=(\S+)/.exec(stdout);
+        const match = /READY rclone=(\d+) container=(\S*) dir=(\S+) config=(\S+)/.exec(stdout);
         if (match) {
           clearInterval(poll);
           resolve(stdout);
@@ -153,6 +155,7 @@ test("a signalled test process leaves no container and no rclone serve behind", 
   assert.ok(ready, "the child test process reported its fixtures");
   rclonePid = Number(ready[1]);
   container = ready[2];
+  configDir = ready[4];
 
   // Not a vacuous pass: the fixtures exist before the signal.
   assert.equal(alive(rclonePid), true, "the stand-in server is running before the signal");
