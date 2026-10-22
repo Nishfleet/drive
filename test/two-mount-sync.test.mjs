@@ -226,9 +226,10 @@ function configuredStorage() {
 
 /**
  * @param {string} dir
+ * @param {string} configPath the stand-in's own rclone config, outside `dir`
  * @returns {Promise<StorageCfg>}
  */
-async function startStandin(dir) {
+async function startStandin(dir, configPath) {
   const bucket = "bucket";
   await run("mkdir", ["-p", path.join(dir, bucket)]);
   const accessKey = "drive-standin-access-key";
@@ -239,7 +240,17 @@ async function startStandin(dir) {
   const port = await freePort();
   const server = spawnTracked(
     rcloneBin,
-    ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`, "--auth-key", `${accessKey},${secretKey}`],
+    [
+      "serve",
+      "s3",
+      dir,
+      "--config",
+      configPath,
+      "--addr",
+      `127.0.0.1:${port}`,
+      "--auth-key",
+      `${accessKey},${secretKey}`,
+    ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
   let stderr = "";
@@ -430,9 +441,10 @@ async function stopMachine(m) {
  * @param {string} name
  * @param {number} seconds
  * @param {string} rcAddr
+ * @param {string} configPath
  * @returns {Promise<{seconds: number} | null>}
  */
-async function waitForFile(mountDir, name, seconds, rcAddr) {
+async function waitForFile(mountDir, name, seconds, rcAddr, configPath) {
   const deadline = Date.now() + seconds * 1000;
   const started = Date.now();
   for (;;) {
@@ -444,7 +456,7 @@ async function waitForFile(mountDir, name, seconds, rcAddr) {
     // a bare timeout that hides why the save never appeared (issue #541).
     // No fs= is passed: this machine has one mount, and rclone's vfs/refresh
     // uses the only active VFS when fs is absent (vfs/rc.go, getVFS).
-    await run(rcloneBin, ["rc", "--rc-addr", rcAddr, "vfs/refresh"]);
+    await run(rcloneBin, ["rc", "--rc-addr", rcAddr, "--config", configPath, "vfs/refresh"]);
     try {
       await stat(path.join(mountDir, name));
       return { seconds: (Date.now() - started) / 1000 };
@@ -492,13 +504,16 @@ async function proof(t, workDir) {
   };
   t.after(cleanup);
 
+  const configPath = path.join(workDir, "rclone-standin.conf");
+  await writeFile(configPath, "");
+
   // Two lines instead of one, so nothing runs inside the call to standin(): the
   // right-hand side can await, and an assignment inside a call reads like a
   // side effect the function might not perform (drive issue #92).
   /** @type {StorageCfg | null} */
   let cfg = configuredStorage();
   if (!cfg) {
-    standin = await startStandin(path.join(workDir, "standin"));
+    standin = await startStandin(path.join(workDir, "standin"), configPath);
     cfg = standin;
   }
 
@@ -516,7 +531,7 @@ async function proof(t, workDir) {
   // Direction 1: machine A saves, machine B sees the save.
   const savedAtA = new Date();
   await writeFile(path.join(a.mountDir, fromA), payload("a"));
-  const onB = await waitForFile(b.mountDir, fromA, PROPAGATION_SECONDS, b.rcAddr);
+  const onB = await waitForFile(b.mountDir, fromA, PROPAGATION_SECONDS, b.rcAddr, configPath);
   assert.ok(
     onB,
     `a save on machine A (${fromA}) never reached machine B within ${PROPAGATION_SECONDS}s`,
@@ -525,7 +540,7 @@ async function proof(t, workDir) {
   // Direction 2: machine B saves, machine A sees the save.
   const savedAtB = new Date();
   await writeFile(path.join(b.mountDir, fromB), payload("b"));
-  const onA = await waitForFile(a.mountDir, fromB, PROPAGATION_SECONDS, a.rcAddr);
+  const onA = await waitForFile(a.mountDir, fromB, PROPAGATION_SECONDS, a.rcAddr, configPath);
   assert.ok(
     onA,
     `a save on machine B (${fromB}) never reached machine A within ${PROPAGATION_SECONDS}s`,

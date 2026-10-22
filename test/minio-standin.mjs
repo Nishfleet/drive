@@ -134,7 +134,7 @@ export function spawnTracked(command, args, options = {}) {
 
 /** The pinned stock server; `DRIVE_STANDIN_IMAGE` replaces it. */
 export const MINIO_IMAGE =
-  process.env.DRIVE_STANDIN_IMAGE ?? "bitnamilegacy/minio:2025.7.23-debian-12-r5";
+  process.env.DRIVE_STANDIN_IMAGE ?? "docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5";
 
 /** @param {string} bin @param {string[]} args */
 function runs(bin, args) {

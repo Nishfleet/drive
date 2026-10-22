@@ -18,14 +18,20 @@ const STANDIN_MODULE = new URL("./minio-standin.mjs", import.meta.url).href;
 // path under test here.
 const CHILD = `
 import { spawnTracked, startMinioStandin, containerEngine } from ${JSON.stringify(STANDIN_MODULE)};
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const dir = await mkdtemp(join(tmpdir(), "drive-cleanup-"));
-const server = spawnTracked("rclone", ["serve", "s3", dir, "--addr", "127.0.0.1:0"], {
-  stdio: "ignore",
-});
+const configPath = join(await mkdtemp(join(tmpdir(), "drive-cleanup-config-")), "rclone.conf");
+await writeFile(configPath, "");
+const server = spawnTracked(
+  "rclone",
+  ["serve", "s3", dir, "--config", configPath, "--addr", "127.0.0.1:0"],
+  {
+    stdio: "ignore",
+  },
+);
 let container = "";
 const engine = containerEngine();
 if (engine) {

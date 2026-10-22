@@ -48,9 +48,17 @@ async function startLocalRclone(t, dir) {
   // No --auth-key: the shipped S3 store sends unsigned requests (the scoped,
   // signed adapter is issue #2), so an authenticated stand-in would refuse the
   // very requests this proof measures.
-  const server = spawn(LOCAL_RCLONE, ["serve", "s3", dir, "--addr", "127.0.0.1:0"], {
-    stdio: ["ignore", "ignore", "pipe"],
-  });
+  const configDir = await mkdtemp(path.join(tmpdir(), "drive-root-rclone-config-"));
+  const configPath = path.join(configDir, "rclone.conf");
+  await writeFile(configPath, "");
+  t.after(() => rm(configDir, { recursive: true, force: true }));
+  const server = spawn(
+    LOCAL_RCLONE,
+    ["serve", "s3", dir, "--config", configPath, "--addr", "127.0.0.1:0"],
+    {
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
   let stderr = "";
   server.stderr.on("data", (chunk) => {
     stderr += chunk;

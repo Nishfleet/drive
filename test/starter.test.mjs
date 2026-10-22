@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -368,12 +368,16 @@ test("the starter writes real files into a real S3 drive, read off the disk", as
     return;
   }
   const dir = await mkdtemp(path.join(tmpdir(), "drive-starter-"));
+  const configDir = await mkdtemp(path.join(tmpdir(), "drive-starter-config-"));
+  const configPath = path.join(configDir, "rclone.conf");
+  await writeFile(configPath, "");
   /** @type {import("node:child_process").ChildProcess | null} */
   let server = null;
   const cleanup = async () => {
     if (server?.exitCode === null || server?.exitCode === undefined) {
       killTracked(server);
     }
+    await rm(configDir, { recursive: true, force: true }).catch(() => {});
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   };
   t.after(cleanup);
@@ -381,9 +385,13 @@ test("the starter writes real files into a real S3 drive, read off the disk", as
   const bucket = "bucket";
   await mkdir(path.join(dir, bucket), { recursive: true });
   const port = await freePort();
-  server = spawnTracked(RCLONE, ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`], {
-    stdio: ["ignore", "ignore", "pipe"],
-  });
+  server = spawnTracked(
+    RCLONE,
+    ["serve", "s3", dir, "--config", configPath, "--addr", `127.0.0.1:${port}`],
+    {
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
   let stderr = "";
   server.stderr?.on("data", (chunk) => {
     stderr += chunk;
