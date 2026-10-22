@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -348,3 +349,104 @@ test("the container dials the stand-in at a configurable host, the grader stays 
     "the grader never dials the container endpoint",
   );
 });
+
+test("the stand-in's port comes from DRIVE_EVAL_STANDIN_PORT, defaulting to a random one", () => {
+  const source = module();
+  // Unset, empty or `0` keeps today's behaviour: the server picks a port and
+  // logs it, and every reader follows the log.
+  assert.match(source, /return "127\.0\.0\.1:0"/, "the default is the random port rclone logs");
+  // A port pins the server, because the eval runner's egress rule allows the
+  // engine to reach exactly that one loopback port and no other.
+  assert.match(
+    source,
+    /return f"127\.0\.0\.1:\{port\}"/,
+    "a given port is the addr the server is started at",
+  );
+  assert.match(
+    source,
+    /"--addr",\s*\n\s*STANDIN_ADDR/,
+    "the start command carries the resolved addr",
+  );
+  assert.match(source, /egress rule/, "the reason a port can be pinned is written down");
+  // Anything else must raise naming the variable, never fall back silently:
+  // a typo would start the server on a port the runner does not allow.
+  assert.match(
+    source,
+    /RuntimeError\(\s*\n\s*f?"DRIVE_EVAL_STANDIN_PORT/,
+    "a value that is not a port number raises naming the variable",
+  );
+  assert.match(
+    source,
+    /DRIVE_EVAL_STANDIN_PORT is out of range/,
+    "an out-of-range port raises naming the variable",
+  );
+});
+
+test("a pinned DRIVE_EVAL_STANDIN_PORT is the port the stand-in serves on", async (t) => {
+  if (!rcloneRuns()) return t.skip(`${RCLONE} is not installed`);
+  const python = "evals/agents/.venv/bin/python";
+  if (!existsSync(new URL(`../${python}`, import.meta.url))) {
+    return t.skip(`${python} is not installed`);
+  }
+
+  const work = await mkdtemp(path.join(tmpdir(), "drive-eval-standin-port-"));
+  t.after(async () => {
+    await rm(work, { recursive: true, force: true });
+  });
+  const driver = [
+    "import importlib.util, json, sys",
+    'spec = importlib.util.spec_from_file_location("endstate", "evals/agents/endstate.py")',
+    "module = importlib.util.module_from_spec(spec)",
+    'sys.modules["endstate"] = module',
+    "spec.loader.exec_module(module)",
+    "standin = module.Standin()",
+    "account = standin.account()",
+    "standin.start()",
+    'read = standin.read(account, "notes/todo.txt")',
+    "standin.close()",
+    "print(json.dumps({",
+    '    "addr": module.STANDIN_ADDR,',
+    '    "endpoint": standin.endpoint,',
+    '    "read": read,',
+    "}))",
+  ].join("\n");
+
+  // A pinned port: the server serves exactly on it, and the grader reads the
+  // seeded bytes there.
+  const port = await freePort();
+  const { status, stdout, stderr } = spawnSync(python, ["-c", driver], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...hiddenHome(work), DRIVE_EVAL_STANDIN_PORT: String(port) },
+    encoding: "utf8",
+    timeout: 120_000,
+  });
+  const said = stdout.trim();
+  assert.equal(status, 0, `the stand-in served on the pinned port: ${said} ${stderr}`);
+  const proof = JSON.parse(said.slice(said.indexOf("{")));
+  assert.equal(proof.addr, `127.0.0.1:${port}`, "the resolved addr is the pinned port");
+  assert.equal(proof.endpoint, `http://127.0.0.1:${port}`, "the server logged the pinned port");
+  assert.equal(proof.read, "buy a plane ticket\n", "the grader reads the seeded bytes back");
+
+  // A value that is not a port fails the run at start-up, naming the
+  // variable, instead of falling back to a random port.
+  const bad = spawnSync(python, ["-c", driver], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, DRIVE_EVAL_STANDIN_PORT: "not-a-port" },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  assert.notEqual(bad.status, 0, "a value that is not a port number fails the run");
+  assert.match(bad.stderr, /DRIVE_EVAL_STANDIN_PORT/, "the failure names the variable");
+});
+
+/** @returns {Promise<number>} A loopback port that was free a moment ago. */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = /** @type {import("node:net").AddressInfo} */ (server.address());
+      server.close(() => resolve(port));
+    });
+  });
+}

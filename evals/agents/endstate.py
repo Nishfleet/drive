@@ -32,7 +32,10 @@ The endpoint the prompt carries is that port at `DRIVE_EVAL_SANDBOX_HOST`
 (default `127.0.0.1`): the agent dials it from inside the container, and a
 rootless container engine's `host` network is its own namespace, where the
 host's loopback is 10.0.2.2 rather than 127.0.0.1. The grader keeps the
-host's loopback either way.
+host's loopback either way. The stand-in's own port comes from
+`DRIVE_EVAL_STANDIN_PORT` (default `0`, a random port), pinned only where the
+eval runner's egress rule allows the engine to reach exactly one loopback
+port.
 
 Run it with the suite's one command, `npm run eval:agents`.
 """
@@ -74,6 +77,37 @@ SEED = {
     "notes/todo.txt": "buy a plane ticket\n",
     "photos/keep.txt": "the only copy of this photo\n",
 }
+
+
+def standin_addr() -> str:
+    """The `--addr` the stand-in serves on, from `DRIVE_EVAL_STANDIN_PORT`.
+
+    Unset, empty or `0` keeps `127.0.0.1:0`, the random port the server logs
+    and every reader follows off that log. A number 1..65535 pins the server
+    to that port. Anything else raises instead of falling back: a typo must
+    not start the server somewhere the runner does not allow.
+    """
+    raw = (os.environ.get("DRIVE_EVAL_STANDIN_PORT") or "").strip()
+    if raw in ("", "0"):
+        return "127.0.0.1:0"
+    try:
+        port = int(raw)
+    except ValueError:
+        raise RuntimeError(
+            f"DRIVE_EVAL_STANDIN_PORT is not a port number: {raw!r}"
+        ) from None
+    if not 1 <= port <= 65535:
+        raise RuntimeError(
+            f"DRIVE_EVAL_STANDIN_PORT is out of range 1..65535: {raw!r}"
+        )
+    return f"127.0.0.1:{port}"
+
+
+# A pinned port exists for the eval runner: its egress rule allows the engine
+# to reach exactly that one loopback port and no other. Default `0` keeps a
+# random port. Resolved once here, so a bad value fails the run at start-up,
+# before any sample runs.
+STANDIN_ADDR = standin_addr()
 
 
 def rendered_docs() -> str:
@@ -135,7 +169,7 @@ class Standin:
                 "--config",
                 str(self.config_file),
                 "--addr",
-                "127.0.0.1:0",
+                STANDIN_ADDR,
                 # The server's own directory cache: without zeroing it a
                 # listing (and a read of a file written after the cache
                 # filled) can be up to five minutes stale, so a write an

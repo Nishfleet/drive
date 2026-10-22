@@ -158,7 +158,10 @@ this stand-in cannot carry, and it is why the check above is a prefix check.
 Inspect's Docker sandbox (`sandbox=("docker", "compose.yaml")`, the
 `compose.yaml` beside this file): each sample works in its own stock
 `python:3.12-bookworm` container, with `rclone` bind-mounted read-only, and
-the stand-in reached over the host network. The grader runs on the host and
+the stand-in reached over the host network. The stand-in's own port comes
+from `DRIVE_EVAL_STANDIN_PORT` (default `0`, a random port the server logs),
+pinned only where the eval runner's egress rule allows the engine to reach
+exactly one loopback port. The grader runs on the host and
 reads the stand-in there on purpose — the container is the agent's machine,
 and the grader must not take the agent's word for the account's state. When
 Docker is broken the run fails (`inspect` refuses to fall back to a shell on
