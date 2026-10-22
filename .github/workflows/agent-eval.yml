@@ -26,7 +26,7 @@ concurrency:
 jobs:
   held-out:
     name: held-out split and pass bar
-    runs-on: [self-hosted, Linux, X64] # the split and the worker key are on these runners only
+    runs-on: [self-hosted, fleet-ci] # the split and the worker key are on the fleet-ci runners only; the other runners have no docker
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

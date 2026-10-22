@@ -823,8 +823,8 @@ test("the agent eval runs on a clock with a pass bar, and the release reads its 
   assert.match(wf, /workflow_dispatch:/, "…and can be run by hand before a release");
   assert.match(
     wf,
-    /runs-on: \[self-hosted, Linux, X64\]/,
-    "…on the own runners, where the split and the key live",
+    /runs-on: \[self-hosted, fleet-ci\]/,
+    "…on the fleet-ci runners, where the split, the key and docker live",
   );
   assert.match(wf, /DRIVE_EVAL_SPLIT/, "…on the held-out split");
   assert.match(wf, /HELDOUT_PASS_BAR/, "…with the pass bar named");
