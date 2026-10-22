@@ -768,9 +768,14 @@ test("the end-state suite runs in the stock container sandbox and survives a rea
     /sandbox=\("docker", "compose\.yaml"\)/,
     "the agent's shell runs in Inspect's Docker sandbox",
   );
-  assert.ok(
-    !py.includes("DRIVE_EVAL_SANDBOX"),
-    "no sandbox override: a broken Docker fails the run instead of falling back",
+  // The one `DRIVE_EVAL_SANDBOX*` name this module may read is the host the
+  // container dials the stand-in at. Any other name of that shape is a sandbox
+  // override, and a broken Docker must fail the run instead of falling back to
+  // a shell on the host.
+  assert.deepEqual(
+    [...new Set([...py.matchAll(/DRIVE_EVAL_SANDBOX[A-Z_]*/g)].map((found) => found[0]))],
+    ["DRIVE_EVAL_SANDBOX_HOST"],
+    "the only sandbox setting is the host the container dials, never an override",
   );
   assert.match(
     py,
@@ -813,6 +818,14 @@ test("the end-state suite runs in the stock container sandbox and survives a rea
     JSON.stringify(svc.volumes ?? []),
     /rclone:ro/,
     "rclone is bind-mounted read-only onto the container's PATH",
+  );
+  // How the container reaches the stand-in is a setting on the eval side (the
+  // host in the prompt), not a second network in this file: the container
+  // stays on the host's loopback and rootlesskit forwards it.
+  assert.match(
+    read("evals/agents/compose.yaml"),
+    /DRIVE_EVAL_SANDBOX_HOST/,
+    "the compose file names the endpoint host setting the prompt carries",
   );
 });
 

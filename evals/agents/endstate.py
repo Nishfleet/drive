@@ -28,6 +28,12 @@ and a broken Docker fails the run instead of falling back to a host shell
 purpose: the container is the agent's machine, and the grader must not take
 the agent's word for the account's state.
 
+The endpoint the prompt carries is that port at `DRIVE_EVAL_SANDBOX_HOST`
+(default `127.0.0.1`): the agent dials it from inside the container, and a
+rootless container engine's `host` network is its own namespace, where the
+host's loopback is 10.0.2.2 rather than 127.0.0.1. The grader keeps the
+host's loopback either way.
+
 Run it with the suite's one command, `npm run eval:agents`.
 """
 
@@ -53,6 +59,14 @@ from inspect_ai.tool import bash
 
 ROOT = Path(__file__).resolve().parent
 BUCKET = "drive"
+# The host the agent's container reaches the stand-in at. The eval process and
+# the grader stay on the host's own loopback; the agent's shell runs in a
+# container, and a rootless container engine puts that container's `host`
+# network inside its own namespace, where the host's loopback answers on
+# 10.0.2.2 and not on 127.0.0.1. The port is the stand-in's own either way, so
+# this changes only the name the prompt carries. Unset keeps 127.0.0.1, which
+# is what a container sharing the host's network outright needs.
+SANDBOX_HOST = os.environ.get("DRIVE_EVAL_SANDBOX_HOST") or "127.0.0.1"
 # The account prefix is the product's own layout: one folder for the account
 # id under `u/`, exactly what src/files.js pins into every storage key.
 SEED = {
@@ -150,6 +164,17 @@ class Standin:
             time.sleep(0.2)
         self.close()
         raise RuntimeError(f"rclone serve s3 never answered in {deadline_seconds}s")
+
+    def container_endpoint(self) -> str:
+        """The same stand-in, at the host the agent's container reaches it by.
+
+        The port is the one this server logged, so the stand-in is never
+        reconfigured: only the host in front of it changes, and that host comes
+        from `DRIVE_EVAL_SANDBOX_HOST`. The grader keeps `self.endpoint`, on
+        the host's loopback, because it reads the stand-in from the host.
+        """
+        _, _, port = self.endpoint.rpartition(":")
+        return f"http://{SANDBOX_HOST}:{port}"
 
     def _server_log(self) -> str:
         try:
@@ -380,11 +405,11 @@ def dataset_from(entries: list[dict[str, Any]], standin: Standin) -> MemoryDatas
     resolved by `endstate_entries`.
     """
     # Every sample's seeded files are written before the stand-in serves them,
-    # and the endpoint the prompt carries is the one the server logs. The
-    # account list is built in the same loop, so it cannot drift from the
-    # entries the second loop walks. _SETUP remembers each task's own file so
-    # the grader's inventory check holds the bucket to exactly what this run
-    # created — no more, no less.
+    # and the endpoint the prompt carries is the logged port at the host the
+    # agent's container reaches it by. The account list is built in the same
+    # loop, so it cannot drift from the entries the second loop walks. _SETUP
+    # remembers each task's own file so the grader's inventory check holds the
+    # bucket to exactly what this run created — no more, no less.
     accounts: list[str] = []
     for entry in entries:
         account = standin.account()
@@ -404,7 +429,7 @@ def dataset_from(entries: list[dict[str, Any]], standin: Standin) -> MemoryDatas
         meta: dict[str, Any] = {
             "account": account,
             "grader": entry["grader"],
-            "endpoint": standin.endpoint,
+            "endpoint": standin.container_endpoint(),
             "bucket": BUCKET,
             "prefix": f"u/{account}",
             "source": entry["source"],
@@ -416,7 +441,7 @@ def dataset_from(entries: list[dict[str, Any]], standin: Standin) -> MemoryDatas
         samples.append(
             Sample(
                 input=AGENT_PROMPT.format(
-                    endpoint=standin.endpoint,
+                    endpoint=standin.container_endpoint(),
                     bucket=BUCKET,
                     prefix=f"u/{account}",
                     docs=rendered_docs(),
