@@ -58,7 +58,7 @@ const containerPresent = (engine, name) =>
 
 /** @param {string|null} engine @param {string} name */
 const removeContainer = (engine, name) => {
-  if (engine && name) spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
+  if (engine && name) spawnSync(engine, ["rm", "-f", "-v", name], { stdio: "ignore" });
 };
 
 /**
