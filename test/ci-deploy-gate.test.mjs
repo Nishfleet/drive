@@ -16,6 +16,22 @@ const onBlock = (text) => {
   return text.slice(start, start + 1 + end);
 };
 
+/** @param {string} name */
+const deployStep = (name) => {
+  const start = DEPLOY.indexOf(`- name: ${name}`);
+  assert.ok(start !== -1, `deploy-production.yml has a step named ${name}`);
+  const rest = DEPLOY.slice(start + 1);
+  const next = rest.search(/\n {6}- name: /);
+  return next === -1 ? DEPLOY.slice(start) : DEPLOY.slice(start, start + 1 + next);
+};
+
+/** @param {string} step */
+const stepRun = (step) => {
+  const body = /run: \|\n((?: {10}.*\n)+)/.exec(step);
+  assert.ok(body, "the step has a run block");
+  return body[1].replace(/^ {10}/gm, "");
+};
+
 test("ci.yml runs on merge_group so the main merge queue gets verify and go", () => {
   const on = onBlock(CI);
   assert.match(on, /^ {2}merge_group:\s*$/m);
@@ -72,6 +88,30 @@ test("the deploy ships only a commit that is main's head and passed CI", () => {
   assert.match(DEPLOY, /test "\$SHA" = "\$head"/);
   assert.match(DEPLOY, /--workflow CI --branch main --commit "\$SHA" --status success/);
   assert.match(DEPLOY, /^ {2}actions: read/m);
+});
+
+// drive#1046: the guard read the run list for a fact the trigger already
+// carried, and the list API answers 0 for a run it holds about a quarter of
+// the time (16 of 60 calls on a run 20 minutes old). A deploy failed 14
+// seconds after CI went green, and the red-main sweep filed it as a red main.
+// A push now proves CI green from the workflow_run payload, which is GitHub's
+// record of the very run that fired the deploy; only a start by hand reads the
+// list, because no trigger carries the answer for it, and that read retries.
+test("a push proves CI green from the trigger, and only a hand start reads the run list", () => {
+  const shell = stepRun(deployStep("Ship only a CI-green main head"));
+  const pushed = shell.slice(
+    shell.indexOf('if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]'),
+    shell.indexOf("\nelse"),
+  );
+  assert.doesNotMatch(pushed, /gh (run list|api)/, "the trigger carries the proof");
+  const byHand = shell.slice(shell.indexOf("\nelse"));
+  assert.match(
+    byHand,
+    /gh run list .*--workflow CI --branch main --commit "\$SHA" --status success/,
+  );
+  assert.match(byHand, /for attempt in/, "a hand start waits for the index to catch up");
+  assert.match(byHand, /sleep 5/);
+  assert.match(shell, /test "\$proven" = yes \|\| \{ echo "::error::CI has not passed on \$SHA"/);
 });
 
 test("the site Worker names storagebun.com and keeps the workers.dev address on", () => {

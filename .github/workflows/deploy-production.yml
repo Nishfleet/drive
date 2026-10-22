@@ -60,11 +60,31 @@ jobs:
         # ship. The commit must still be main's head, and CI must have passed
         # on it. A stale commit stops here, because the newer commit's own CI
         # run deploys that one.
+        #
+        # A push takes the proof from the trigger: the workflow_run payload is
+        # GitHub's own record of the CI run that fired this workflow, and the
+        # job's `if` above already required that run's conclusion to be success
+        # and its event to be a push. Asking the run list for the same fact is
+        # what reddened main (drive#1046): `gh run list --workflow CI --branch
+        # main --commit <sha> --status success` answered 0 for a run it held
+        # about a quarter of the time, so a deploy failed 14 seconds after CI
+        # went green. Only a start by hand reads the list, because no trigger
+        # carries the answer, and it retries while the index catches up.
         run: |
           head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
           test "$SHA" = "$head" || { echo "::error::$SHA is no longer main's head ($head)"; exit 1; }
-          green=$(gh run list -R "$GITHUB_REPOSITORY" --workflow CI --branch main --commit "$SHA" --status success --json databaseId --jq length)
-          test "$green" -gt 0 || { echo "::error::CI has not passed on $SHA"; exit 1; }
+          proven=no
+          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
+            proven=yes
+          else
+            for attempt in 1 2 3 4 5 6 7 8; do
+              green=$(gh run list -R "$GITHUB_REPOSITORY" --workflow CI --branch main --commit "$SHA" --status success --limit 1 --json databaseId --jq length)
+              if [ "$green" -gt 0 ]; then proven=yes; break; fi
+              echo "CI's green run on $SHA is not in the run list yet (attempt $attempt of 8); waiting 5s"
+              sleep 5
+            done
+          fi
+          test "$proven" = yes || { echo "::error::CI has not passed on $SHA"; exit 1; }
           echo "shipping $SHA: main head, CI passed"
         env:
           GH_TOKEN: ${{ github.token }}
