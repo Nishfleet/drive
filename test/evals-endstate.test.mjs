@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
 /** @param {string} path @returns {string} */
@@ -8,6 +11,7 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 
 const MODULE = "evals/agents/endstate.py";
 const module = () => read(MODULE);
+const RCLONE = process.env.DRIVE_STANDIN_RCLONE ?? "rclone";
 
 test("the end-state slice runs on Inspect, pinned, in its own venv", () => {
   const requirements = read("evals/agents/requirements.txt");
@@ -144,6 +148,142 @@ test("the grader reads a real inventory and fails closed when it cannot", () => 
   // The held-out split reaches this suite by the same setting as the reader.
   assert.match(source, /DRIVE_EVAL_SPLIT/, "the task file follows the split setting");
 });
+
+test("the stand-in carries its own rclone config, never the host user's", async (t) => {
+  const source = module();
+  assert.match(
+    source,
+    /self\.config_file = self\.config_dir \/ "rclone\.conf"/,
+    "the stand-in owns one config path, outside the tree it serves",
+  );
+  assert.match(
+    source,
+    /self\.config_file\.write_text\("", encoding="utf-8"\)/,
+    "the stand-in's config is empty, so no host remote reaches the run",
+  );
+  const callSites = [...source.matchAll(/^\s*"rclone",$/gm)].length;
+  const configs = [...source.matchAll(/"--config",\s*\n\s*str\(self\.config_file\)/g)].length;
+  assert.equal(callSites, 2, "the module runs rclone from exactly two places");
+  assert.equal(configs, callSites, "every one of them is told the stand-in's config");
+  assert.match(
+    source,
+    /atexit\.register\(shutil\.rmtree, self\.config_dir/,
+    "the config does not outlive the run",
+  );
+
+  if (!rcloneRuns()) return t.skip(`${RCLONE} is not installed`);
+
+  const work = await mkdtemp(path.join(tmpdir(), "drive-eval-hidden-rclone-"));
+  const home = path.join(work, "home");
+  const hidden = path.join(home, ".config", "rclone");
+  await mkdir(hidden, { recursive: true });
+  await writeFile(path.join(hidden, "rclone.conf"), "this file is not a config\n");
+  await chmod(hidden, 0o000);
+  t.after(async () => {
+    await chmod(hidden, 0o700).catch(() => {});
+    await rm(work, { recursive: true, force: true });
+  });
+
+  const served = path.join(work, "standin");
+  await mkdir(path.join(served, "drive"), { recursive: true });
+  const hostLog = path.join(work, "host.log");
+  const hostRun = spawnSync(
+    RCLONE,
+    ["serve", "s3", served, "--addr", "127.0.0.1:0", "--log-file", hostLog],
+    { env: hiddenHome(home), timeout: 30_000 },
+  );
+  const hostText = await readFile(hostLog, "utf8").catch(() => "");
+  assert.notEqual(
+    hostRun.status,
+    0,
+    "an rclone on the host's config never serves, which is the red main this guards (drive#1045)",
+  );
+  assert.ok(
+    hostText.includes(path.join(hidden, "rclone.conf")),
+    `the host's own config file is what it stops on: ${hostText}`,
+  );
+});
+
+test("a stand-in starts, lists and reads with the host config hidden", async (t) => {
+  if (!rcloneRuns()) return t.skip(`${RCLONE} is not installed`);
+  const python = "evals/agents/.venv/bin/python";
+  if (!existsSync(new URL(`../${python}`, import.meta.url))) {
+    return t.skip(`${python} is not installed`);
+  }
+
+  const work = await mkdtemp(path.join(tmpdir(), "drive-eval-standin-hidden-"));
+  const home = path.join(work, "home");
+  const hidden = path.join(home, ".config", "rclone");
+  await mkdir(hidden, { recursive: true });
+  await writeFile(path.join(hidden, "rclone.conf"), "this file is not a config\n");
+  await chmod(hidden, 0o000);
+  t.after(async () => {
+    await chmod(hidden, 0o700).catch(() => {});
+    await rm(work, { recursive: true, force: true });
+  });
+
+  const driver = [
+    "import importlib.util, json, sys",
+    "from pathlib import Path",
+    'spec = importlib.util.spec_from_file_location("endstate", "evals/agents/endstate.py")',
+    "module = importlib.util.module_from_spec(spec)",
+    'sys.modules["endstate"] = module',
+    "spec.loader.exec_module(module)",
+    "standin = module.Standin()",
+    "account = standin.account()",
+    "standin.start()",
+    "keys = sorted(standin.keys())",
+    'read = standin.read(account, "notes/todo.txt")',
+    "config_dir = str(standin.config_dir)",
+    "standin.close()",
+    "print(json.dumps({",
+    '    "endpoint": standin.endpoint,',
+    '    "account": account,',
+    '    "keys": keys,',
+    '    "read": read,',
+    '    "config_dir_after_close": Path(config_dir).exists(),',
+    "}))",
+  ].join("\n");
+  const { status, stdout, stderr } = spawnSync(python, ["-c", driver], {
+    cwd: new URL("..", import.meta.url),
+    env: hiddenHome(home),
+    encoding: "utf8",
+    timeout: 120_000,
+  });
+  const said = stdout.trim();
+  assert.equal(status, 0, `the stand-in ran with the host config hidden: ${said} ${stderr}`);
+  const proof = JSON.parse(said.slice(said.indexOf("{")));
+  assert.match(proof.endpoint, /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.deepEqual(proof.keys, [
+    `u/${proof.account}/notes/todo.txt`,
+    `u/${proof.account}/photos/keep.txt`,
+  ]);
+  assert.equal(proof.read, "buy a plane ticket\n", "the grader reads the seeded bytes back");
+  assert.equal(proof.config_dir_after_close, false, "the stand-in's config goes with it");
+});
+
+/** @returns {boolean} */
+function rcloneRuns() {
+  try {
+    execFileSync(RCLONE, ["version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The host user's environment, with HOME moved onto the hidden config and
+ * no override rclone would read first, so a run sees what the eval runner sees.
+ * @param {string} home @returns {NodeJS.ProcessEnv}
+ */
+function hiddenHome(home) {
+  /** @type {NodeJS.ProcessEnv} */
+  const env = { ...process.env, HOME: home };
+  delete env.RCLONE_CONFIG;
+  delete env.XDG_CONFIG_HOME;
+  return env;
+}
 
 test("the agent's prompt carries the same docs and help the reading suite carries", () => {
   const source = module();
