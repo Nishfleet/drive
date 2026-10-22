@@ -29,7 +29,7 @@ jobs:
     runs-on: { group: drive-eval } # one runner holds the split and the worker key, with its own rootless podman (fleet-ops#9983)
     timeout-minutes: 120
     steps:
-      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@aa0e7948a4ba39f2a80183cf038f169c742c7221 # main
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@aa0e7948a4ba39f2a80183cf038f169c742c7221 # fleet-ops main, merge of #9989
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
