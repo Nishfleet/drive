@@ -127,8 +127,8 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		}
 		if save, ok := g.seen[e.Name]; ok {
 			if save.baselineUnknown {
-				if previous, unknown, err := g.previousHash(ctx, b, e.Name, listings); err == nil {
-					save.previous, save.baselineUnknown = previous, unknown
+				if previous, known := g.rereadBaseline(ctx, b, e.Name, listings); known {
+					save.previous, save.baselineUnknown = previous, false
 				}
 			}
 			if save.reason == "" && g.mountChanged(e.Name, save) {
@@ -378,14 +378,6 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 			return true, nil, nil, nil
 		}
 		return false, nil, nil, nil
-	case save.baselineUnknown:
-		if save.polls >= conflictClaimPolls {
-			return true, &ConflictSkip{
-				Remote: name,
-				Reason: "the version before this save could not be read, so an overwrite could not be told apart",
-			}, nil, nil
-		}
-		return false, nil, nil, nil
 	default:
 		if save.byFingerprint {
 			g.synced[name] = landed
@@ -533,6 +525,20 @@ func (g *conflictGuard) previousHash(ctx context.Context, b conflictBackend, nam
 		return "", true, nil
 	}
 	return hash, false, nil
+}
+
+func (g *conflictGuard) rereadBaseline(ctx context.Context, b conflictBackend, name string, listings map[string]map[string]bool) (string, bool) {
+	if previous := g.synced[name]; previous != "" {
+		return previous, true
+	}
+	present, err := g.parentListing(ctx, b, parentDir(name), listings)
+	if err != nil {
+		return "", false
+	}
+	if present[remoteBase(name)] {
+		return "", false
+	}
+	return "", true
 }
 
 func (g *conflictGuard) parentListing(ctx context.Context, b conflictBackend, dir string, listings map[string]map[string]bool) (map[string]bool, error) {

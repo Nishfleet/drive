@@ -119,35 +119,11 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mountB, name), []byte(bodyB), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(90 * time.Second)
-	conflict := ConflictName(name, "mac")
-	for time.Now().Before(deadline) {
-		_, errA := os.Stat(filepath.Join(mountA, conflict))
-		_, errB := os.Stat(filepath.Join(mountB, conflict))
-		if errA == nil && errB == nil {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	if _, err := os.Stat(filepath.Join(mountA, conflict)); err != nil {
-		t.Fatalf("neither save survived: %s never appeared on device A", conflict)
-	}
-	gotB, err := os.ReadFile(filepath.Join(mountB, name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(gotB) != bodyB {
-		t.Errorf("the plain file is %q, want the save that landed later (%q)", gotB, bodyB)
-	}
-	for _, dir := range []string{mountA, mountB} {
-		got, err := os.ReadFile(filepath.Join(dir, conflict))
-		if err != nil {
-			t.Fatalf("conflict copy missing on %s: %v", dir, err)
-		}
-		if string(got) != bodyA {
-			t.Errorf("conflict copy on %s is %q, want the earlier save", dir, got)
-		}
-	}
+	rcAClient := rcClientForTestHome(t, homeA, rcA, RemoteFor(cfg))
+	rcBClient := rcClientForTestHome(t, homeB, rcB, RemoteFor(cfg))
+	releaseSavesTogether(t, rcAClient, rcBClient, name)
+	conflict := proveBothSavesKept(t, root, cfg, rcAClient, rcBClient, mountA, mountB, name, bodyA, bodyB,
+		[]string{ConflictName(name, "mac"), ConflictName(name, "linux")})
 
 	pin := filepath.Join(mountA, "pinned.txt")
 	if err := os.WriteFile(pin, []byte("kept offline through the installed unit\n"), 0o644); err != nil {
@@ -170,5 +146,5 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 	if string(got) != "kept offline through the installed unit\n" {
 		t.Errorf("pinned file = %q", got)
 	}
-	t.Logf("installed unit: conflict=%s, pinned file stayed cached after storage stopped", conflict)
+	t.Logf("installed unit: plain=%s, conflict=%s, both saves kept, pinned file stayed cached after storage stopped", name, conflict)
 }
