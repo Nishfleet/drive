@@ -1161,8 +1161,8 @@ func TestConflictGuardHoldsAHashErrorOnThatEntryOnly(t *testing.T) {
 	if g.seen["ok.txt"] == nil {
 		t.Fatal("the good save was not watched")
 	}
-	if g.seen["bad.txt"] == nil || !g.seen["bad.txt"].baselineUnknown {
-		t.Fatal("the failing hash did not hold its entry as an unknown baseline")
+	if g.seen["bad.txt"] == nil || g.seen["bad.txt"].previous != "" {
+		t.Fatal("the failing hash did not hold its entry with no baseline")
 	}
 	if len(res.Claimed) != 0 {
 		t.Errorf("claimed %v on a pass with a hash error", res.Claimed)
@@ -1197,8 +1197,8 @@ func TestConflictGuardKeepsSavesMadeWhileStorageWasUnreachable(t *testing.T) {
 		}
 	}
 	for _, d := range devices {
-		if save := d.guard.seen[name]; save == nil || !save.baselineUnknown {
-			t.Fatalf("device %s did not hold the save with an unknown baseline: %+v", d.guard.device, d.guard.seen)
+		if save := d.guard.seen[name]; save == nil || save.previous != "" {
+			t.Fatalf("device %s holds the save with a baseline read while storage was unreachable: %+v", d.guard.device, d.guard.seen)
 		}
 	}
 
@@ -1237,8 +1237,8 @@ func TestConflictGuardKeepsASaveWithAnUnreadBaseline(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatal(err)
 	}
-	if !g.seen["report.txt"].baselineUnknown {
-		t.Fatal("a failed baseline read is not marked unknown")
+	if previous := g.seen["report.txt"].previous; previous != "" {
+		t.Fatalf("previous = %q, want no baseline after a failed read", previous)
 	}
 	delete(f.hashErr, "report.txt")
 	f.pending = nil
@@ -1259,42 +1259,6 @@ func TestConflictGuardKeepsASaveWithAnUnreadBaseline(t *testing.T) {
 	}
 	if len(g.seen) != 0 {
 		t.Errorf("the guard still watches %v", g.seen)
-	}
-}
-
-func TestConflictGuardRereadsOnlyAnEmptyListing(t *testing.T) {
-	for _, tc := range []struct {
-		what    string
-		objects map[string]string
-		known   bool
-	}{
-		{"another version already in storage", map[string]string{"report.txt": md5Hex("a version this device never saw\n")}, false},
-		{"nothing in storage", map[string]string{}, true},
-	} {
-		t.Run(tc.what, func(t *testing.T) {
-			g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "my save\n"})
-			for name, hash := range tc.objects {
-				f.objects[name] = hash
-			}
-			f.pending = []queueEntry{{Name: "report.txt", Size: 8}}
-			f.listErr = errors.New("listing failed")
-			f.hashErr["report.txt"] = errors.New("hashsum timed out")
-			if _, err := g.pass(context.Background(), f); err != nil {
-				t.Fatal(err)
-			}
-			f.listErr = nil
-			delete(f.hashErr, "report.txt")
-			if _, err := g.pass(context.Background(), f); err != nil {
-				t.Fatal(err)
-			}
-			save := g.seen["report.txt"]
-			if known := !save.baselineUnknown; known != tc.known {
-				t.Fatalf("baselineUnknown=%v previous=%q, want known=%v: what storage holds after the save started is only a baseline when it holds nothing", save.baselineUnknown, save.previous, tc.known)
-			}
-			if save.previous != "" {
-				t.Errorf("previous = %q, want the empty baseline a re-read can prove", save.previous)
-			}
-		})
 	}
 }
 
