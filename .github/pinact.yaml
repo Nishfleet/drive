@@ -4,9 +4,9 @@ version: 3
 ignore_actions:
   # Workflows and actions from the fleet-ops repo are left as they are. The runner group
   # that serves agent jobs allows only fleet-ops workflows called at main, so a SHA pin
-  # would leave those jobs queued. Refs that are already SHA-pinned stay as they are too.
+  # would leave those jobs queued. Only the main ref is exempt; any other fleet-ops ref is still pinned.
   - name: Nishfleet/fleet-ops/.*
-    ref: .*
+    ref: main
   # docker:// refs are digest-pinned already and are not GitHub refs.
   - name: docker://.*
     ref: .*
