@@ -113,3 +113,24 @@ the commits a PR adds are scanned, so old history cannot fail a PR. The job is
 - The rules file is not named `.gitleaks.toml` on purpose, because gitleaks loads
   that name by itself and the full-history scans would start failing on old
   commits.
+- `test/private-detail-rules.test.mjs` holds each rule to known-bad samples it
+  must catch and clean samples it must leave alone.
+
+## Auto-merge
+
+`.github/workflows/auto-merge-arm.yml` arms auto-merge on every non-draft
+pull request when it opens, opens from a draft (`ready_for_review`) or is
+pushed to, so it lands the moment the required checks pass. The required checks (and the merge queue, where one
+exists) stay the only quality gate. It arms under the nishfleet-worker App
+installation token, not GITHUB_TOKEN, so a merge still fires the push
+workflows on `main`. When the App secrets are unset the job exits green with
+a notice, and the PR's opener arms it or a human presses the merge button.
+
+- Opt out one pull request: open it as a draft, add the `no-auto-merge`
+  label, or put `[no-merge]` in the title.
+- Switch it off: delete `.github/workflows/auto-merge-arm.yml` and merge.
+  Pull requests then wait for their opener or a human to arm or merge them.
+
+`test/auto-merge-arm.test.mjs` holds the workflow to this shape: the
+trigger list (`opened`, `ready_for_review`, `synchronize`), the three
+opt-out conditions, the empty permission block and the App-token mint.
