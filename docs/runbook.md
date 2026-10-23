@@ -134,6 +134,17 @@ resume. A paused monitor opens an issue after two missed windows (about two
 hours for the hourly meter) — pause or delete the matching monitor too if
 the pause is deliberate.
 
+## Switch the weekly backup off
+
+- Stop the schedule only: delete the `- cron: "37 5 * * 1"` line from
+  `.github/workflows/d1-export.yml` and merge through CI. `workflow_dispatch`
+  stays, so a restore drill still starts a backup by hand.
+- Stop it completely: delete `.github/workflows/d1-export.yml` and merge
+  through CI.
+- Keep the `AGE_RECIPIENT` repository variable either way: it is the backup
+  key's public half, and a backup turned back on later fails loud without it
+  rather than shipping plaintext dumps.
+
 ## The Access service token and the uptime monitors
 
 The site sits behind Cloudflare Access (drive#159), so `/api/health` needs a

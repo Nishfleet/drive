@@ -27,6 +27,22 @@ with write access here, and how each download that CI executes is pinned
 - **What limits the risk.** Both repositories are private, both `main`
   branches are protected, and fleet-ops is Nish's own repository.
 
+## Switching the dispatch stub off
+
+Delete `.github/workflows/agent-dispatch.yml` and merge to turn off
+everything. fleet-ops' own workflows keep running on fleet-ops; nothing
+reaches this repository. To turn off only the hourly sweep, delete the two
+`schedule:` lines and its comment (the `- cron: '17 * * * *'` entry) from the
+stub and merge: every event trigger stays.
+
+`test/dispatch-stub.test.mjs` holds the stub to this documented boundary:
+
+- The stub declares exactly these triggers: `issues`, `issue_comment`,
+  `workflow_dispatch`, `pull_request_target`, `workflow_run`, `schedule`.
+- The stub grants the called workflow: `issues: write`, `pull-requests: write`,
+  `contents: write`, `actions: read`, `checks: read`, `statuses: read`. The
+  caller itself holds `contents: read`.
+
 ## Downloads that CI runs
 
 Every release asset a workflow downloads is checked against a SHA-256 digest
