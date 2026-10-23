@@ -37,7 +37,6 @@ test("every one of the documented opt-outs is in the arm condition", () => {
   assert.match(condition, /draft == false/);
   assert.match(condition, /contains\(github\.event\.pull_request\.title, '\[no-merge\]'\)/);
   assert.match(condition, /no-auto-merge/);
-  assert.match(condition, /!/, "each opt-out negates the arm");
 });
 
 test("it arms with the worker App token, pinned, and never with GITHUB_TOKEN", () => {

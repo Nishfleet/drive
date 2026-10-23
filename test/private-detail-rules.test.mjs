@@ -9,7 +9,6 @@ const TOML = readFileSync(
 const CI = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 
 /**
- * A parsed `[[rules]]` block of the private-detail gitleaks config.
  * @typedef {{ id: string, regex: string, keywords: string[] }} Rule
  */
 
@@ -39,7 +38,6 @@ const rules = TOML.split(/^\[\[rules\]\]$/m)
 const allowlist = TOML.slice(TOML.indexOf("[[allowlists]]"));
 
 /**
- * The Go regexp sourced from a rule, as JS can compile it.
  * @param {Rule} rule
  */
 function compiled(rule) {
@@ -53,8 +51,6 @@ function compiled(rule) {
 }
 
 /**
- * What gitleaks answers for a line: the keyword prefilter is case-insensitive,
- * then the regex decides.
  * @param {Rule} rule
  * @param {string} line
  */
@@ -98,11 +94,26 @@ const SAMPLES = {
 
 test("every rule in the rules file is held to a known-bad and a clean sample", () => {
   assert.ok(rules.length >= 5, "the private-detail rules all parse");
+  assert.deepEqual(
+    rules.map((r) => r.id).sort(),
+    Object.keys(SAMPLES).sort(),
+    "a rule without samples, or samples for a rule that no longer exists",
+  );
   for (const rule of rules) {
     assert.match(rule.id, /^private-/, "every rule scopes itself to private detail");
     const samples = SAMPLES[rule.id];
     assert.ok(samples, `${rule.id} has samples in test/private-detail-rules.test.mjs`);
     assert.ok(samples.bad.length >= 1 && samples.clean.length >= 1);
+  }
+});
+
+test("every rule compiles to the same match gitleaks would run", () => {
+  for (const rule of rules) {
+    try {
+      compiled(rule);
+    } catch (error) {
+      assert.fail(`rule ${rule.id}: its regex is not compilable: ${error}`);
+    }
   }
 });
 

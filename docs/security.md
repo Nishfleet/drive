@@ -43,6 +43,10 @@ stub and merge: every event trigger stays.
   `contents: write`, `actions: read`, `checks: read`, `statuses: read`. The
   caller itself holds `contents: read`.
 
+The un-pinned `@main` call means the fleet-ops `main` of the moment decides
+what runs here — its own merge gates are the review, as "Who can write here"
+above states.
+
 ## Downloads that CI runs
 
 Every release asset a workflow downloads is checked against a SHA-256 digest

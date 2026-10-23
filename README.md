@@ -119,8 +119,8 @@ the commits a PR adds are scanned, so old history cannot fail a PR. The job is
 ## Auto-merge
 
 `.github/workflows/auto-merge-arm.yml` arms auto-merge on every non-draft
-pull request when it opens or is pushed to, so it lands the moment the
-required checks pass. The required checks (and the merge queue, where one
+pull request when it opens, opens from a draft (`ready_for_review`) or is
+pushed to, so it lands the moment the required checks pass. The required checks (and the merge queue, where one
 exists) stay the only quality gate. It arms under the nishfleet-worker App
 installation token, not GITHUB_TOKEN, so a merge still fires the push
 workflows on `main`. When the App secrets are unset the job exits green with
