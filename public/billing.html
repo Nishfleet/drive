@@ -41,6 +41,8 @@ h1 {
 
 .lede { max-width: 60ch; color: var(--ink-soft); }
 
+.lede-wide { max-width: none; }
+
 section { padding: clamp(28px, 5vh, 48px) 0 0; }
 
 h2 {
@@ -315,7 +317,7 @@ h2 {
   <main>
     <section aria-labelledby="billing-heading">
       <h1 id="billing-heading">Billing</h1>
-      <p class="lede">
+      <p class="lede lede-wide">
         Your balance, what to top up, a receipt for every top-up, and how the
         bill is worked out.
       </p>
@@ -360,6 +362,7 @@ h2 {
       <h2 id="peak-heading">What you pay for</h2>
       <p class="lede" id="peak-explain">You pay for the biggest size your drive reached in the last 30 days. That size stays billed until the date it was reached drops out of the 30 days.</p>
       <p class="hint" id="peak-cap-line"></p>
+      <div class="balance-slot">
       <div class="status" id="peak-status" role="status" aria-live="polite" hidden></div>
       <p><button type="button" id="peak-retry" hidden class="btn">Try again</button></p>
       <div id="peak-body" hidden>
@@ -391,6 +394,7 @@ h2 {
           </div>
         </dl>
         <dl class="readout" id="bill-lines" hidden></dl>
+      </div>
       </div>
     </section>
     <noscript>
