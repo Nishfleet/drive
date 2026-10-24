@@ -118,19 +118,19 @@ the commits a PR adds are scanned, so old history cannot fail a PR. The job is
 
 ## Auto-merge
 
-`.github/workflows/auto-merge-arm.yml` arms auto-merge on every non-draft
-pull request when it opens, opens from a draft (`ready_for_review`) or is
-pushed to, so it lands the moment the required checks pass. The required checks (and the merge queue, where one
-exists) stay the only quality gate. It arms under the nishfleet-worker App
-installation token, not GITHUB_TOKEN, so a merge still fires the push
-workflows on `main`. When the App secrets are unset the job exits green with
-a notice, and the PR's opener arms it or a human presses the merge button.
-
-- Opt out one pull request: open it as a draft, add the `no-auto-merge`
-  label, or put `[no-merge]` in the title.
-- Switch it off: delete `.github/workflows/auto-merge-arm.yml` and merge.
-  Pull requests then wait for their opener or a human to arm or merge them.
-
-`test/auto-merge-arm.test.mjs` holds the workflow to this shape: the
-trigger list (`opened`, `ready_for_review`, `synchronize`), the three
-opt-out conditions, the empty permission block and the App-token mint.
+- The fleet dispatch arms auto-merge on an agent-authored claim pull request (a
+  `claim/issue-<n>` branch) only when every changed file is on its allowlist and
+  the head's required checks are not red, and it re-arms on the next hourly sweep
+  if arming failed. It arms under the worker App token, not GITHUB_TOKEN, so a
+  merge still fires the push workflows on `main`.
+- A claim pull request that touches a path outside the allowlist is labelled
+  `needs-coordinator` and held unarmed until the dispatch's `review-risky`
+  coordinator review approves and arms the exact head. The dispatch does not read
+  the old `no-auto-merge` label or a `[no-merge]` title; to hold a claim pull
+  request by hand, a person disarms it and adds `needs-coordinator`, which the
+  hourly sweep then leaves unarmed.
+- Only a `claim/issue-<n>` branch is ever armed: a renamed branch, or a pull
+  request an agent opens from any other branch, is never armed. Every merge goes
+  through the merge queue and the required checks (`docs/runbook.md` lists them).
+- Any other pull request (a person's, or Dependabot's) is armed by a person:
+  press the merge button, or run `gh pr merge <n> --auto --squash`.

@@ -18,9 +18,6 @@ const DEPLOY_SECRETS = new Set([
 ]);
 // Every other secret a workflow may read, and why it is not environment-bound.
 const OTHER_SECRETS = new Set([
-  // The worker App arms auto-merge on every PR, so it runs on PR branches.
-  "NISHFLEET_WORKER_APP_ID",
-  "NISHFLEET_WORKER_PRIVATE_KEY",
   // GitHub's own per-run token, not a stored secret.
   "GITHUB_TOKEN",
   // Release pipeline (drive#509). The release workflow only runs on v* tags,
