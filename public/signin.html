@@ -275,7 +275,6 @@ const OFFLINE_MESSAGE = "You look offline. Check your connection and try again."
 const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
 const CLOSED_MESSAGE = "Signing in is not open yet. Join the waitlist, and your first email will carry a sign-in link.";
 
-// A good link is /api/signin/verify?token=…
 const LINK_FAILED_MESSAGE = "That link did not work. Ask for a new one from the sign-in page.";
 const errorParam = new URLSearchParams(window.location.search).get("error");
 if (errorParam === "invalid-link" || errorParam === "no-token") {

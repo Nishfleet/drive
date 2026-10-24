@@ -1157,11 +1157,12 @@ test("the email-failed words are the message table's, once", () => {
 
 test("the sign-in link is at the path the page and the email name", async () => {
   assert.equal(SIGNIN_LINK_PATH, "/api/signin/verify");
-  assert.match(
-    page,
-    new RegExp(SIGNIN_LINK_PATH.replace(/\//g, "\\/")),
-    "the page knows where a failed link lands",
-  );
+  for (const error of ["invalid-link", "no-token"]) {
+    assert.ok(
+      page.includes(`errorParam === "${error}"`),
+      `the page answers the ${error} redirect the verify route sends`,
+    );
+  }
 });
 
 test("the verify route is GET only, and a link without a token answers the screen", async () => {

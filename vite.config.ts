@@ -452,7 +452,7 @@ function staticFirstRunShell(): Plugin {
           (step) => `        <li><h3>${text(step.title)}</h3><p>${text(step.body)}</p></li>`,
         ).join("\n");
         const withSteps = html.replace(
-          '      <ol class="steps" id="steps">\n        <!-- Filled by get-started.js from core/status.js -->\n      </ol>',
+          '      <ol class="steps" id="steps">\n      </ol>',
           `      <ol class="steps" id="steps">\n${steps}\n      </ol>`,
         );
         const withCommand = withSteps.replace(
