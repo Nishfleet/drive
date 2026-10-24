@@ -2,18 +2,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 const ACCESS_LOGIN = /^https:\/\/(nish345|storagebun)\.cloudflareaccess\.com\//;
-const WORKERS_DEV = "https://drive-pricing.nishant345.workers.dev/";
 const CUSTOM = "https://storagebun.com/";
 
 /** @param {string} url */
 const probe = (url) =>
   fetch(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(10_000) });
 
-test("workers.dev still sends a stranger to the Access sign-in", async () => {
-  const res = await probe(WORKERS_DEV);
-  assert.equal(res.status, 302, `workers.dev answered ${res.status}`);
+test("storagebun.com sends a stranger to the Access sign-in", async () => {
+  const res = await probe(CUSTOM);
+  assert.equal(res.status, 302, `storagebun.com answered ${res.status}`);
   const location = res.headers.get("location");
-  assert.ok(location, "workers.dev 302 must name the Access host");
+  assert.ok(location, "storagebun.com 302 must name the Access host");
   assert.match(location, ACCESS_LOGIN);
 });
 

@@ -210,25 +210,30 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Check the site stayed private
-        # The workers.dev address sits behind Cloudflare Access until drive
-        # has a domain (cloudflare.config.ts). A stranger must get a redirect
+        # The site answers only on storagebun.com, behind Cloudflare Access
+        # (cloudflare.config.ts). A stranger must get a redirect
         # to the Access sign-in, never the site. The redirect must go to our
         # own Access team host exactly, so a lookalike URL cannot pass
         # (drive #159).
         run: |
-          out=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/)
-          echo "workers.dev answered: ${out%%\?*}"
+          out=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://storagebun.com/)
+          echo "storagebun.com answered: ${out%%\?*}"
           case "$out" in
             "302 https://nish345.cloudflareaccess.com/"* | "302 https://storagebun.cloudflareaccess.com/"*) ;;
             *) echo "::error::the site is reachable without the Access sign-in"; exit 1 ;;
           esac
           # The api family is behind the same gate (drive#342): /v1/* on the
           # site redirects to Access, and drive-api has no address of its own.
-          v1=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/v1/health)
+          v1=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://storagebun.com/v1/health)
           echo "/v1/health answered: ${v1%%\?*}"
           case "$v1" in
             "302 https://nish345.cloudflareaccess.com/"* | "302 https://storagebun.cloudflareaccess.com/"*) ;;
             *) echo "::error::the api family is reachable without the Access sign-in"; exit 1 ;;
+          esac
+          pricing=$(curl -s -o /dev/null -w '%{http_code}' https://drive-pricing.nishant345.workers.dev/ || true)
+          echo "drive-pricing workers.dev answered: $pricing"
+          case "$pricing" in
+            200 | 302) echo "::error::drive-pricing still has a public workers.dev address"; exit 1 ;;
           esac
           api=$(curl -s -o /dev/null -w '%{http_code}' https://drive-api.nishant345.workers.dev/v1/health)
           echo "drive-api workers.dev answered: $api"
@@ -257,7 +262,7 @@ jobs:
           (umask 077 && printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' \
             "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$headers")
           body=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors -H "@$headers" \
-            https://drive-pricing.nishant345.workers.dev/api/health) || { echo "::error::/api/health did not answer 200"; exit 1; }
+            https://storagebun.com/api/health) || { echo "::error::/api/health did not answer 200"; exit 1; }
           printf '%s' "$body" | node -e 'if(JSON.parse(require("fs").readFileSync(0,"utf8")).ok!==true)process.exit(1)' ||
             { echo "::error::/api/health is not ok: $body"; exit 1; }
           echo "health ok"
