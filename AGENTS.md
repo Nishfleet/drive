@@ -31,6 +31,15 @@ A Finder drive for people and their agents: plain files in object storage, mount
 - The Cloudflare Web Analytics beacon is a build-time setting, not a Worker secret: `DRIVE_CF_BEACON_TOKEN` (the dashboard's 32-hex token) puts one deferred script in the six pages' `<head>` while `npm run build` emits them, and an unset setting leaves those pages byte for byte as they ship (`src/analytics.js`, `test/web-analytics.test.mjs`). It is a variable, not a secret: the token is in every visitor's HTML.
 - To see only failures, pipe through `grep -E "^not ok|^# (pass|fail)"`.
 
+## Run it and prove it
+
+Live: https://storagebun.com. It stays private until launch, so every path, health included, answers 302 to the Cloudflare Access sign-in for anyone outside the account (`cloudflare.config.ts`, "All traffic").
+
+- Prove the wall: `node --test test/access-wall.test.mjs`. It asks the workers.dev hostname and storagebun.com for the site as a stranger, and fails a 200 from either. Run it after a change to the routes or the Access policy.
+- Prove the Worker: `curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://storagebun.com/api/health` prints `302` and an `https://<account>.cloudflareaccess.com/` URL. A `200` means the site is open to strangers before launch, which is the failure. A `522` or `525` means the zone or the Worker is down, which is also a failure.
+- The route is `/api/health` (`HEALTH_PATH` in `src/health.js`), served by the site Worker. It answers `{"ok":true}` when every required binding answers inside `HEALTH_TIMEOUT_MS`, and `503 {"ok":false,"failing":"<binding>"}` otherwise, so the body names the binding to look at. `test/health.test.mjs` proves both answers.
+- Test login: none. There is no seeded account or demo password, and the Access sign-in is not the product's sign-in.
+
 ## Known Worker secrets
 
 Declared `bindings.secret()` names in `cloudflare.config.ts`. A PR that adds one lists it under 'Secrets to set' and stays draft until it is set on drive-pricing.
