@@ -1,4 +1,3 @@
-// The prepaid pause at $0, applied to the account's keys.
 import { usageSummary } from "./billing-report.js";
 import { applyCapSwap, capSwapPlan } from "./cap.js";
 import { balanceCents } from "./ledger.js";

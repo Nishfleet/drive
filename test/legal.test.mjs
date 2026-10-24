@@ -18,6 +18,7 @@ import {
   SUPPORT_EMAIL,
   SUPPORT_PATH,
 } from "../core/legal.js";
+import { prepaidSwapPlan } from "../core/prepaid-pause.js";
 import { PREPAID, PRICE } from "../core/pricing.js";
 import { HIDDEN_VERSION_DAYS } from "../core/s3.js";
 import { absoluteUrl, PAGES } from "../core/seo.js";
@@ -171,7 +172,11 @@ test("the terms pin the balance pause, the low-balance email, and the 30-day not
   const terms = legalText("terms.html");
   assert.match(terms, new RegExp(`falls to \\$${PREPAID.lowBalanceUsd}`));
   assert.match(terms, /At \$0, uploads pause/);
-  assert.ok(readRepo("core/prepaid-pause.js").includes("The prepaid pause at $0"));
+  const paused = prepaidSwapPlan(
+    [{ keyId: "k", kind: "device", prefix: "u/a/", capabilities: ["list", "read", "write"] }],
+    true,
+  );
+  assert.equal(paused.state, "read_only", "at $0 the keys swap to read-only, so uploads pause");
   assert.match(terms, /at least 30 days before the new price applies/);
   assert.match(terms, /at least 30 days before they apply/);
 });
