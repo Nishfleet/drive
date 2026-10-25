@@ -165,12 +165,13 @@ service token before any monitor can reach it:
    `"ok":true`: Access answers a dead or missing token with a 302 redirect,
    which counts as down.
 
-Two tokens, one job each. Both are scoped to `/api/health` only, so neither
-can open the drive itself, and a leaked monitor token is revoked and
-replaced on its own, without touching the deploy smoke's credentials or
-deploying anything (review finding on PR #697). The storage-event webhook
-carries a service token of its own, scoped to its path only - see
-"Registering a bucket's storage notifications" below.
+Two tokens for the health check, one job each. Both are scoped to
+`/api/health` only, so neither can open the drive itself, and a leaked
+monitor token is revoked and replaced on its own, without touching the
+deploy smoke's credentials or deploying anything (review finding on PR
+#697). The storage-event webhook carries a third service token of its own,
+scoped to its path only, for the same reason - see "Registering a bucket's
+storage notifications" below.
 
 ## The merge gate: required checks and the ratchet
 
@@ -210,21 +211,23 @@ operator steps below run in this order:
    (Access → Applications → the self-hosted app for the host the rule posts
    to: `storagebun.com`, and the workers.dev app while that address stays
    on), add a service-token policy scoped to the `/api/storage-events/*`
-   path, and send that token in the rule's `CF-Access-Client-Id` and
-   `CF-Access-Client-Secret` headers. Create a token for this path, or extend
-   a service token whose policies have no other job. A wildcard path does not
+   path - create it, or extend an existing service-token policy that already
+   covers this path - and put a token whose only policy is this one in the
+   rule's `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers, in the
+   provider's console on the rule from step 2. A wildcard path does not
    cover its parent, so a rule on the bare `/api/storage-events` door needs
    the `/api/storage-events` path too (Cloudflare One, "Application paths").
    Nothing in this repo applies an Access policy, and the
    `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` values the deploy reads
    are the health probe's, so this step is Nish's, in the dashboard, once per
-   app. Confirm it through the wall: make the post in the next step with the
-   token in those two headers and no browser, and expect `{"ok":true,...}`.
-   A `302` to `https://<account>.cloudflareaccess.com/` is the policy not
-   matching this path, and the provider retries that redirect and drops the
-   event.
+   app. Confirm it through the wall: the post in the next step carries this
+   token in the two headers and no browser, and a `{"ok":true,...}` answer
+   is the policy matching. A `302` to
+   `https://<account>.cloudflareaccess.com/` is the policy not matching this
+   path, and the provider retries that redirect and drops the event.
 4. Confirm it: post one signed event (headers `webhook-id`,
-   `webhook-timestamp`, `webhook-signature` from `core/topup.js` `signWebhook`;
+   `webhook-timestamp`, `webhook-signature` from `core/topup.js` `signWebhook`,
+   plus `CF-Access-Client-Id` and `CF-Access-Client-Secret` from step 3;
    body the fixture in `test/storage-events-signed.test.mjs`, a create with
    `eventName`, `keyName` `u/<account>/notes.md`, and `bucket` that account's
    own name) and expect `{"ok":true,"stored":1,"deduped":0,"enqueued":1}`.
