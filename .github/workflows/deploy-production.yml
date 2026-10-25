@@ -4,12 +4,12 @@
 # red (CI run 37254363049 failed, deploy 37254362979 on 2f62b7a succeeded).
 # GitHub's `workflow_run` on CI's conclusion is the stock gate: the job runs
 # only when CI on a main push succeeded, and it ships the commit CI tested
-# without re-running CI, rolling the Worker back when the live check fails.
+# without re-running CI. It builds, ships, checks the live Worker version and
+# health, and rolls the Worker version back when that check fails.
 #
 # drive#132: the old caller pointed at nish3451/shared-workflows (archived),
 # which had no deploy target for drive and waited on every main-SHA check, so
-# merging never shipped the site. This is the plain deploy job 0509 already
-# runs, adapted to drive's `cf` CLI (`cloudflare.config.ts`).
+# merging never shipped the site. This is 0509's plain deploy job, on `cf`.
 name: Deploy production
 
 # zizmor's dangerous-triggers flags workflow_run because a fork's PR run can

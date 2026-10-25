@@ -89,9 +89,9 @@ test("the deploy ships only a commit that is main's head and passed CI", () => {
 
 // drive#1046: GitHub's run index lagged behind a completed CI run about a
 // quarter of the time, so the step read "0 successful runs" and failed a push
-// 14 seconds after CI went green (deploy 37254362979's class of failure). The
-// job's `if:` already requires a successful push run, so the step must not
-// read the run list on that path at all; only a start by hand still reads it.
+// 14 seconds after CI went green. The job's `if:` already requires a
+// successful push run, so the step must not read the run list on that path at
+// all; only a start by hand still reads it.
 test("a push trigger ships without reading CI's run list", (t) => {
   const shell = stepRun("- name: Ship only a CI-green main head");
   const dir = mkdtempSync(join(tmpdir(), "ci-deploy-gate-"));
@@ -132,6 +132,13 @@ test("a push trigger ships without reading CI's run list", (t) => {
   const hand = run({ GITHUB_EVENT_NAME: "workflow_dispatch" });
   assert.equal(hand.out.status, 0, hand.out.stderr);
   assert.match(hand.calls, /run list/, "a start by hand still reads the run list");
+
+  // An event name this step does not know, an unset one included, takes the
+  // same branch: the run-list read stays the default, so a new trigger cannot
+  // ship on an unproven commit.
+  const other = run({ GITHUB_EVENT_NAME: "pull_request" });
+  assert.equal(other.out.status, 0, other.out.stderr);
+  assert.match(other.calls, /run list/, "an unknown trigger still reads the run list");
 
   const red = run({ GITHUB_EVENT_NAME: "workflow_dispatch", GREEN: "0" });
   assert.equal(red.out.status, 1);
