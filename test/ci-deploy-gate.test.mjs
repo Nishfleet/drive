@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { HEALTH_PATH } from "../src/health.js";
 
@@ -8,6 +11,16 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 
 const CI = read(".github/workflows/ci.yml");
 const DEPLOY = read(".github/workflows/deploy-production.yml");
+
+/** The `run: |` body of one step, dedented. @param {string} name */
+const stepRun = (name) => {
+  const start = DEPLOY.indexOf(name);
+  assert.ok(start !== -1, `step missing: ${name}`);
+  const block = DEPLOY.slice(start, DEPLOY.indexOf("\n      - name:", start + 1));
+  const body = /\n {8}run: \|\n((?: {10}.*\n)+)/.exec(block)?.[1];
+  assert.ok(body, `step has no run block: ${name}`);
+  return body.replace(/^ {10}/gm, "");
+};
 
 /** The top-level `on:` block of a workflow. @param {string} text */
 const onBlock = (text) => {
@@ -72,6 +85,61 @@ test("the deploy ships only a commit that is main's head and passed CI", () => {
   assert.match(DEPLOY, /test "\$SHA" = "\$head"/);
   assert.match(DEPLOY, /--workflow CI --branch main --commit "\$SHA" --status success/);
   assert.match(DEPLOY, /^ {2}actions: read/m);
+});
+
+// drive#1046: GitHub's run index lagged behind a completed CI run about a
+// quarter of the time, so the step read "0 successful runs" and failed a push
+// 14 seconds after CI went green (deploy 37254362979's class of failure). The
+// job's `if:` already requires a successful push run, so the step must not
+// read the run list on that path at all; only a start by hand still reads it.
+test("a push trigger ships without reading CI's run list", (t) => {
+  const shell = stepRun("- name: Ship only a CI-green main head");
+  const dir = mkdtempSync(join(tmpdir(), "ci-deploy-gate-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // A `gh` that records every call and answers the two reads this step makes:
+  // main's head, and the successful-run count for a hand start.
+  const gh = join(dir, "gh");
+  writeFileSync(
+    gh,
+    '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$1" = api ]; then printf "%s\\n" "$HEAD"; else printf "%s\\n" "$GREEN"; fi\n',
+  );
+  chmodSync(gh, 0o755);
+  /** @param {Record<string, string>} extra */
+  const run = (extra) => {
+    const calls = join(dir, `calls-${Math.random().toString(36).slice(2)}`);
+    const out = spawnSync("bash", ["-e"], {
+      input: shell,
+      env: {
+        PATH: `${dir}:${process.env.PATH}`,
+        CALLS: calls,
+        HEAD: "aaa111",
+        GREEN: "1",
+        GITHUB_REPOSITORY: "Nishfleet/drive",
+        SHA: "aaa111",
+        ...extra,
+      },
+      encoding: "utf8",
+    });
+    return { out, calls: existsSync(calls) ? readFileSync(calls, "utf8") : "" };
+  };
+
+  const pushed = run({ GITHUB_EVENT_NAME: "workflow_run" });
+  assert.equal(pushed.out.status, 0, pushed.out.stderr);
+  assert.match(pushed.calls, /commits\/main/, "the head check still runs on a push");
+  assert.doesNotMatch(pushed.calls, /run list/, "a push trigger reads no run list");
+  assert.match(pushed.out.stdout, /shipping aaa111: main head, CI passed/);
+
+  const hand = run({ GITHUB_EVENT_NAME: "workflow_dispatch" });
+  assert.equal(hand.out.status, 0, hand.out.stderr);
+  assert.match(hand.calls, /run list/, "a start by hand still reads the run list");
+
+  const red = run({ GITHUB_EVENT_NAME: "workflow_dispatch", GREEN: "0" });
+  assert.equal(red.out.status, 1);
+  assert.match(red.out.stdout, /CI has not passed on aaa111/);
+
+  const stale = run({ GITHUB_EVENT_NAME: "workflow_run", SHA: "bbb222" });
+  assert.equal(stale.out.status, 1);
+  assert.match(stale.out.stdout, /bbb222 is no longer main's head/);
 });
 
 test("the site Worker names storagebun.com and keeps the workers.dev address on", () => {
