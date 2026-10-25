@@ -16,9 +16,6 @@ and the point where the decision is Nish's.
    curl -sS https://storagebun.com/api/health
    ```
 
-   Until nameservers point at Cloudflare, the live URL is still
-   `https://drive-pricing.nishant345.workers.dev/api/health` (behind Access).
-
    A response other than 200, or `ok:false`, is the start of an incident. The
    `failing` name is the first stopped dependency, never a secret, a query or a
    stack.
@@ -47,8 +44,8 @@ and the point where the decision is Nish's.
   keeps the error.
 - **Access.** The site stays behind Cloudflare Access until launch (drive#870).
   A stranger reaching the site instead of the Access sign-in is an incident
-  in itself (drive#159). That covers the workers.dev address now, and
-  storagebun.com once the hostname answers.
+  in itself (drive#159). Access covers storagebun.com; the workers.dev
+  address is off (audit item C3), so a 200 from it is an incident too.
 
 ## Roll back
 
