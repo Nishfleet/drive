@@ -35,7 +35,7 @@ A Finder drive for people and their agents: plain files in object storage, mount
 
 Live: https://storagebun.com. It stays private until launch, so every path, health included, answers 302 to the Cloudflare Access sign-in for anyone outside the account (`cloudflare.config.ts`, "All traffic").
 
-- Prove the wall: `node --test test/access-wall.test.mjs`. It asks the workers.dev hostname and storagebun.com for the site as a stranger, and fails a 200 from either. Run it after a change to the routes or the Access policy.
+- Prove the wall: `node --test test/access-wall.test.mjs`. It asks storagebun.com as a stranger and requires the 302 to the Access sign-in; the workers.dev addresses are off (audit item C3), and the deploy check fails a 200 or a 302 from either. Run it after a change to the routes or the Access policy.
 - Prove the Worker: `curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://storagebun.com/api/health` prints `302` and an `https://<account>.cloudflareaccess.com/` URL. A `200` means the site is open to strangers before launch, which is the failure. A `522` or `525` means the zone or the Worker is down, which is also a failure.
 - The route is `/api/health` (`HEALTH_PATH` in `src/health.js`), served by the site Worker. It answers `{"ok":true}` when every required binding answers inside `HEALTH_TIMEOUT_MS`, and `503 {"ok":false,"failing":"<binding>"}` otherwise, so the body names the binding to look at. `test/health.test.mjs` proves both answers.
 - Test login: none. There is no seeded account or demo password, and the Access sign-in is not the product's sign-in.

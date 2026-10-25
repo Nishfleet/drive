@@ -152,8 +152,7 @@ service token before any monitor can reach it:
 
 1. Zero Trust → Access → Service Auth → Service Tokens: create one token.
 2. Give it an Access policy on the self-hosted app for the
-   `storagebun.com` hostname (and keep the existing workers.dev app until
-   that hostname answers), scoped to the `/api/health` path only, so the
+   `storagebun.com` hostname, scoped to the `/api/health` path only, so the
    token cannot open the drive itself.
 3. Set the token's id and secret as `CF_ACCESS_CLIENT_ID` /
    `CF_ACCESS_CLIENT_SECRET` on the `production` environment — the deploy
@@ -200,7 +199,7 @@ operator steps below run in this order:
    with a value of the Standard Webhooks shape (`whsec_<32 random bytes, base64>`).
 2. Add one notification rule per bucket in the provider's own console
    (iDrive e2 / MinIO: KeySpace event notifications) pointed at
-   `https://drive-pricing.nishant345.workers.dev/api/storage-events/signed`
+   `https://storagebun.com/api/storage-events/signed`
    for `s3:ObjectCreated:*` and `s3:ObjectRemoved:*`. A rule that cannot sign
    (a vendor webhook carrying only a bearer token) stays on
    `/api/storage-events` with `METER_EVENT_TOKEN`.
