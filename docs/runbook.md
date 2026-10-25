@@ -165,10 +165,13 @@ service token before any monitor can reach it:
    `"ok":true`: Access answers a dead or missing token with a 302 redirect,
    which counts as down.
 
-Two tokens, one job each. Both are scoped to `/api/health` only, so neither
-can open the drive itself, and a leaked monitor token is revoked and
-replaced on its own, without touching the deploy smoke's credentials or
-deploying anything (review finding on PR #697).
+Two tokens for the health check, one job each. Both are scoped to
+`/api/health` only, so neither can open the drive itself, and a leaked
+monitor token is revoked and replaced on its own, without touching the
+deploy smoke's credentials or deploying anything (review finding on PR
+#697). The storage-event webhook carries a third service token of its own,
+scoped to its path only, for the same reason - see "Registering a bucket's
+storage notifications" below.
 
 ## The merge gate: required checks and the ratchet
 
@@ -190,8 +193,8 @@ The signed door ships closed: with `STORAGE_EVENTS_WEBHOOK_SECRET` unset it
 answers `503` and accepts nothing, the same closed door
 `/api/billing/webhook` answers with `DODO_WEBHOOK_SECRET` unset. That name is
 not declared in `cloudflare.config.ts` on purpose - a declared
-`bindings.secret()` with no value behind it fails every deploy - so the two
-steps below are the operator's, in this order:
+`bindings.secret()` with no value behind it fails every deploy - so the
+operator steps below run in this order:
 
 1. Set the secret: `npx wrangler secret put STORAGE_EVENTS_WEBHOOK_SECRET --env production`,
    with a value of the Standard Webhooks shape (`whsec_<32 random bytes, base64>`).
@@ -201,8 +204,30 @@ steps below are the operator's, in this order:
    for `s3:ObjectCreated:*` and `s3:ObjectRemoved:*`. A rule that cannot sign
    (a vendor webhook carrying only a bearer token) stays on
    `/api/storage-events` with `METER_EVENT_TOKEN`.
-3. Confirm it: post one signed event (headers `webhook-id`,
-   `webhook-timestamp`, `webhook-signature` from `core/topup.js` `signWebhook`;
+3. Let the rule through Cloudflare Access (operator step, drive#1076). The
+   `storagebun.com` app answers every path with the sign-in redirect
+   (drive#159), and a vendor webhook cannot follow one, so the rule needs a
+   service token as well as its own credential. In the Zero Trust dashboard
+   (Access → Applications → the self-hosted app for the host the rule posts
+   to: `storagebun.com`, and the workers.dev app while that address stays
+   on), add a service-token policy scoped to the `/api/storage-events/*`
+   path - create it, or extend an existing service-token policy that already
+   covers this path - and put a token whose only policy is this one in the
+   rule's `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers, in the
+   provider's console on the rule from step 2. A wildcard path does not
+   cover its parent, so a rule on the bare `/api/storage-events` door needs
+   the `/api/storage-events` path too (Cloudflare One, "Application paths").
+   Nothing in this repo applies an Access policy, and the
+   `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` values the deploy reads
+   are the health probe's, so this step is Nish's, in the dashboard, once per
+   app. Confirm it through the wall: the post in the next step carries this
+   token in the two headers and no browser, and a `{"ok":true,...}` answer
+   is the policy matching. A `302` to
+   `https://<account>.cloudflareaccess.com/` is the policy not matching this
+   path, and the provider retries that redirect and drops the event.
+4. Confirm it: post one signed event (headers `webhook-id`,
+   `webhook-timestamp`, `webhook-signature` from `core/topup.js` `signWebhook`,
+   plus `CF-Access-Client-Id` and `CF-Access-Client-Secret` from step 3;
    body the fixture in `test/storage-events-signed.test.mjs`, a create with
    `eventName`, `keyName` `u/<account>/notes.md`, and `bucket` that account's
    own name) and expect `{"ok":true,"stored":1,"deduped":0,"enqueued":1}`.
