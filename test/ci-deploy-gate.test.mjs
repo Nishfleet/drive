@@ -140,6 +140,10 @@ test("a push trigger ships without reading CI's run list", (t) => {
   assert.equal(other.out.status, 0, other.out.stderr);
   assert.match(other.calls, /run list/, "an unknown trigger still reads the run list");
 
+  const unset = run({});
+  assert.equal(unset.out.status, 0, unset.out.stderr);
+  assert.match(unset.calls, /run list/, "an unset event name still reads the run list");
+
   const red = run({ GITHUB_EVENT_NAME: "workflow_dispatch", GREEN: "0" });
   assert.equal(red.out.status, 1);
   assert.match(red.out.stdout, /CI has not passed on aaa111/);
