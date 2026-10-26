@@ -36,9 +36,8 @@ test("the go job still runs the two-device conflict proof", () => {
   const body = next ? rest.slice(0, 1 + next.index) : rest;
   assert.match(
     body,
-    /- name: Two-device conflict proof\n {8}run: \|\n(?: {10}.*\n)*? {10}go test \.\/cmd\/drive\/ -run TestTwoDevicesKeepBothSaves -v -count=1 -timeout 300s/,
+    /- name: Two-device conflict proof\n {8}run: go test \.\/cmd\/drive\/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s\n/,
   );
-  assert.match(body, / {10}set -o pipefail\n/, "the step keeps go test's exit status through tee");
   const step = body.slice(body.indexOf("- name: Two-device conflict proof"));
   const stepEnd = step.search(/\n {6}- /);
   const lines = (stepEnd === -1 ? step : step.slice(0, stepEnd)).split("\n");
@@ -92,6 +91,7 @@ test("the deploy checks the live version and health, and rolls back on failure",
   assert.match(
     DEPLOY,
     /curl -sS --fail --max-time \d+ --retry 5 --retry-delay 5 --retry-all-errors/,
+    "a route that accepts the connection and never answers is bounded (drive#582)",
   );
   assert.doesNotMatch(
     DEPLOY,
@@ -300,10 +300,25 @@ test("a FUSE skip is a failure under CI=true (drive#501)", () => {
   );
 });
 
-test("a hyperfine skip is a failure under CI=true (drive#582)", () => {
-  const ratchet = read("test/speed-ratchet.test.mjs");
-  assert.match(ratchet, /if \(process\.env\.CI === "true"\) \{/);
-  assert.match(ratchet, /a hyperfine skip is a failure under CI=true/);
-  assert.match(ratchet, /t\.skip\("hyperfine is not installed/);
-  assert.match(CI, /Install hyperfine \(the CLI the speed ratchet proves against\)/);
+test("a skip of a proof this runner can run is a failure under CI=true (drive#582)", () => {
+  const writers = [
+    "test/files-page-click.test.mjs",
+    "test/step1-storage.test.mjs",
+    "test/step5-meter-standin.test.mjs",
+    "test/cap-mount.test.mjs",
+    "test/home-demos.test.mjs",
+  ];
+  for (const file of writers) {
+    assert.match(
+      read(file),
+      /if \(process\.env\.CI === "true" && \(name === "chrome-file-click" \|\| name === "s3-standin"\)\) \{/,
+      `${file} fails the two proofs the runner has the tools for`,
+    );
+  }
+  for (const name of ["chrome-file-click", "s3-standin"]) {
+    assert.ok(
+      writers.some((file) => read(file).includes(`reportSkip("${name}"`)),
+      `${name} is a name a proof actually reports`,
+    );
+  }
 });

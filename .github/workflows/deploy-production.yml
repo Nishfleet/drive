@@ -252,9 +252,6 @@ jobs:
             exit 0
           fi
           # The token goes to curl in a private file, never in its arguments.
-          # --max-time bounds a route that accepts the connection and then
-          # never answers: the retry flags alone wait for ever on that shape
-          # (drive#582).
           headers="$RUNNER_TEMP/access-headers"
           trap 'rm -f "$headers"' EXIT
           (umask 077 && printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' \

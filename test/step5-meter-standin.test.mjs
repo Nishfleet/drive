@@ -166,6 +166,9 @@ const STANDIN_TEST_TIMEOUT_MS = 30_000 + 60_000 + 60_000 + 60_000;
  * @param {string} reason
  */
 function reportSkip(name, reason) {
+  if (process.env.CI === "true" && (name === "chrome-file-click" || name === "s3-standin")) {
+    throw new Error(`${name} skipped under CI=true: ${reason}`);
+  }
   const report = process.env.DRIVE_PROOF_REPORT;
   if (report) appendFileSync(report, `${name}: ${reason}\n`);
 }
