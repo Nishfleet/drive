@@ -688,6 +688,7 @@ function monthlyStoryTemplate(data = {}) {
   const spent = requireText(data.spentLine, "spentLine");
   const addedLine = filesAddedLine(data.filesAdded);
   const agentLine = agentSessionsLine(data.agentSessions);
+  const milestoneLine = typeof data.milestoneLine === "string" ? data.milestoneLine : null;
   const subject = `Your drive in ${month.replace(", UTC", "")}`;
   const lines = [
     `Here is your drive for ${month}.`,
@@ -696,11 +697,13 @@ function monthlyStoryTemplate(data = {}) {
     addedLine,
     spent,
     ...(agentLine === null ? [] : ["", agentLine]),
+    ...(milestoneLine === null ? [] : ["", milestoneLine]),
   ];
   const html_lines = [
     `<p>Here is your drive for ${escapeHtml(month)}.</p>`,
     `<p>${escapeHtml(peak)}<br>${addedLine}<br>${escapeHtml(spent)}</p>`,
     ...(agentLine === null ? [] : [`<p>${escapeHtml(agentLine)}</p>`]),
+    ...(milestoneLine === null ? [] : [`<p>${escapeHtml(milestoneLine)}</p>`]),
   ];
   const unsubscribe = unsubscribeLinkOf(data);
   return finish({ subject, lines, html_lines, replyTo: data.replyTo, unsubscribe });

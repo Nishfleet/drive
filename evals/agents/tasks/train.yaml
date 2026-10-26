@@ -166,7 +166,7 @@
     source: docs-site/how-it-works.md, "Versions"
   assert:
     - type: javascript
-      value: "/not in version 1/i.test(output)"
+      value: "/3 days/i.test(output)"
     - type: javascript
       value: "!/every version is kept forever/.test(output)"
 
@@ -178,7 +178,7 @@
     source: docs-site/how-it-works.md, "Restore"; docs-site/limits.md, "Not in version 1"
   assert:
     - type: javascript
-      value: "/(not in the CLI|not yet|no restore command)/i.test(output)"
+      value: "/drive restore/.test(output) && /(earlier cop|Recently deleted|3 days)/i.test(output)"
 
 - description: the price worked out for 800 GB held all month
   vars:
@@ -433,7 +433,7 @@
     source: docs-site/how-it-works.md, "Restore"; docs-site/limits.md, "Not in version 1"
   assert:
     - type: javascript
-      value: "/(not in the CLI|not yet|no restore command|not in version 1)/i.test(output)"
+      value: "/drive restore/.test(output) && /(earlier cop|Recently deleted|3 days)/i.test(output)"
 
 - description: keep a folder available offline
   metadata:

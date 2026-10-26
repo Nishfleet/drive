@@ -113,3 +113,24 @@ the commits a PR adds are scanned, so old history cannot fail a PR. The job is
 - The rules file is not named `.gitleaks.toml` on purpose, because gitleaks loads
   that name by itself and the full-history scans would start failing on old
   commits.
+- `test/private-detail-rules.test.mjs` holds each rule to known-bad samples it
+  must catch and clean samples it must leave alone.
+
+## Auto-merge
+
+- The fleet dispatch arms auto-merge on an agent-authored claim pull request (a
+  `claim/issue-<n>` branch) only when every changed file is on its allowlist and
+  the head's required checks are not red, and it re-arms on the next hourly sweep
+  if arming failed. It arms under the worker App token, not GITHUB_TOKEN, so a
+  merge still fires the push workflows on `main`.
+- A claim pull request that touches a path outside the allowlist is labelled
+  `needs-coordinator` and held unarmed until the dispatch's `review-risky`
+  coordinator review approves and arms the exact head. The dispatch does not read
+  the old `no-auto-merge` label or a `[no-merge]` title; to hold a claim pull
+  request by hand, a person disarms it and adds `needs-coordinator`, which the
+  hourly sweep then leaves unarmed.
+- Only a `claim/issue-<n>` branch is ever armed: a renamed branch, or a pull
+  request an agent opens from any other branch, is never armed. Every merge goes
+  through the merge queue and the required checks (`docs/runbook.md` lists them).
+- Any other pull request (a person's, or Dependabot's) is armed by a person:
+  press the merge button, or run `gh pr merge <n> --auto --squash`.

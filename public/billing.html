@@ -41,6 +41,8 @@ h1 {
 
 .lede { max-width: 60ch; color: var(--ink-soft); }
 
+.lede-wide { max-width: none; }
+
 section { padding: clamp(28px, 5vh, 48px) 0 0; }
 
 h2 {
@@ -68,11 +70,7 @@ h2 {
   background: var(--paper-raised);
 }
 
-.chart figcaption {
-  padding-top: 10px;
-  color: var(--ink-faint);
-  font-size: 15px;
-}
+.chart figcaption { padding-top: 10px; color: var(--ink-faint); font-size: 15px; }
 
 .readout { margin: 18px 0 0; border-top: 1px solid var(--rule); }
 
@@ -88,17 +86,9 @@ h2 {
 
 .pair dt { color: var(--ink-soft); }
 
-.pair dd {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: clamp(18px, 2.6vw, 22px);
-}
+.pair dd { margin: 0; font-family: var(--mono); font-size: clamp(18px, 2.6vw, 22px); }
 
-.hint {
-  margin: 10px 0 0;
-  color: var(--ink-faint);
-  font-size: 15px;
-}
+.hint { margin: 10px 0 0; color: var(--ink-faint); font-size: 15px; }
 
 .balance-slot { display: grid; }
 
@@ -125,11 +115,7 @@ h2 {
 }
 
 .balance-line[data-state="low"],
-.balance-line[data-state="paused"] {
-  border-left-color: var(--bad);
-  color: var(--ink);
-  font-weight: 600;
-}
+.balance-line[data-state="paused"] { border-left-color: var(--bad); color: var(--ink); font-weight: 600; }
 
 .topup {
   margin: 18px 0 0;
@@ -156,8 +142,22 @@ h2 {
 
 .topup-form label {
   display: grid;
+  flex: 1 1 14rem;
+  max-width: 22rem;
   gap: 4px;
   font-weight: 600;
+}
+
+.topup .topup-form input[type="number"] {
+  width: 100%;
+}
+
+#ledger-heading {
+  margin: 24px 0 0;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 800;
 }
 
 .topup input[type="number"] {
@@ -168,11 +168,7 @@ h2 {
   border-radius: 8px;
 }
 
-.topup .error {
-  margin: 10px 0 0;
-  color: var(--ink);
-  font-weight: 600;
-}
+.topup .error { margin: 10px 0 0; color: var(--ink); font-weight: 600; }
 
 .auto-topup {
   display: flex;
@@ -186,7 +182,8 @@ h2 {
 
 .ledger-box {
   height: 16rem;
-  margin: 18px 0 0;
+  margin: 10px 0 0;
+  padding-top: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -209,11 +206,7 @@ h2 {
 
 .ledger .amount { font-family: var(--mono); }
 
-.ledger .when {
-  flex-basis: 100%;
-  color: var(--ink-faint);
-  font-size: 15px;
-}
+.ledger .when { flex-basis: 100%; color: var(--ink-faint); font-size: 15px; }
 
 #peak-chart {
   display: block;
@@ -232,11 +225,7 @@ h2 {
 #peak-billed { fill: var(--accent); fill-opacity: 0.12; }
 
 #peak-mark,
-#peak-cap-mark {
-  stroke-width: 1.5;
-  stroke-dasharray: 6 4;
-  vector-effect: non-scaling-stroke;
-}
+#peak-cap-mark { stroke-width: 1.5; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
 
 #peak-mark { stroke: var(--ink-soft); }
 
@@ -328,7 +317,7 @@ h2 {
   <main>
     <section aria-labelledby="billing-heading">
       <h1 id="billing-heading">Billing</h1>
-      <p class="lede">
+      <p class="lede lede-wide">
         Your balance, what to top up, a receipt for every top-up, and how the
         bill is worked out.
       </p>
@@ -373,6 +362,7 @@ h2 {
       <h2 id="peak-heading">What you pay for</h2>
       <p class="lede" id="peak-explain">You pay for the biggest size your drive reached in the last 30 days. That size stays billed until the date it was reached drops out of the 30 days.</p>
       <p class="hint" id="peak-cap-line"></p>
+      <div class="balance-slot">
       <div class="status" id="peak-status" role="status" aria-live="polite" hidden></div>
       <p><button type="button" id="peak-retry" hidden class="btn">Try again</button></p>
       <div id="peak-body" hidden>
@@ -404,6 +394,7 @@ h2 {
           </div>
         </dl>
         <dl class="readout" id="bill-lines" hidden></dl>
+      </div>
       </div>
     </section>
     <noscript>

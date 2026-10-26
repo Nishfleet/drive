@@ -404,6 +404,7 @@ export async function runScheduled(event, env, context, store) {
           mailFrom: secrets.MAIL_FROM ?? "",
           secret: /** @type {{BETTER_AUTH_SECRET?: string}} */ (env).BETTER_AUTH_SECRET,
           origin: new URL(absoluteUrl("/")).origin,
+          now: event.scheduledTime,
         });
         console.log(`share-opened: sent=${opened.sent} failed=${opened.failed}`);
       },

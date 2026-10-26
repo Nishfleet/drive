@@ -1,6 +1,6 @@
 // The production deploy's health smoke (drive#582).
 //
-// What it proves: the api Worker answers its own health route through
+// What it proves: the site Worker answers its health route through
 // Cloudflare Access with the service token, and the answer is HTTP
 // 200 with {"ok": true}. Anything else — a non-200, a 200 whose body
 // is not healthy, or no answer at all — exits non-zero, and the
@@ -17,9 +17,18 @@
 // Nothing here is a secret: the token is never printed, logged or
 // echoed, and the headers travel in the request only.
 
+import { writeFileSync } from "node:fs";
+
 /** The health route the deploy smokes, overridable for a test stub. */
-const HEALTH_URL =
-  process.env.HEALTH_URL ?? "https://drive-pricing.nishant345.workers.dev/api/health";
+const HEALTH_URL = process.env.HEALTH_URL ?? "https://storagebun.com/api/health";
+
+/**
+ * Where the deploy asks for the body this smoke accepted, so the step's
+ * email check reads the same answer that passed. Unset in a test run and
+ * in any other caller, and the token never goes to a file: only the
+ * health body, which is what /api/health answers to a stranger.
+ */
+const BODY_FILE = process.env.DRIVE_SMOKE_BODY_FILE;
 
 /** Attempts and pause, the same shape the curl flags carried. */
 const ATTEMPTS = Number(process.env.DRIVE_SMOKE_ATTEMPTS ?? 5);
@@ -47,8 +56,9 @@ function accessHeaders() {
 
 /**
  * One attempt at the health route.
- * @returns {Promise<{ok: boolean, detail: string}>} ok is the whole
- * smoke's verdict for this attempt; detail says what was wrong.
+ * @returns {Promise<{ok: boolean, detail: string, body?: string}>} ok is
+ * the whole smoke's verdict for this attempt; detail says what was wrong,
+ * and body is the answer a 200 carried.
  */
 async function probe() {
   let response;
@@ -76,15 +86,17 @@ async function probe() {
   if (parsed?.ok !== true) {
     return { ok: false, detail: `health route answered 200 but is not ok` };
   }
-  return { ok: true, detail: "health route answered 200 with ok:true" };
+  return { ok: true, detail: "health route answered 200 with ok:true", body };
 }
 
 /** @returns {Promise<number>} the exit code: 0 healthy, 1 anything else */
 async function smoke() {
+  /** @type {Awaited<ReturnType<typeof probe>>} */
   let last = { ok: false, detail: "no attempt was made" };
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     last = await probe();
     if (last.ok) {
+      if (BODY_FILE && last.body !== undefined) writeFileSync(BODY_FILE, last.body);
       console.log(`smoke: ${last.detail}`);
       return 0;
     }
@@ -99,6 +111,3 @@ async function smoke() {
 }
 
 process.exitCode = await smoke();
-
-// A module, so the top-level await above type-checks.
-export {};

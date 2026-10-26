@@ -146,6 +146,18 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: No agent attribution in the PR's commits or body
+        # pull_request only: GitHub's own squash adds a Co-authored-by line, so
+        # a merge_group run would fail every queue entry (fleet-ops#9826).
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          log=$(git log --format=%B "$BASE_SHA..$HEAD_SHA")
+          ! printf '%s\n%s\n' "$log" "$PR_BODY" | grep -iEn '^(co-authored-by|claude-session):|^[^[:alpha:]]*generated with'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
@@ -153,13 +165,8 @@ jobs:
       - name: No helper scripts
         run: test -z "$(git ls-files scripts bin tools ops '*.sh')"
       - run: npm ci
-      # test/standin-search.test.mjs proves the issue's number - 100,000 real
-      # files, a search under a second - over a local `rclone serve s3`, and it
-      # skips itself where rclone is absent. Installing it here is what keeps
-      # that proof on every PR rather than only on the host that built it.
-      # The cache holds only the release zip, and the next step checks it
-      # against the pinned digest before anything runs, so a poisoned entry
-      # fails the job rather than reaching it.
+      # standin-search.test.mjs (100,000 real files, a sub-second search) skips
+      # itself without rclone; installing it here keeps that proof on every PR.
       - name: Cache the rclone release
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -198,20 +205,13 @@ jobs:
           install -D -m 0755 "hyperfine-$PINNED_HYPERFINE_VERSION-x86_64-unknown-linux-gnu/hyperfine" "$RUNNER_TEMP/bin/hyperfine"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/bin/hyperfine" --version
-      # web-speed (drive#225): the budgets in lighthouserc.json, on the pages
-      # as they actually ship. `npm run build` writes the same static-asset
-      # bundle the deploy uploads, so the numbers are the site's and not a
-      # development server's. LHCI then serves that directory locally and
-      # asserts every page against the budget: a page that gets worse fails
-      # this job, which is what makes a budget a ratchet rather than a note.
-      # Lowering a number in lighthouserc.json is how a speed win gets locked
-      # in; raising one needs a measurement in the PR body.
-      # LHCI runs in its own throwaway container, pinned by digest, not from
-      # node_modules: @lhci/cli 0.15.1 is the newest release and its
-      # dependency chain (tmp, inquirer, lighthouse, puppeteer) carries high
-      # npm advisories with no fix (drive#581). The container sees only this
-      # checkout and runs as the runner's own user, so its reports stay
-      # removable. Chrome needs the larger /dev/shm, or the tab crashes.
+      # web-speed (drive#225): LHCI asserts the lighthouserc.json budgets
+      # against the pages as built (`npm run build` writes the same
+      # static-asset bundle the deploy uploads), so a page that gets worse
+      # fails this job: a budget is a ratchet, not a note. Lowering a number
+      # locks in a speed win; raising one needs a measurement in the PR body.
+      # Pinned container, not node_modules: @lhci/cli 0.15.1's dependency
+      # chain carries high npm advisories with no fix (drive#581).
       - name: Build the site
         if: >-
           needs.changes.result != 'success' ||
@@ -228,28 +228,12 @@ jobs:
           -v "$PWD:/w" -w /w
           patrickhulce/lhci-client:0.15.1@sha256:558210c5e422a7babaaa09c285b7469da3f00fac1a9880c37883c65d666a7fc9
           lhci autorun --collect.settings.chromeFlags="--no-sandbox --headless=new"
-      # drive#759: the typecheck and the Biome check are a named step of
-      # their own, beside `npm test` and not inside it.
-      #
-      # What this adds is the fail-fast, not the coverage. `pretest` is
-      # `npm run check`, so `npm test` below already runs `tsc --noEmit`
-      # (through `pretypecheck`, which regenerates `.cloudflare/types` from
-      # cloudflare.config.ts) and then `biome check`, and both have gated
-      # every merge since "Pro standards: type-check all JavaScript in CI"
-      # (#125) landed pretest. What that wiring cannot give a reader of a
-      # red run is which of the two turned it red: the pretest output sits
-      # above the step it belongs to, so a Biome warning count reads as a
-      # failing test run. One extra step costs about three seconds and names
-      # both tools in the run log, where a type error is read as a type
-      # error.
-      #
-      # No `if:` here, which is the same gate `npm test` below runs under:
-      # the job-level `if:` on this `verify` job is the paths filter, so this
-      # runs whenever the tests run.
-      #
-      # No `--write` and no `--fix`, ever: `biome check` reports and exits
-      # non-zero, and the job must fail on the diff it was given rather than
-      # fix it and push on.
+      # drive#759: a named step beside `npm test`, which already runs the same
+      # checks via pretest (`npm run check`: tsc --noEmit, regenerating
+      # .cloudflare/types, then biome check). One extra step, about three
+      # seconds, so a red run names the tool that turned it red; same
+      # job-level gate as `npm test`. No --write and no --fix, ever: the job
+      # fails on the diff it was given rather than fixing and pushing on.
       - name: Typecheck and Biome
         run: npm run check
       - run: npm test
@@ -302,8 +286,19 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # goreleaser below runs `check` only and publishes nothing, so the Go
-      # cache this job keeps never reaches a release artifact.
+      - name: No agent attribution in the PR's commits or body
+        # pull_request only: GitHub's own squash adds a Co-authored-by line, so
+        # a merge_group run would fail every queue entry (fleet-ops#9826).
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          log=$(git log --format=%B "$BASE_SHA..$HEAD_SHA")
+          ! printf '%s\n%s\n' "$log" "$PR_BODY" | grep -iEn '^(co-authored-by|claude-session):|^[^[:alpha:]]*generated with'
+      # goreleaser below runs `check` only and publishes nothing: the Go cache never reaches a release artifact.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0  # zizmor: ignore[cache-poisoning]
         with:
           go-version: "1.24"

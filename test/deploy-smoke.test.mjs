@@ -9,7 +9,10 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -78,6 +81,39 @@ test("a healthy Worker: the Access headers reach the route and the smoke exits 0
   });
   assert.equal(result.code, 0, `the smoke failed where it should have passed: ${result.stderr}`);
   assert.match(result.stdout, /ok/, "the smoke says what it saw");
+});
+
+test("a not-ready email still passes the smoke and leaves the body the deploy reads", async (t) => {
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ ok: true, email: "not-ready" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+  t.after(() => server.close());
+  const { address, port } = /** @type {import("node:net").AddressInfo} */ (server.address());
+  const dir = mkdtempSync(join(tmpdir(), "drive-smoke-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bodyFile = join(dir, "health.json");
+
+  const result = await runSmoke({
+    HEALTH_URL: `http://${address}:${port}/api/health`,
+    DRIVE_SMOKE_ATTEMPTS: "2",
+    DRIVE_SMOKE_RETRY_DELAY_MS: "10",
+    DRIVE_SMOKE_BODY_FILE: bodyFile,
+  });
+  assert.equal(
+    result.code,
+    0,
+    `a not-ready email is a warning, never a rollback: ${result.stderr}`,
+  );
+  // drive#522, drive#582: the deploy warns on `email: not-ready` by reading
+  // the body the smoke accepted, so the answer that passed and the answer
+  // the warning reads are the same one.
+  const written = JSON.parse(readFileSync(bodyFile, "utf8"));
+  assert.equal(written.email, "not-ready", "the deploy's email check reads the body that passed");
 });
 
 test("a failing Worker: a stubbed 500 exits non-zero even after the retries", async (t) => {

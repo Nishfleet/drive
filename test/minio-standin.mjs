@@ -40,7 +40,7 @@ let signalHandlersInstalled = false;
 
 /** @param {{engine: string, name: string, volume: string}} container */
 function removeContainer(container) {
-  spawnSync(container.engine, ["rm", "-f", container.name], { stdio: "ignore" });
+  spawnSync(container.engine, ["rm", "-f", "-v", container.name], { stdio: "ignore" });
   spawnSync(container.engine, ["volume", "rm", "-f", container.volume], { stdio: "ignore" });
 }
 
@@ -134,7 +134,7 @@ export function spawnTracked(command, args, options = {}) {
 
 /** The pinned stock server; `DRIVE_STANDIN_IMAGE` replaces it. */
 export const MINIO_IMAGE =
-  process.env.DRIVE_STANDIN_IMAGE ?? "bitnamilegacy/minio:2025.7.23-debian-12-r5";
+  process.env.DRIVE_STANDIN_IMAGE ?? "docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5";
 
 /** @param {string} bin @param {string[]} args */
 function runs(bin, args) {
@@ -207,7 +207,7 @@ export async function startMinioStandin({ name, environment, port }, t) {
     return null;
   }
   const volume = `${name}-data`;
-  spawnSync(engine, ["rm", "-f", name], { stdio: "ignore" });
+  spawnSync(engine, ["rm", "-f", "-v", name], { stdio: "ignore" });
   spawnSync(engine, ["volume", "create", volume], { stdio: "ignore" });
   const tracked = { engine, name, volume };
   liveContainers.add(tracked);

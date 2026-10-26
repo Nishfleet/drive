@@ -9,6 +9,7 @@ import {
 } from "../core/auth.js";
 import { BILLING_CONFIG } from "../core/billing.js";
 import { DEFAULT_CAP_USD } from "../core/cap-default.js";
+import { RECENTLY_DELETED_DAYS } from "../core/files.js";
 import {
   LEGAL_PAGES,
   LEGAL_PLACEHOLDERS,
@@ -17,7 +18,9 @@ import {
   SUPPORT_EMAIL,
   SUPPORT_PATH,
 } from "../core/legal.js";
+import { prepaidSwapPlan } from "../core/prepaid-pause.js";
 import { PREPAID, PRICE } from "../core/pricing.js";
+import { HIDDEN_VERSION_DAYS } from "../core/s3.js";
 import { absoluteUrl, PAGES } from "../core/seo.js";
 import { CLOSE_GRACE_DAYS } from "../src/account-close.js";
 
@@ -129,6 +132,38 @@ test("the privacy page lists the two cookies and the analytics beacon (drive#547
   assert.match(privacy, /sets no cookie/);
 });
 
+// The retention promises are numbers the code owns: the hidden-version rule
+// and the Recently deleted window, and the weekly backup's artifact retention.
+// A page that says a different number than the code keeps fails here.
+test("the privacy page, terms and restore runbook state the retention the code keeps", () => {
+  assert.equal(
+    HIDDEN_VERSION_DAYS,
+    RECENTLY_DELETED_DAYS,
+    "old versions and the trash share one window",
+  );
+  const days = `${HIDDEN_VERSION_DAYS} days`;
+  const privacy = legalText("privacy.html");
+  assert.ok(privacy.includes(`old version, and a file in Recently deleted, is kept for ${days}`));
+  assert.match(privacy, /30 days or 1 year of history/);
+  const terms = legalText("terms.html");
+  assert.ok(terms.includes(`changed or deleted file for ${days}`));
+  const restore = readRepo("docs/runbooks/restore.md");
+  assert.ok(
+    restore.includes(`\`.trash/\` for ${days}`),
+    "the runbook's trash window is the code's",
+  );
+  assert.ok(restore.includes(`provider's version window, ${days} by default`));
+  for (const page of [privacy, terms, restore]) {
+    assert.doesNotMatch(page, /for one day|trash\/` for 30 days/, "no page keeps the old windows");
+  }
+  const backupDays = Number(
+    readRepo(".github/workflows/d1-export.yml").match(/retention-days: (\d+)/)?.[1],
+  );
+  assert.equal(backupDays, 90, "the weekly database backup is kept 90 days");
+  assert.ok(privacy.includes(`each copy is deleted after ${backupDays} days`));
+  assert.match(privacy, /request logs are kept by Cloudflare for up to 7 days/);
+});
+
 test("the terms carry an age line (drive#547)", () => {
   assert.match(legalText("terms.html"), /You must be 18 or older to open an account/);
 });
@@ -137,7 +172,11 @@ test("the terms pin the balance pause, the low-balance email, and the 30-day not
   const terms = legalText("terms.html");
   assert.match(terms, new RegExp(`falls to \\$${PREPAID.lowBalanceUsd}`));
   assert.match(terms, /At \$0, uploads pause/);
-  assert.ok(readRepo("core/prepaid-pause.js").includes("The prepaid pause at $0"));
+  const paused = prepaidSwapPlan(
+    [{ keyId: "k", kind: "device", prefix: "u/a/", capabilities: ["list", "read", "write"] }],
+    true,
+  );
+  assert.equal(paused.state, "read_only", "at $0 the keys swap to read-only, so uploads pause");
   assert.match(terms, /at least 30 days before the new price applies/);
   assert.match(terms, /at least 30 days before they apply/);
 });
@@ -334,10 +373,11 @@ test("the runbooks name symbols that still exist in the code they cite", () => {
   const claims = [
     ["incident.md", "src/health.js", "REQUIRED_BINDINGS"],
     ["restore.md", "core/files-scope.js", "purgeExpiredTrash"],
-    ["restore.md", "core/files.js", "TRASH_PURGE_SCHEDULE"],
+    ["restore.md", "core/files.js", "TRASH_PURGE_SCHEDULE", "RECENTLY_DELETED_DAYS"],
+    ["restore.md", "core/s3.js", "HIDDEN_VERSION_DAYS"],
     ["secrets-rotation.md", "core/meter-events.js", "METER_EVENT_TOKEN"],
     ["secrets-rotation.md", "core/email-send.js", "EMAIL_SEND_TOKEN", "MAIL_FROM"],
-    ["secrets-rotation.md", "workers/api/cloudflare.config.ts", "IDRIVE_E2_API_TOKEN"],
+    ["secrets-rotation.md", "core/keyprovider-env.js", "IDRIVE_E2_API_TOKEN"],
   ];
   for (const [runbook, source, ...symbols] of claims) {
     // Both texts are checked: the runbook must still name the symbol, and the

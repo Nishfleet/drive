@@ -31,25 +31,23 @@ export default defineConfig({
   worker: {
     name: "drive-pricing",
     compatibilityDate: "2026-09-29",
-    // Private until launch (Nish, 2026-10-01). The workers.dev address is
-    // on only behind Cloudflare Access ("All traffic", Cloudflare account
-    // members); the deploy fails if a stranger ever reaches the site without
-    // the sign-in. No preview URLs.
+    // Private until launch (Nish, 2026-10-01). storagebun.com (drive issue
+    // #870) is the site's own domain, so the public pages, the sitemap,
+    // robots.txt and llms.txt all carry it, and it sits behind Cloudflare
+    // Access ("All traffic", Cloudflare account members); the deploy fails
+    // if a stranger ever reaches the site without the sign-in. No preview
+    // URLs.
     //
-    // storagebun.com (drive issue #870) is the site's own domain, so the
-    // public pages, the sitemap, robots.txt and llms.txt all carry it.
     // `domains` is the Worker custom domain: one line here is what puts the
-    // Worker on the zone. The workers.dev address stays on until the custom
-    // domain answers for real (issue #870: removing it is a separate,
-    // verified step). Nameservers are still at the registrar, so this line
-    // attaches the hostname inside the Cloudflare zone and does not publish
-    // it. Access must cover storagebun.com before nameservers move, or the
-    // pre-launch site would answer a stranger (drive#159).
-    // test/access-wall.test.mjs fails a 200 from the hostname. The deploy
-    // workflow's matching check is drive#872 (this token cannot push
-    // workflow files).
+    // Worker on the zone. Nameservers are at Cloudflare, so the hostname is
+    // the public one, and Access on it is the pre-launch wall (drive#159).
+    // test/access-wall.test.mjs fails a 200 from the hostname, and the
+    // deploy workflow's private check fails a 200 and a workers.dev answer.
+    //
+    // workers.dev is off (audit item C3): storagebun.com is the only door, so
+    // there is no second address to keep behind Access.
     domains: ["storagebun.com"],
-    workersDev: true,
+    workersDev: false,
     previewUrls: false,
     entrypoint,
     // Everything that is not /api/* is served straight from the asset
@@ -152,7 +150,7 @@ export default defineConfig({
     // Issue #520: failures were invisible because this key was absent — the
     // Worker shipped with observability off, so `console.error` in the cron
     // branches and `app.onError` went nowhere a human looks. Workers Logs
-    // collects every invocation's console lines for 14 days (the default
+    // collects every invocation's console lines for up to 7 days (the default
     // sampling here is 1, everything), which is the floor; the pipeline that
     // pages a human is Sentry, wired in src/monitoring.js off the
     // per-deployment SENTRY_DSN var (the docs runbook has the setup).

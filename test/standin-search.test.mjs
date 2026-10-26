@@ -377,16 +377,24 @@ async function startStorage(t) {
     return null;
   }
   const dir = await mkdtemp(path.join(tmpdir(), "drive-standin-search-"));
+  const configDir = await mkdtemp(path.join(tmpdir(), "drive-standin-search-config-"));
+  const configPath = path.join(configDir, "rclone.conf");
+  await writeFile(configPath, "");
   const bucket = "bucket";
+  t.after(() => rm(configDir, { recursive: true, force: true }));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await seedDrive(dir, bucket);
   const port = await freePort();
   // No --auth-key: the stand-in answers the unsigned requests the store sends
   // when no credential is configured, and the signed store (the same code, with
   // a region and a credential) is what answers a real endpoint.
-  const server = spawn(rclone, ["serve", "s3", dir, "--addr", `127.0.0.1:${port}`], {
-    stdio: ["ignore", "ignore", "pipe"],
-  });
+  const server = spawn(
+    rclone,
+    ["serve", "s3", dir, "--config", configPath, "--addr", `127.0.0.1:${port}`],
+    {
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
   let stderr = "";
   server.stderr.on("data", (chunk) => {
     stderr += chunk;

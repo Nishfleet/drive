@@ -1161,15 +1161,75 @@ func TestConflictGuardHoldsAHashErrorOnThatEntryOnly(t *testing.T) {
 	if g.seen["ok.txt"] == nil {
 		t.Fatal("the good save was not watched")
 	}
-	if g.seen["bad.txt"] == nil || !g.seen["bad.txt"].baselineUnknown {
-		t.Fatal("the failing hash did not hold its entry as an unknown baseline")
+	if g.seen["bad.txt"] == nil || g.seen["bad.txt"].previous != "" {
+		t.Fatal("the failing hash did not hold its entry with no baseline")
 	}
 	if len(res.Claimed) != 0 {
 		t.Errorf("claimed %v on a pass with a hash error", res.Claimed)
 	}
 }
 
-func TestConflictGuardDoesNotClaimAnUnreadBaseline(t *testing.T) {
+func TestConflictGuardKeepsSavesMadeWhileStorageWasUnreachable(t *testing.T) {
+	const name = "offline.txt"
+	const bodyA = "A: the save made while the device could not reach storage\n"
+	const bodyB = "B: the save made while the device could not reach storage\n"
+
+	store := map[string]string{}
+	versions := map[string]objectVersion{}
+	type device struct {
+		guard *conflictGuard
+		back  *fakeConflictBackend
+	}
+	newDevice := func(deviceName, body string) device {
+		g, _, f := guardFor(t, deviceName, map[string]string{name: body})
+		f.objects, f.versions = store, versions
+		return device{guard: g, back: f}
+	}
+	devices := []device{newDevice("mac", bodyA), newDevice("linux", bodyB)}
+	downErr := errors.New("storage unreachable")
+
+	for _, d := range devices {
+		d.back.listErr = downErr
+		d.back.hashErr[name] = downErr
+		d.back.pending = []queueEntry{{Name: name, Size: int64(len(bodyA))}}
+		if _, err := d.guard.pass(context.Background(), d.back); err != nil {
+			t.Fatalf("pass with storage unreachable: %v", err)
+		}
+	}
+	for _, d := range devices {
+		if save := d.guard.seen[name]; save == nil || save.previous != "" {
+			t.Fatalf("device %s holds the save with a baseline read while storage was unreachable: %+v", d.guard.device, d.guard.seen)
+		}
+	}
+
+	store[name] = md5Hex(bodyB)
+	versions[name] = objectVersion{size: int64(len(bodyB)), modTime: time.Now()}
+	for _, d := range devices {
+		d.back.listErr = nil
+		delete(d.back.hashErr, name)
+		d.back.pending = nil
+	}
+	for i := 0; i < conflictClaimPolls+2; i++ {
+		for _, d := range devices {
+			if _, err := d.guard.pass(context.Background(), d.back); err != nil {
+				t.Fatalf("pass %d after the reconnect: %v", i, err)
+			}
+		}
+	}
+
+	if got := store[name]; got != md5Hex(bodyB) {
+		t.Errorf("the plain file holds %q, want the save that landed later", got)
+	}
+	want := ConflictName(name, "mac")
+	if got := store[want]; got != md5Hex(bodyA) {
+		t.Errorf("the save made while storage was down survived nowhere: %s holds %q, want this device's bytes", want, got)
+	}
+	if len(devices[1].back.copied) != 0 {
+		t.Errorf("the device whose save landed last kept a copy of its own: %v", devices[1].back.copied)
+	}
+}
+
+func TestConflictGuardKeepsASaveWithAnUnreadBaseline(t *testing.T) {
 	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "my save\n"})
 	f.objects["report.txt"] = md5Hex("the version before the save\n")
 	f.pending = []queueEntry{{Name: "report.txt", Size: 8}}
@@ -1177,46 +1237,28 @@ func TestConflictGuardDoesNotClaimAnUnreadBaseline(t *testing.T) {
 	if _, err := g.pass(context.Background(), f); err != nil {
 		t.Fatal(err)
 	}
-	if !g.seen["report.txt"].baselineUnknown {
-		t.Fatal("a failed baseline read is not marked unknown")
+	if previous := g.seen["report.txt"].previous; previous != "" {
+		t.Fatalf("previous = %q, want no baseline after a failed read", previous)
 	}
 	delete(f.hashErr, "report.txt")
 	f.pending = nil
-	var named []ConflictSkip
+	named := 0
 	for i := 0; i < conflictClaimPolls+1; i++ {
 		res, err := g.pass(context.Background(), f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(res.Claimed) != 0 {
-			t.Fatalf("claimed %v against the version the save replaces", res.Claimed)
-		}
-		named = append(named, res.Skipped...)
+		named += len(res.Skipped)
 	}
-	if len(f.copied) != 0 {
-		t.Errorf("copied %v", f.copied)
+	want := ConflictName("report.txt", "mac")
+	if got := f.objects[want]; got != md5Hex("my save\n") {
+		t.Errorf("%s holds %q: a save whose baseline could not be read was dropped instead of kept", want, got)
 	}
-	if len(named) != 1 || named[0].Remote != "report.txt" {
-		t.Errorf("Skipped = %+v, want the save with an unread baseline named once", named)
+	if named != 0 {
+		t.Errorf("Skipped = %d, want the save kept rather than named as unprotected", named)
 	}
-}
-
-func TestConflictGuardRereadsTheBaselineWhileQueued(t *testing.T) {
-	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "my save\n"})
-	before := md5Hex("the version before the save\n")
-	f.objects["report.txt"] = before
-	f.pending = []queueEntry{{Name: "report.txt", Size: 8}}
-	f.hashErr["report.txt"] = errors.New("hashsum timed out")
-	if _, err := g.pass(context.Background(), f); err != nil {
-		t.Fatal(err)
-	}
-	delete(f.hashErr, "report.txt")
-	if _, err := g.pass(context.Background(), f); err != nil {
-		t.Fatal(err)
-	}
-	save := g.seen["report.txt"]
-	if save.baselineUnknown || save.previous != before {
-		t.Errorf("baselineUnknown=%v previous=%q, want the re-read baseline %q", save.baselineUnknown, save.previous, before)
+	if len(g.seen) != 0 {
+		t.Errorf("the guard still watches %v", g.seen)
 	}
 }
 

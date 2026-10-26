@@ -77,10 +77,10 @@ test("the deploy ships only a commit that is main's head and passed CI", () => {
   assert.match(DEPLOY, /^ {2}actions: read/m);
 });
 
-test("the site Worker names storagebun.com and keeps the workers.dev address on", () => {
+test("the site Worker names storagebun.com and has no workers.dev address", () => {
   const config = read("cloudflare.config.ts");
   assert.match(config, /domains:\s*\[\s*"storagebun.com"\s*\]/);
-  assert.match(config, /workersDev:\s*true/);
+  assert.match(config, /workersDev:\s*false/);
   assert.match(config, /previewUrls:\s*false/);
 });
 
@@ -89,6 +89,14 @@ test("the deploy checks the live version and health, and rolls back on failure",
   // module owns the URL, the Access headers and the ok:true check — so this
   // gate reads both files. The workflow half:
   assert.match(DEPLOY, /node src\/deploy-smoke\.js/);
+  assert.match(DEPLOY, /storagebun\.com is reachable without the Access sign-in/);
+  // The email warning reads the body the smoke accepted. Both halves are
+  // asserted, because a missing env var on either side leaves a warning
+  // that can never print: `$body` unset is a JSON parse error, not a
+  // not-ready email (drive#522, drive#582).
+  assert.match(DEPLOY, /DRIVE_SMOKE_BODY_FILE: \$\{\{ runner\.temp \}\}\/health\.json/);
+  assert.match(DEPLOY, /body=\$\(cat "\$DRIVE_SMOKE_BODY_FILE"\)/);
+  assert.match(SMOKE, /process\.env\.DRIVE_SMOKE_BODY_FILE/);
   assert.match(DEPLOY, /id: live\n/);
   assert.match(DEPLOY, /test "\$vid" != "\$PREVIOUS_VERSION"/);
   // The token reaches the smoke through the environment only
@@ -102,11 +110,13 @@ test("the deploy checks the live version and health, and rolls back on failure",
   );
   // The module half: the production URL and route, the Access headers from
   // the environment only, and a non-zero exit unless the route says ok.
-  assert.match(
-    SMOKE,
-    new RegExp(`drive-pricing\\.nishant345\\.workers\\.dev${HEALTH_PATH}"`),
-    "the smoke calls the production health route",
+  // drive#1062 turned workers.dev off for both Workers, so the smoke calls
+  // the site's own hostname through Access, never a workers.dev address.
+  assert.ok(
+    SMOKE.includes(`https://storagebun.com${HEALTH_PATH}`),
+    "the smoke calls the production health route on storagebun.com",
   );
+  assert.doesNotMatch(SMOKE, /\.workers\.dev/, "the smoke calls no workers.dev address");
   assert.match(SMOKE, /CF-Access-Client-Id/, "the smoke sends the Access service token headers");
   assert.match(SMOKE, /process\.env\.CF_ACCESS_CLIENT_ID/);
   assert.match(SMOKE, /process\.env\.CF_ACCESS_CLIENT_SECRET/);

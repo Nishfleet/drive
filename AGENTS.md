@@ -1,5 +1,9 @@
 # Agent notes for drive
 
+Launch stage: 0 (day one). Next trigger: storagebun.com opens to outside users; one sign-up brings their files and a card, so stages 1 (accounts) and 2 (payments) are both due before it.
+
+Success: paying drives, the accounts charged a daily draw yesterday from a topped-up balance. Baseline: 0 live paying drives on 2026-10-15 (no live charge can run while the Dodo API key is unset, drive#325 open; until it is set, any row the query counts is a test-mode top-up). Measured by: `npx cf d1 query 0f636b57-4a2e-482a-bf40-8aa315e2403e --sql "SELECT COUNT(DISTINCT account_id) FROM daily_draws WHERE day = date('now','-1 day') AND draw_millicents > 0 AND account_id IN (SELECT account_id FROM balance_ledger WHERE kind = 'topup')"` (read-only, the drive database).
+
 A Finder drive for people and their agents: plain files in object storage, mounted with stock rclone, billed at 2¢ per GB-month for the biggest size in the last 30 days.
 
 - The spec is `docs/build-spec.md` (what to build, step by step) and `docs/spec.md` (why: prices, rivals). These two repo files are the source. The vault copy under `02 Projects/competitor-clone/spec/` is a stale snapshot and is not kept in step: the vault is a private repo no worker can push to, and its copy of this spec is untracked (drive#89).
@@ -27,12 +31,20 @@ A Finder drive for people and their agents: plain files in object storage, mount
 - The Cloudflare Web Analytics beacon is a build-time setting, not a Worker secret: `DRIVE_CF_BEACON_TOKEN` (the dashboard's 32-hex token) puts one deferred script in the six pages' `<head>` while `npm run build` emits them, and an unset setting leaves those pages byte for byte as they ship (`src/analytics.js`, `test/web-analytics.test.mjs`). It is a variable, not a secret: the token is in every visitor's HTML.
 - To see only failures, pipe through `grep -E "^not ok|^# (pass|fail)"`.
 
+## Run it and prove it
+
+Live: https://storagebun.com. It stays private until launch, so every path, health included, answers 302 to the Cloudflare Access sign-in for anyone outside the account (`cloudflare.config.ts`, "All traffic").
+
+- Prove the wall: `node --test test/access-wall.test.mjs`. It asks storagebun.com as a stranger and requires the 302 to the Access sign-in; the workers.dev addresses are off (audit item C3), and the deploy check fails a 200 or a 302 from either. Run it after a change to the routes or the Access policy.
+- Prove the Worker: `curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://storagebun.com/api/health` prints `302` and an `https://<account>.cloudflareaccess.com/` URL. A `200` means the site is open to strangers before launch, which is the failure. A `522` or `525` means the zone or the Worker is down, which is also a failure.
+- The route is `/api/health` (`HEALTH_PATH` in `src/health.js`), served by the site Worker. It answers `{"ok":true}` when every required binding answers inside `HEALTH_TIMEOUT_MS`, and `503 {"ok":false,"failing":"<binding>"}` otherwise, so the body names the binding to look at. `test/health.test.mjs` proves both answers.
+- Test login: none. There is no seeded account or demo password, and the Access sign-in is not the product's sign-in.
+
 ## Known Worker secrets
 
 Declared `bindings.secret()` names in `cloudflare.config.ts`. A PR that adds one lists it under 'Secrets to set' and stays draft until it is set on drive-pricing.
 
 - `METER_EVENT_TOKEN`
-- `IDRIVE_E2_API_TOKEN` (drive-api)
 
 ## Before you open a PR
 

@@ -210,31 +210,31 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Check the site stayed private
-        # The workers.dev address sits behind Cloudflare Access until drive
-        # has a domain (cloudflare.config.ts). A stranger must get a redirect
-        # to the Access sign-in, never the site. The redirect must go to our
-        # own Access team host exactly, so a lookalike URL cannot pass
-        # (drive #159).
+        # The site answers only on storagebun.com, behind Cloudflare Access
+        # (cloudflare.config.ts): a stranger gets the Access sign-in, and the
+        # redirect must name our Access team host exactly, so a lookalike URL
+        # cannot pass (drive #159).
         run: |
-          out=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/)
-          echo "workers.dev answered: ${out%%\?*}"
+          out=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://storagebun.com/)
+          echo "storagebun.com answered: ${out%%\?*}"
           case "$out" in
             "302 https://nish345.cloudflareaccess.com/"* | "302 https://storagebun.cloudflareaccess.com/"*) ;;
-            *) echo "::error::the site is reachable without the Access sign-in"; exit 1 ;;
+            *) echo "::error::storagebun.com is reachable without the Access sign-in"; exit 1 ;;
           esac
           # The api family is behind the same gate (drive#342): /v1/* on the
           # site redirects to Access, and drive-api has no address of its own.
-          v1=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://drive-pricing.nishant345.workers.dev/v1/health)
+          v1=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://storagebun.com/v1/health)
           echo "/v1/health answered: ${v1%%\?*}"
           case "$v1" in
             "302 https://nish345.cloudflareaccess.com/"* | "302 https://storagebun.cloudflareaccess.com/"*) ;;
             *) echo "::error::the api family is reachable without the Access sign-in"; exit 1 ;;
           esac
-          api=$(curl -s -o /dev/null -w '%{http_code}' https://drive-api.nishant345.workers.dev/v1/health)
-          echo "drive-api workers.dev answered: $api"
-          if [ "$api" = "200" ]; then
-            echo "::error::drive-api has a public workers.dev address"; exit 1
-          fi
+          # Neither Worker answers on workers.dev (audit item C3, drive#342).
+          for u in https://drive-pricing.nishant345.workers.dev/ https://drive-api.nishant345.workers.dev/v1/health; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$u")
+            echo "workers.dev answered: $code ($u)"
+            case "$code" in 200 | 302) echo "::error::$u still answers on workers.dev"; exit 1 ;; esac
+          done
       - name: Check the live Worker version and health
         # The new version must be the one serving, and /api/health must answer
         # {"ok":true}. Access answers a runner with a 302, so the health call
@@ -255,8 +255,11 @@ jobs:
           # shell: its retries, its Access headers and its ok:true check
           # are one file a test runs against stub routes (drive#582,
           # test/deploy-smoke.test.mjs). The token reaches it through the
-          # environment only, never argv and never a written file.
+          # environment only, never argv and never a written file. The body
+          # it accepted goes to DRIVE_SMOKE_BODY_FILE, because the email
+          # check below still has to read the body the same attempt saw.
           node src/deploy-smoke.js || { echo "::error::/api/health did not answer 200 with ok:true"; exit 1; }
+          body=$(cat "$DRIVE_SMOKE_BODY_FILE")
           echo "health ok"
           # The email part is reported beside ok, never as it (drive#522), so
           # a live drive that cannot send mail is a warning here, not a rollback.
@@ -268,6 +271,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          DRIVE_SMOKE_BODY_FILE: ${{ runner.temp }}/health.json
           PREVIOUS_VERSION: ${{ steps.live.outputs.version_id }}
       - name: Roll back the Worker version
         # Stock Workers rollback: a new deployment of the previous version at

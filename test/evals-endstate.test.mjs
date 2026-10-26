@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
 /** @param {string} path @returns {string} */
@@ -8,10 +12,16 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 
 const MODULE = "evals/agents/endstate.py";
 const module = () => read(MODULE);
+const RCLONE = process.env.DRIVE_STANDIN_RCLONE ?? "rclone";
 
 test("the end-state slice runs on Inspect, pinned, in its own venv", () => {
   const requirements = read("evals/agents/requirements.txt");
   assert.match(requirements, /^inspect-ai==\d+\.\d+\.\d+$/m, "inspect-ai is an exact pin");
+  assert.match(
+    requirements,
+    /^openai==\d+\.\d+\.\d+$/m,
+    "the openai-api provider needs the openai package, which inspect-ai does not install",
+  );
   const ignored = read("evals/agents/.gitignore");
   assert.match(ignored, /^\.venv\/$/m, "the venv is not tracked");
   const pkg = JSON.parse(read("package.json"));
@@ -140,6 +150,142 @@ test("the grader reads a real inventory and fails closed when it cannot", () => 
   assert.match(source, /DRIVE_EVAL_SPLIT/, "the task file follows the split setting");
 });
 
+test("the stand-in carries its own rclone config, never the host user's", async (t) => {
+  const source = module();
+  assert.match(
+    source,
+    /self\.config_file = self\.config_dir \/ "rclone\.conf"/,
+    "the stand-in owns one config path, outside the tree it serves",
+  );
+  assert.match(
+    source,
+    /self\.config_file\.write_text\("", encoding="utf-8"\)/,
+    "the stand-in's config is empty, so no host remote reaches the run",
+  );
+  const callSites = [...source.matchAll(/^\s*"rclone",$/gm)].length;
+  const configs = [...source.matchAll(/"--config",\s*\n\s*str\(self\.config_file\)/g)].length;
+  assert.equal(callSites, 2, "the module runs rclone from exactly two places");
+  assert.equal(configs, callSites, "every one of them is told the stand-in's config");
+  assert.match(
+    source,
+    /atexit\.register\(shutil\.rmtree, self\.config_dir/,
+    "the config does not outlive the run",
+  );
+
+  if (!rcloneRuns()) return t.skip(`${RCLONE} is not installed`);
+
+  const work = await mkdtemp(path.join(tmpdir(), "drive-eval-hidden-rclone-"));
+  const home = path.join(work, "home");
+  const hidden = path.join(home, ".config", "rclone");
+  await mkdir(hidden, { recursive: true });
+  await writeFile(path.join(hidden, "rclone.conf"), "this file is not a config\n");
+  await chmod(hidden, 0o000);
+  t.after(async () => {
+    await chmod(hidden, 0o700).catch(() => {});
+    await rm(work, { recursive: true, force: true });
+  });
+
+  const served = path.join(work, "standin");
+  await mkdir(path.join(served, "drive"), { recursive: true });
+  const hostLog = path.join(work, "host.log");
+  const hostRun = spawnSync(
+    RCLONE,
+    ["serve", "s3", served, "--addr", "127.0.0.1:0", "--log-file", hostLog],
+    { env: hiddenHome(home), timeout: 30_000 },
+  );
+  const hostText = await readFile(hostLog, "utf8").catch(() => "");
+  assert.notEqual(
+    hostRun.status,
+    0,
+    "an rclone on the host's config never serves, which is the red main this guards (drive#1045)",
+  );
+  assert.ok(
+    hostText.includes(path.join(hidden, "rclone.conf")),
+    `the host's own config file is what it stops on: ${hostText}`,
+  );
+});
+
+test("a stand-in starts, lists and reads with the host config hidden", async (t) => {
+  if (!rcloneRuns()) return t.skip(`${RCLONE} is not installed`);
+  const python = "evals/agents/.venv/bin/python";
+  if (!existsSync(new URL(`../${python}`, import.meta.url))) {
+    return t.skip(`${python} is not installed`);
+  }
+
+  const work = await mkdtemp(path.join(tmpdir(), "drive-eval-standin-hidden-"));
+  const home = path.join(work, "home");
+  const hidden = path.join(home, ".config", "rclone");
+  await mkdir(hidden, { recursive: true });
+  await writeFile(path.join(hidden, "rclone.conf"), "this file is not a config\n");
+  await chmod(hidden, 0o000);
+  t.after(async () => {
+    await chmod(hidden, 0o700).catch(() => {});
+    await rm(work, { recursive: true, force: true });
+  });
+
+  const driver = [
+    "import importlib.util, json, sys",
+    "from pathlib import Path",
+    'spec = importlib.util.spec_from_file_location("endstate", "evals/agents/endstate.py")',
+    "module = importlib.util.module_from_spec(spec)",
+    'sys.modules["endstate"] = module',
+    "spec.loader.exec_module(module)",
+    "standin = module.Standin()",
+    "account = standin.account()",
+    "standin.start()",
+    "keys = sorted(standin.keys())",
+    'read = standin.read(account, "notes/todo.txt")',
+    "config_dir = str(standin.config_dir)",
+    "standin.close()",
+    "print(json.dumps({",
+    '    "endpoint": standin.endpoint,',
+    '    "account": account,',
+    '    "keys": keys,',
+    '    "read": read,',
+    '    "config_dir_after_close": Path(config_dir).exists(),',
+    "}))",
+  ].join("\n");
+  const { status, stdout, stderr } = spawnSync(python, ["-c", driver], {
+    cwd: new URL("..", import.meta.url),
+    env: hiddenHome(home),
+    encoding: "utf8",
+    timeout: 120_000,
+  });
+  const said = stdout.trim();
+  assert.equal(status, 0, `the stand-in ran with the host config hidden: ${said} ${stderr}`);
+  const proof = JSON.parse(said.slice(said.indexOf("{")));
+  assert.match(proof.endpoint, /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.deepEqual(proof.keys, [
+    `u/${proof.account}/notes/todo.txt`,
+    `u/${proof.account}/photos/keep.txt`,
+  ]);
+  assert.equal(proof.read, "buy a plane ticket\n", "the grader reads the seeded bytes back");
+  assert.equal(proof.config_dir_after_close, false, "the stand-in's config goes with it");
+});
+
+/** @returns {boolean} */
+function rcloneRuns() {
+  try {
+    execFileSync(RCLONE, ["version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The host user's environment, with HOME moved onto the hidden config and
+ * no override rclone would read first, so a run sees what the eval runner sees.
+ * @param {string} home @returns {NodeJS.ProcessEnv}
+ */
+function hiddenHome(home) {
+  /** @type {NodeJS.ProcessEnv} */
+  const env = { ...process.env, HOME: home };
+  delete env.RCLONE_CONFIG;
+  delete env.XDG_CONFIG_HOME;
+  return env;
+}
+
 test("the agent's prompt carries the same docs and help the reading suite carries", () => {
   const source = module();
   assert.match(source, /docs-site.*\.rendered/, "the docs come from the one render");
@@ -153,3 +299,154 @@ test("the agent's prompt carries the same docs and help the reading suite carrie
     assert.ok(!prompt.includes(leaked), `the prompt must not leak ${leaked} into the agent`);
   }
 });
+
+test("the container dials the stand-in at a configurable host, the grader stays on the host", () => {
+  const source = module();
+  // The stand-in binds the host's loopback and the grader reads it there, so a
+  // container engine whose "host" network is its own namespace cannot move the
+  // graded facts: the agent is given the port at another host, and the grader
+  // never follows it.
+  assert.match(source, /"127\.0\.0\.1:0"/, "the stand-in serves on the host's loopback");
+  assert.match(source, /f"http:\/\/127\.0\.0\.1:\{ports\[-1\]}"/, "the host endpoint is loopback");
+  const readBody = source.slice(source.indexOf("def read(self"), source.indexOf("def keys(self"));
+  assert.ok(
+    readBody.includes("self.endpoint"),
+    "a read of the account's bytes goes to the host endpoint",
+  );
+  const keysBody = source.slice(source.indexOf("def keys(self"), source.indexOf("def _rclone"));
+  assert.ok(keysBody.includes("self.endpoint"), "the whole inventory goes to the host endpoint");
+  // The container side is the same port at a host the environment names, and
+  // the default leaves a container that shares the host's network dialing
+  // 127.0.0.1 exactly as it did before the setting existed.
+  assert.match(
+    source,
+    /DRIVE_EVAL_SANDBOX_HOST"\) or "127\.0\.0\.1"/,
+    "the container host comes from the environment, defaulting to loopback",
+  );
+  assert.match(
+    source,
+    /def container_endpoint\(self\)[\s\S]*?rpartition\(":"\)/,
+    "the container endpoint keeps the server's own port",
+  );
+  // The prompt is the one channel the endpoint reaches the agent by, and the
+  // sample records what the agent was given. The scorer follows neither.
+  assert.match(
+    source,
+    /endpoint=standin\.container_endpoint\(\)/,
+    "the prompt carries the container endpoint",
+  );
+  assert.match(
+    source,
+    /"endpoint": standin\.container_endpoint\(\),/,
+    "the sample records the endpoint the agent was given",
+  );
+  const scorerBody = source.slice(
+    source.indexOf("async def score"),
+    source.indexOf("def expected_keys"),
+  );
+  assert.ok(
+    !scorerBody.includes("container_endpoint"),
+    "the grader never dials the container endpoint",
+  );
+});
+
+test("the stand-in's port comes from DRIVE_EVAL_STANDIN_PORT, defaulting to a random one", () => {
+  const source = module();
+  // Unset, empty or `0` keeps today's behaviour: the server picks a port and
+  // logs it, and every reader follows the log.
+  assert.match(source, /return "127\.0\.0\.1:0"/, "the default is the random port rclone logs");
+  // A port pins the server, because the eval runner's egress rule allows the
+  // engine to reach exactly that one loopback port and no other.
+  assert.match(
+    source,
+    /return f"127\.0\.0\.1:\{port\}"/,
+    "a given port is the addr the server is started at",
+  );
+  assert.match(
+    source,
+    /"--addr",\s*\n\s*STANDIN_ADDR/,
+    "the start command carries the resolved addr",
+  );
+  assert.match(source, /egress rule/, "the reason a port can be pinned is written down");
+  // Anything else must raise naming the variable, never fall back silently:
+  // a typo would start the server on a port the runner does not allow.
+  assert.match(
+    source,
+    /RuntimeError\(\s*\n\s*f?"DRIVE_EVAL_STANDIN_PORT/,
+    "a value that is not a port number raises naming the variable",
+  );
+  assert.match(
+    source,
+    /DRIVE_EVAL_STANDIN_PORT is out of range/,
+    "an out-of-range port raises naming the variable",
+  );
+});
+
+test("a pinned DRIVE_EVAL_STANDIN_PORT is the port the stand-in serves on", async (t) => {
+  if (!rcloneRuns()) return t.skip(`${RCLONE} is not installed`);
+  const python = "evals/agents/.venv/bin/python";
+  if (!existsSync(new URL(`../${python}`, import.meta.url))) {
+    return t.skip(`${python} is not installed`);
+  }
+
+  const work = await mkdtemp(path.join(tmpdir(), "drive-eval-standin-port-"));
+  t.after(async () => {
+    await rm(work, { recursive: true, force: true });
+  });
+  const driver = [
+    "import importlib.util, json, sys",
+    'spec = importlib.util.spec_from_file_location("endstate", "evals/agents/endstate.py")',
+    "module = importlib.util.module_from_spec(spec)",
+    'sys.modules["endstate"] = module',
+    "spec.loader.exec_module(module)",
+    "standin = module.Standin()",
+    "account = standin.account()",
+    "standin.start()",
+    'read = standin.read(account, "notes/todo.txt")',
+    "standin.close()",
+    "print(json.dumps({",
+    '    "addr": module.STANDIN_ADDR,',
+    '    "endpoint": standin.endpoint,',
+    '    "read": read,',
+    "}))",
+  ].join("\n");
+
+  // A pinned port: the server serves exactly on it, and the grader reads the
+  // seeded bytes there.
+  const port = await freePort();
+  const { status, stdout, stderr } = spawnSync(python, ["-c", driver], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...hiddenHome(work), DRIVE_EVAL_STANDIN_PORT: String(port) },
+    encoding: "utf8",
+    timeout: 120_000,
+  });
+  const said = stdout.trim();
+  assert.equal(status, 0, `the stand-in served on the pinned port: ${said} ${stderr}`);
+  const proof = JSON.parse(said.slice(said.indexOf("{")));
+  assert.equal(proof.addr, `127.0.0.1:${port}`, "the resolved addr is the pinned port");
+  assert.equal(proof.endpoint, `http://127.0.0.1:${port}`, "the server logged the pinned port");
+  assert.equal(proof.read, "buy a plane ticket\n", "the grader reads the seeded bytes back");
+
+  // A value that is not a port fails the run at start-up, naming the
+  // variable, instead of falling back to a random port.
+  const bad = spawnSync(python, ["-c", driver], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, DRIVE_EVAL_STANDIN_PORT: "not-a-port" },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  assert.notEqual(bad.status, 0, "a value that is not a port number fails the run");
+  assert.match(bad.stderr, /DRIVE_EVAL_STANDIN_PORT/, "the failure names the variable");
+});
+
+/** @returns {Promise<number>} A loopback port that was free a moment ago. */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = /** @type {import("node:net").AddressInfo} */ (server.address());
+      server.close(() => resolve(port));
+    });
+  });
+}
