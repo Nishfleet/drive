@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import { TEST_FILES_STORE } from "../src/index-support.js";
 import { SIGNIN_COPY } from "../src/signin.js";
 import { createTestAuth, signIn, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 import { trackProcess } from "./minio-standin.mjs";
+import { reportSkip } from "./proof-skip.mjs";
 
 // The page under test is the shipped asset, byte for byte, because that is
 // what the asset layer serves: a copy in this file would prove this file.
@@ -20,20 +21,11 @@ const page = readFileSync(new URL("../public/files.html", import.meta.url));
 // drives on the same self-hosted runner, so the test needs no new tool.
 const CHROME = process.env.DRIVE_CHROME ?? "/usr/bin/google-chrome";
 
-/** @param {string} name @param {string} reason */
-function reportSkip(name, reason) {
-  if (process.env.CI === "true" && (name === "chrome-file-click" || name === "s3-standin")) {
-    throw new Error(`${name} skipped under CI=true: ${reason}`);
-  }
-  const report = process.env.DRIVE_PROOF_REPORT;
-  if (report) appendFileSync(report, `${name}: ${reason}\n`);
-}
-
 /**
  * node:test's `skip` accepts a function, and this one counts the named proof
  * on the way past (drive#582): CI fails on chrome-file-click skipping, because
- * Chrome is installed on the self-hosted runners, so the skip is a number in
- * the build log instead of a silence.
+ * Chrome is on the runner the verify job uses, so the skip is a failure and
+ * not a silence.
  * @returns {false | string}
  */
 function skipIfNoChrome() {

@@ -301,6 +301,7 @@ test("a FUSE skip is a failure under CI=true (drive#501)", () => {
 });
 
 test("a skip of a proof this runner can run is a failure under CI=true (drive#582)", () => {
+  const helper = "test/proof-skip.mjs";
   const writers = [
     "test/files-page-click.test.mjs",
     "test/step1-storage.test.mjs",
@@ -308,11 +309,28 @@ test("a skip of a proof this runner can run is a failure under CI=true (drive#58
     "test/cap-mount.test.mjs",
     "test/home-demos.test.mjs",
   ];
+  // One place holds the rule, so no proof file can carry a guard of its own
+  // that drifts from the others by a name or a condition.
+  assert.match(
+    read(helper),
+    /process\.env\.CI === "true" && RUNNABLE_PROOFS\.has\(name\)/,
+    `${helper} fails a proof the runner has the tools for`,
+  );
+  assert.match(
+    read(helper),
+    /new Set\(\["chrome-file-click", "s3-standin"\]\)/,
+    `${helper} names the proofs CI must not skip`,
+  );
   for (const file of writers) {
     assert.match(
       read(file),
-      /if \(process\.env\.CI === "true" && \(name === "chrome-file-click" \|\| name === "s3-standin"\)\) \{/,
-      `${file} fails the two proofs the runner has the tools for`,
+      /import \{ reportSkip \} from "\.\/proof-skip\.mjs"/,
+      `${file} uses the one skip report`,
+    );
+    assert.doesNotMatch(
+      read(file),
+      /function reportSkip\(/,
+      `${file} carries no skip guard of its own`,
     );
   }
   for (const name of ["chrome-file-click", "s3-standin"]) {
