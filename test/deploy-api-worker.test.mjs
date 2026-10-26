@@ -277,6 +277,6 @@ test("the deploy job ships drive-api before the site Worker, and checks /v1 stay
   const site = workflow.search(/run: npx cf deploy --prebuilt\n/);
   assert.ok(api > 0, "the api Worker has a deploy step");
   assert.ok(site > api, "the api Worker deploys before the site Worker");
-  assert.match(workflow, /drive-pricing\.nishant345\.workers\.dev\/v1\/health/);
+  assert.match(workflow, /storagebun\.com\/v1\/health/);
   assert.match(workflow, /drive-api\.nishant345\.workers\.dev\/v1\/health/);
 });

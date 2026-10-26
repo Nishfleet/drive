@@ -153,15 +153,16 @@ test("a push trigger ships without reading CI's run list", (t) => {
   assert.match(stale.out.stdout, /bbb222 is no longer main's head/);
 });
 
-test("the site Worker names storagebun.com and keeps the workers.dev address on", () => {
+test("the site Worker names storagebun.com and has no workers.dev address", () => {
   const config = read("cloudflare.config.ts");
   assert.match(config, /domains:\s*\[\s*"storagebun.com"\s*\]/);
-  assert.match(config, /workersDev:\s*true/);
+  assert.match(config, /workersDev:\s*false/);
   assert.match(config, /previewUrls:\s*false/);
 });
 
 test("the deploy checks the live version and health, and rolls back on failure", () => {
-  assert.ok(DEPLOY.includes(`https://drive-pricing.nishant345.workers.dev${HEALTH_PATH}`));
+  assert.ok(DEPLOY.includes(`https://storagebun.com${HEALTH_PATH}`));
+  assert.match(DEPLOY, /storagebun\.com is reachable without the Access sign-in/);
   assert.match(DEPLOY, /id: live\n/);
   assert.match(DEPLOY, /test "\$vid" != "\$PREVIOUS_VERSION"/);
   assert.match(DEPLOY, /CF-Access-Client-Id: %s/);
