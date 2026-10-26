@@ -163,11 +163,10 @@ test("ci.yml runs npm run check as its own step, and never fixes the diff", () =
   const body = next ? rest.slice(0, 1 + next.index) : rest;
   const step = /- name: Typecheck and Biome\n {8}run: npm run check\n/.exec(body)?.[0];
   assert.ok(step, "the verify job runs npm run check as a named step");
-  // It must sit beside `npm test`, not be folded into it, and it must come
-  // first: the point of the step is that the cheap gate fails before the
-  // expensive suite runs.
+  const suite = /- run: [^\n]*npm test[^\n]*/.exec(body)?.[0];
+  assert.ok(suite, "the verify job runs npm test as a step of its own");
   assert.ok(
-    body.indexOf("- name: Typecheck and Biome") < body.indexOf("- run: npm test"),
+    body.indexOf("- name: Typecheck and Biome") < body.indexOf(suite),
     "check runs before npm test",
   );
   // The step is a report, never a rewrite: a CI run that fixes the diff and
@@ -301,19 +300,26 @@ test("a FUSE skip is a failure under CI=true (drive#501)", () => {
 });
 
 test("a skip of a proof this runner can run is a failure under CI=true (drive#582)", async () => {
-  const writers = [
-    "test/files-page-click.test.mjs",
-    "test/step1-storage.test.mjs",
-    "test/step5-meter-standin.test.mjs",
-    "test/cap-mount.test.mjs",
-    "test/home-demos.test.mjs",
-  ];
+  const { readdirSync } = await import("node:fs");
+  const testDir = new URL("../test/", import.meta.url);
+  const writers = readdirSync(testDir)
+    .filter((name) => name.endsWith(".mjs") && name !== "proof-skip.mjs")
+    .filter((name) => name !== "ci-deploy-gate.test.mjs")
+    .filter((name) => read(`test/${name}`).includes('from "./proof-skip.mjs"'))
+    .map((name) => `test/${name}`)
+    .sort();
+  assert.deepEqual(
+    writers,
+    [
+      "test/cap-mount.test.mjs",
+      "test/files-page-click.test.mjs",
+      "test/home-demos.test.mjs",
+      "test/step1-storage.test.mjs",
+      "test/step5-meter-standin.test.mjs",
+    ],
+    "every proof that imports the one skip report is scanned here, so a sixth proof joins this gate before it ships",
+  );
   for (const file of writers) {
-    assert.match(
-      read(file),
-      /import \{ reportSkip \} from "\.\/proof-skip\.mjs"/,
-      `${file} uses the one skip report`,
-    );
     assert.doesNotMatch(
       read(file),
       /function reportSkip\(/,
@@ -342,8 +348,20 @@ test("a skip of a proof this runner can run is a failure under CI=true (drive#58
   const previousReport = process.env.DRIVE_PROOF_REPORT;
   const report = new URL("./skip-report.txt", import.meta.url);
   const { rm } = await import("node:fs/promises");
+  /** @type {string[]} */
+  const printed = [];
+  const write = process.stdout.write.bind(process.stdout);
+  /**
+   * @param {string} chunk
+   * @returns {boolean}
+   */
+  const capture = (chunk) => {
+    printed.push(chunk);
+    return true;
+  };
   try {
     process.env.CI = "true";
+    process.stdout.write = capture;
     for (const name of gated) {
       assert.throws(
         () => reportSkip(name, "the tool is not installed"),
@@ -366,9 +384,18 @@ test("a skip of a proof this runner can run is a failure under CI=true (drive#58
       "a skip outside CI still records one line when the caller asks for it",
     );
   } finally {
+    process.stdout.write = write;
     process.env.CI = previousCi ?? "";
     if (previousReport === undefined) delete process.env.DRIVE_PROOF_REPORT;
     else process.env.DRIVE_PROOF_REPORT = previousReport;
     await rm(report, { force: true });
   }
+  assert.deepEqual(
+    printed.filter((line) => line !== "\n"),
+    [
+      ...ungated.map((name) => `proof skipped: ${name}: the runner cannot do this\n`),
+      `proof skipped: ${ungated[0]}: the runner cannot do this\n`,
+    ],
+    "a gated name prints nothing and throws, and every skip that is allowed prints its name and reason, so CI's log carries the count per named proof",
+  );
 });
