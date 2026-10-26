@@ -245,10 +245,13 @@ jobs:
           DRIVE_PROOF_REPORT: ${{ runner.temp }}/proof-skips.txt
       - name: Named proofs that skipped
         # drive#582: a skip used to be silent, so a proof the runner should be
-        # able to run (its tool installed right here) could vanish from a green
-        # run. The count is printed per named proof, and a proof whose tool is
-        # on this runner — Chrome, a container engine, hyperfine — fails the
-        # job instead of skipping.
+        # able to run could vanish from a green run. A test that can run its
+        # proof only on some machines writes `name: reason` to
+        # DRIVE_PROOF_REPORT, and the count is printed per named proof here.
+        # Chrome and a container engine are installed on this runner, so a
+        # skip of either fails the job. The hyperfine proof does not use the
+        # report: it fails itself under CI=true, the way skipNoMount does for
+        # FUSE (drive#501), so it cannot be silent and needs no second gate.
         run: |
           report="$RUNNER_TEMP/proof-skips.txt"
           if [ ! -f "$report" ]; then
@@ -259,9 +262,9 @@ jobs:
           awk -F': ' '{ count[$1]++ } END { for (name in count) print "  " name ": " count[name] }' "$report"
           cat "$report"
           fail=0
-          for proof in chrome-file-click s3-standin hyperfine-ratchet; do
+          for proof in chrome-file-click s3-standin; do
             if grep -q "^$proof:" "$report"; then
-              echo "::error::$proof skipped, but its tool (Chrome, a container engine, hyperfine) is installed on this runner above — a proof this runner should run must not skip (drive#582)"
+              echo "::error::$proof skipped, but its tool (Chrome, a container engine) is installed on this runner above — a proof this runner should run must not skip (drive#582)"
               fail=1
             fi
           done

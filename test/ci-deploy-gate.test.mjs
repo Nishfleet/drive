@@ -8,9 +8,6 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 
 const CI = read(".github/workflows/ci.yml");
 const DEPLOY = read(".github/workflows/deploy-production.yml");
-// drive#582: the deploy's health smoke is this repo's own module, so this
-// gate reads the workflow and what it runs.
-const SMOKE = read("src/deploy-smoke.js");
 
 /** The top-level `on:` block of a workflow. @param {string} text */
 const onBlock = (text) => {
@@ -41,6 +38,7 @@ test("the go job still runs the two-device conflict proof", () => {
     body,
     /- name: Two-device conflict proof\n {8}run: \|\n(?: {10}.*\n)*? {10}go test \.\/cmd\/drive\/ -run TestTwoDevicesKeepBothSaves -v -count=1 -timeout 300s/,
   );
+  assert.match(body, / {10}set -o pipefail\n/, "the step keeps go test's exit status through tee");
   const step = body.slice(body.indexOf("- name: Two-device conflict proof"));
   const stepEnd = step.search(/\n {6}- /);
   const lines = (stepEnd === -1 ? step : step.slice(0, stepEnd)).split("\n");
@@ -85,47 +83,24 @@ test("the site Worker names storagebun.com and has no workers.dev address", () =
 });
 
 test("the deploy checks the live version and health, and rolls back on failure", () => {
-  // The smoke is a repo module (drive#582): the workflow runs it, and the
-  // module owns the URL, the Access headers and the ok:true check — so this
-  // gate reads both files. The workflow half:
-  assert.match(DEPLOY, /node src\/deploy-smoke\.js/);
+  assert.ok(DEPLOY.includes(`https://storagebun.com${HEALTH_PATH}`));
   assert.match(DEPLOY, /storagebun\.com is reachable without the Access sign-in/);
-  // The email warning reads the body the smoke accepted. Both halves are
-  // asserted, because a missing env var on either side leaves a warning
-  // that can never print: `$body` unset is a JSON parse error, not a
-  // not-ready email (drive#522, drive#582).
-  assert.match(DEPLOY, /DRIVE_SMOKE_BODY_FILE: \$\{\{ runner\.temp \}\}\/health\.json/);
-  assert.match(DEPLOY, /body=\$\(cat "\$DRIVE_SMOKE_BODY_FILE"\)/);
-  assert.match(SMOKE, /process\.env\.DRIVE_SMOKE_BODY_FILE/);
   assert.match(DEPLOY, /id: live\n/);
   assert.match(DEPLOY, /test "\$vid" != "\$PREVIOUS_VERSION"/);
-  // The token reaches the smoke through the environment only
-  // (secrets mapped at step level), never argv and never a written file.
-  assert.match(DEPLOY, /CF_ACCESS_CLIENT_ID: \$\{\{ secrets\.CF_ACCESS_CLIENT_ID \}\}/);
-  assert.match(DEPLOY, /CF_ACCESS_CLIENT_SECRET: \$\{\{ secrets\.CF_ACCESS_CLIENT_SECRET \}\}/);
+  assert.match(DEPLOY, /CF-Access-Client-Id: %s/);
+  assert.match(DEPLOY, /-H "@\$headers"/);
+  // curl's retry flags carry the wait between attempts, and --max-time bounds
+  // a route that accepts the connection and then never answers: without it a
+  // hung Worker hangs the deploy step instead of rolling it back (drive#582).
+  assert.match(
+    DEPLOY,
+    /curl -sS --fail --max-time \d+ --retry 5 --retry-delay 5 --retry-all-errors/,
+  );
   assert.doesNotMatch(
     DEPLOY,
-    /run:[^\n]*CF_ACCESS_CLIENT_SECRET/,
-    "the token never sits in a command's arguments",
+    /-H "CF-Access-Client-Secret: \$/,
+    "the token never sits in curl's arguments",
   );
-  // The module half: the production URL and route, the Access headers from
-  // the environment only, and a non-zero exit unless the route says ok.
-  // drive#1062 turned workers.dev off for both Workers, so the smoke calls
-  // the site's own hostname through Access, never a workers.dev address.
-  assert.ok(
-    SMOKE.includes(`https://storagebun.com${HEALTH_PATH}`),
-    "the smoke calls the production health route on storagebun.com",
-  );
-  assert.doesNotMatch(SMOKE, /\.workers\.dev/, "the smoke calls no workers.dev address");
-  assert.match(SMOKE, /CF-Access-Client-Id/, "the smoke sends the Access service token headers");
-  assert.match(SMOKE, /process\.env\.CF_ACCESS_CLIENT_ID/);
-  assert.match(SMOKE, /process\.env\.CF_ACCESS_CLIENT_SECRET/);
-  assert.doesNotMatch(
-    SMOKE,
-    /console\.(log|error)\([^)]*(SECRET|CLIENT_ID)/,
-    "the token is never printed",
-  );
-  assert.match(SMOKE, /process\.exitCode = /, "the smoke's exit code is the deploy's verdict");
   assert.match(DEPLOY, /if: failure\(\) && steps\.live\.outcome == 'success'/);
   assert.match(
     DEPLOY,
@@ -326,4 +301,15 @@ test("a FUSE skip is a failure under CI=true (drive#501)", () => {
     /if testing\.Short\(\) && os\.Getenv\("CI"\) != "true" \{/,
     "TestLogoutStopsALiveMount still runs under CI=true in the -short unit tests",
   );
+});
+
+test("a hyperfine skip is a failure under CI=true (drive#582)", () => {
+  const ratchet = read("test/speed-ratchet.test.mjs");
+  // The same choice skipNoMount makes for FUSE: the job installs hyperfine, so
+  // a skip there means the proof the ratchet exists for did not run. A
+  // developer without hyperfine still gets the synthetic ratchet tests.
+  assert.match(ratchet, /if \(process\.env\.CI === "true"\) \{/);
+  assert.match(ratchet, /a hyperfine skip is a failure under CI=true/);
+  assert.match(ratchet, /t\.skip\("hyperfine is not installed/);
+  assert.match(CI, /Install hyperfine \(the CLI the speed ratchet proves against\)/);
 });
