@@ -89,9 +89,6 @@ test("the deploy checks the live version and health, and rolls back on failure",
   assert.match(DEPLOY, /test "\$vid" != "\$PREVIOUS_VERSION"/);
   assert.match(DEPLOY, /CF-Access-Client-Id: %s/);
   assert.match(DEPLOY, /-H "@\$headers"/);
-  // curl's retry flags carry the wait between attempts, and --max-time bounds
-  // a route that accepts the connection and then never answers: without it a
-  // hung Worker hangs the deploy step instead of rolling it back (drive#582).
   assert.match(
     DEPLOY,
     /curl -sS --fail --max-time \d+ --retry 5 --retry-delay 5 --retry-all-errors/,
@@ -305,9 +302,6 @@ test("a FUSE skip is a failure under CI=true (drive#501)", () => {
 
 test("a hyperfine skip is a failure under CI=true (drive#582)", () => {
   const ratchet = read("test/speed-ratchet.test.mjs");
-  // The same choice skipNoMount makes for FUSE: the job installs hyperfine, so
-  // a skip there means the proof the ratchet exists for did not run. A
-  // developer without hyperfine still gets the synthetic ratchet tests.
   assert.match(ratchet, /if \(process\.env\.CI === "true"\) \{/);
   assert.match(ratchet, /a hyperfine skip is a failure under CI=true/);
   assert.match(ratchet, /t\.skip\("hyperfine is not installed/);

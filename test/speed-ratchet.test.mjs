@@ -173,10 +173,6 @@ test("hyperfine on PATH is the CLI tool, and an added sleep fails against the CL
   try {
     bin = execFileSync("which", ["hyperfine"], { encoding: "utf8" }).trim();
   } catch {
-    // drive#582: the same choice skipNoMount makes for FUSE (drive#501). CI
-    // installs hyperfine in this job, so a skip under CI=true means the proof
-    // the ratchet exists for did not run — a failure, not a silence. A
-    // developer without hyperfine still gets the synthetic test above.
     if (process.env.CI === "true") {
       assert.fail("hyperfine is not installed: a hyperfine skip is a failure under CI=true");
     }
