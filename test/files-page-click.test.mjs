@@ -21,23 +21,14 @@ const page = readFileSync(new URL("../public/files.html", import.meta.url));
 // drives on the same self-hosted runner, so the test needs no new tool.
 const CHROME = process.env.DRIVE_CHROME ?? "/usr/bin/google-chrome";
 
-/**
- * node:test's `skip` accepts a function, and this one counts the named proof
- * on the way past (drive#582): CI fails on chrome-file-click skipping, because
- * Chrome is on the runner the verify job uses, so the skip is a failure and
- * not a silence.
- * @returns {false | string}
- */
-function skipIfNoChrome() {
-  if (existsSync(CHROME)) return false;
-  reportSkip("chrome-file-click", "Chrome is not installed");
-  return "Chrome is not installed";
-}
-
 test("a click on a file name previews, downloads, and never shows raw JSON", {
   timeout: 180_000,
-  skip: skipIfNoChrome(),
 }, async (t) => {
+  if (!existsSync(CHROME)) {
+    reportSkip("chrome-file-click", "Chrome is not installed");
+    t.skip("Chrome is not installed");
+    return;
+  }
   // A real account over the real Worker: the D1 test database with the shipped
   // migrations, one signed-in session, and the in-memory store tests inject
   // (production never builds that store — drive#505). Nothing here is a stub
@@ -326,8 +317,12 @@ test("a click on a file name previews, downloads, and never shows raw JSON", {
 
 test("signed in, the files menu shows Sign out and signing out ends the session", {
   timeout: 180_000,
-  skip: skipIfNoChrome(),
 }, async (t) => {
+  if (!existsSync(CHROME)) {
+    reportSkip("chrome-file-click", "Chrome is not installed");
+    t.skip("Chrome is not installed");
+    return;
+  }
   // drive#423: the top menu said Sign in while signed in. This is the real
   // browser run of the changed flow: a signed-in files page shows Sign out,
   // a click posts the existing sign-out step, and the old cookie is dead.

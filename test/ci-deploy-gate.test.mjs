@@ -300,8 +300,7 @@ test("a FUSE skip is a failure under CI=true (drive#501)", () => {
   );
 });
 
-test("a skip of a proof this runner can run is a failure under CI=true (drive#582)", () => {
-  const helper = "test/proof-skip.mjs";
+test("a skip of a proof this runner can run is a failure under CI=true (drive#582)", async () => {
   const writers = [
     "test/files-page-click.test.mjs",
     "test/step1-storage.test.mjs",
@@ -309,18 +308,6 @@ test("a skip of a proof this runner can run is a failure under CI=true (drive#58
     "test/cap-mount.test.mjs",
     "test/home-demos.test.mjs",
   ];
-  // One place holds the rule, so no proof file can carry a guard of its own
-  // that drifts from the others by a name or a condition.
-  assert.match(
-    read(helper),
-    /process\.env\.CI === "true" && RUNNABLE_PROOFS\.has\(name\)/,
-    `${helper} fails a proof the runner has the tools for`,
-  );
-  assert.match(
-    read(helper),
-    /new Set\(\["chrome-file-click", "s3-standin"\]\)/,
-    `${helper} names the proofs CI must not skip`,
-  );
   for (const file of writers) {
     assert.match(
       read(file),
@@ -333,10 +320,55 @@ test("a skip of a proof this runner can run is a failure under CI=true (drive#58
       `${file} carries no skip guard of its own`,
     );
   }
-  for (const name of ["chrome-file-click", "s3-standin"]) {
-    assert.ok(
-      writers.some((file) => read(file).includes(`reportSkip("${name}"`)),
-      `${name} is a name a proof actually reports`,
+  const gated = ["chrome-file-click", "s3-standin", "cap-mount-rclone"];
+  const ungated = ["cap-mount", "home-page-demos"];
+  const reported = new Set();
+  for (const file of writers) {
+    for (const found of read(file).matchAll(/reportSkip\("([^"]+)"/g)) {
+      reported.add(found[1]);
+    }
+  }
+  for (const name of [...gated, ...ungated]) {
+    assert.ok(reported.has(name), `${name} is a name a proof actually reports`);
+  }
+  assert.deepEqual(
+    [...reported].sort(),
+    [...gated, ...ungated].sort(),
+    "every name a proof reports is on the gated list or on the cannot-run list, so the next silent skip is caught here",
+  );
+
+  const { reportSkip } = await import("../test/proof-skip.mjs");
+  const previousCi = process.env.CI;
+  const previousReport = process.env.DRIVE_PROOF_REPORT;
+  const report = new URL("./skip-report.txt", import.meta.url);
+  const { rm } = await import("node:fs/promises");
+  try {
+    process.env.CI = "true";
+    for (const name of gated) {
+      assert.throws(
+        () => reportSkip(name, "the tool is not installed"),
+        (err) => err instanceof Error && err.message.startsWith(`${name} skipped under CI=true`),
+        `${name} is a failure under CI=true`,
+      );
+    }
+    for (const name of ungated) {
+      assert.doesNotThrow(
+        () => reportSkip(name, "the runner cannot do this"),
+        `${name} still skips, because this runner cannot run it`,
+      );
+    }
+    process.env.CI = "";
+    process.env.DRIVE_PROOF_REPORT = report.pathname;
+    reportSkip(ungated[0], "the runner cannot do this");
+    assert.equal(
+      readFileSync(report, "utf8"),
+      `${ungated[0]}: the runner cannot do this\n`,
+      "a skip outside CI still records one line when the caller asks for it",
     );
+  } finally {
+    process.env.CI = previousCi ?? "";
+    if (previousReport === undefined) delete process.env.DRIVE_PROOF_REPORT;
+    else process.env.DRIVE_PROOF_REPORT = previousReport;
+    await rm(report, { force: true });
   }
 });

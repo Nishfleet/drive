@@ -390,7 +390,7 @@ test("a real capped mount goes read-only, keeps the file, and sends the queued u
   const rcloneBin = findRclone();
   if (!rcloneBin) {
     reportResult("skipped", "no rclone");
-    reportSkip("cap-mount", "rclone is not installed");
+    reportSkip("cap-mount-rclone", "rclone is not installed");
     return t.skip("rclone is not installed; set DRIVE_STANDIN_RCLONE");
   }
   if (!CONFIGURED_ENDPOINT && ROOT_SECRET_KEY.length < 8) {
