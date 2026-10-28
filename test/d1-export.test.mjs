@@ -39,24 +39,70 @@ test("the backup walks exactly the databases the deploy migrates", () => {
       /migrations apply ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g,
     ),
   ].map((m) => m[1]);
-  const pairLine = WF.split("\n").find((line) => line.includes("for pair in"));
-  assert.ok(pairLine, "the export walks the databases in one list");
+  const matrix = WF.slice(WF.indexOf("matrix:"), WF.indexOf("steps:"));
+  assert.ok(matrix.length > 0, "the export walks the databases in one matrix");
   const backupIds = [
-    ...pairLine.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
+    ...matrix.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
   ].map((m) => m[0]);
   assert.deepEqual(backupIds.sort(), deployIds.sort());
   assert.ok(deployIds.length >= 2, "both databases are exported");
 });
 
+test("a database that cannot be dumped fails its own job, and the others still ship", () => {
+  // The drive database is in the matrix the export API refuses, so its job is
+  // red on purpose. What must never happen is a green run that carried only
+  // the waitlist dump, which is what shipping a partial backup silently
+  // would look like.
+  const strategy = WF.slice(WF.indexOf("strategy:"), WF.indexOf("steps:"));
+  assert.match(
+    strategy,
+    /fail-fast: false/,
+    "a database the export API refuses must not cancel the others",
+  );
+  assert.match(
+    strategy,
+    /matrix:\n {8}database:\n(?: {10}- name: \w+\n {12}id: [0-9a-f-]{36}\n){2}/,
+    "one job per database, each carrying its own id",
+  );
+  // The stock shape, not a hand-rolled loop: nothing collects the failures,
+  // nothing steps past one, and no step waits for a failed database before
+  // it ships.
+  assert.doesNotMatch(WF, /for pair in/, "the matrix walks the databases, not a shell loop");
+  assert.doesNotMatch(WF, /missing=/, "a database that cannot dump fails its own job");
+  assert.doesNotMatch(WF, /continue/, "nothing steps past a failed database");
+  assert.doesNotMatch(WF, /if: always\(\)/, "no step waits for a failed database to ship");
+  // Each job uploads its own dump, so the dumps that were made still ship.
+  assert.match(
+    WF,
+    /name: d1-backup-\$\{\{ matrix\.database\.name \}\}/,
+    "each database's dump is its own artifact",
+  );
+  assert.match(
+    WF,
+    /if-no-files-found: error/,
+    "a job that produced nothing does not upload an empty artifact",
+  );
+});
+
 test("the export polls the stock D1 export API and fails loud at every exit", () => {
-  assert.match(WF, /d1\/database\/\$db\/export/);
+  assert.match(WF, /d1\/database\/\$DB_ID\/export/);
   assert.match(WF, /output_format/g);
   assert.match(WF, /current_bookmark/g);
   // The signed URL arrives only on status complete; a dump without one, a
-  // failed download, and an API error each fail the step with a named error.
+  // failed download, and an API error each fail the job with a named error.
   assert.match(WF, /no download URL after 20 polls/);
   assert.match(WF, /the dump download failed/);
   assert.match(WF, /the API call failed/);
+  // Every exit is loud and fatal for its own job: the database that failed
+  // is named and the job stops there, so the run's own job list is the
+  // signal. A database that cannot dump never reaches the upload step.
+  const dump = WF.slice(
+    WF.indexOf("- name: Dump and seal"),
+    WF.indexOf("- name: Upload the sealed dump"),
+  );
+  assert.ok(dump.length > 0, "the dump step is gone");
+  const exits = dump.split("\n").filter((line) => /::error::/.test(line) && /exit 1\b/.test(line));
+  assert.ok(exits.length >= 6, "every failure exit names the database and stops the job");
   // A run that produced nothing must not upload an empty artifact.
   assert.match(WF, /if-no-files-found: error/);
 });

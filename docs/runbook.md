@@ -52,8 +52,11 @@ waitlist (bookmark): …"). The bookmark is the point a restore returns to.
 writes made since are gone.** It is destructive and it is Nish's call, on a
 fresh export first (see the next section).
 
-1. Download the newest weekly artifact (`d1-backup`) so the pre-restore
-   state is also saved.
+1. Download the newest weekly artifact for the database you are restoring
+   (`d1-backup-waitlist` or `d1-backup-drive`) so the pre-restore state is also
+   saved. The drive database has no dump in its artifact while the weekly run
+   is red on it (see "The weekly backup"), so a drive restore has no copy
+   beyond the bookmark itself.
 2. Preview the restore (harmless):
 
    ```sh
@@ -87,12 +90,27 @@ escapes, cheapest first:
 
 ## The weekly backup
 
-`d1-export.yml` runs Mondays 05:37 UTC (or by hand) and uploads
-`waitlist-<date>.sql.age` and `drive-<date>.sql.age` as the `d1-backup`
-GitHub artifact, kept 90 days — the copy that survives a wrong restore, a
-deleted database or a provider problem. The dumps are sealed with `age`
-before upload: anyone with read access to this private repository can
-download its workflow artifacts, so only the ciphertext leaves the runner.
+`d1-export.yml` runs Mondays 05:37 UTC (or by hand) and uploads each
+database's dump as its own GitHub artifact — `d1-backup-waitlist` and
+`d1-backup-drive` — kept 90 days: the copy that survives a wrong restore, a
+deleted database or a provider problem. The two databases run as two jobs, so
+a database that cannot be dumped fails its own job and costs the other
+nothing. The dumps are sealed with `age` before upload: anyone with read
+access to this public repository can download its workflow artifacts, so only
+the ciphertext leaves the runner.
+
+**The drive database has no dump in its artifact, and its job is red on
+purpose.** The stock D1 export API does not take a database that holds
+virtual tables, and the FTS5 index on `file_index` (migration
+`0039_file_index_fts.sql`) is live production schema, so the drive database
+is the dump the export step records and fails on. Every Monday its job names
+it in an `::error::` annotation and exits red, while the waitlist job stays
+green and ships its own dump. The drive database's only recovery point is
+then D1 Time Travel, which keeps 30 days and lives on Cloudflare: for that
+database a restore further back than 30 days, a deleted database, or a loss
+on Cloudflare's side is not recoverable. The gap closes by itself — its job
+goes green and `drive-<date>.sql.age` appears in its artifact — when a
+mechanism lands (fleet-ops#10745); drive#1027 stays open until then.
 
 **One-time setup (Nish):** run `age-keygen -o d1-backup-key.txt` on a
 machine you keep keys on, and put the public key line it prints (`age1…`)
@@ -104,13 +122,16 @@ nothing, is the invisibility drive#520 exists to end.
 
 Restore from a dump:
 
-1. Download the artifact from the run's summary page.
+1. Download the artifact for that database from the run's summary page. While
+   the drive job is red there is no drive dump to download (see above), so a
+   drive restore goes through the Time Travel bookmark in the previous
+   section.
 2. Decrypt it with the private key, and check the sha256 the run log
    printed against the decrypted file:
 
    ```sh
-   age -d -i d1-backup-key.txt -o drive-<date>.sql drive-<date>.sql.age
-   sha256sum drive-<date>.sql
+   age -d -i d1-backup-key.txt -o waitlist-<date>.sql waitlist-<date>.sql.age
+   sha256sum waitlist-<date>.sql
    ```
 
 3. Small dumps, or a table at a time, go back through the CLI:
