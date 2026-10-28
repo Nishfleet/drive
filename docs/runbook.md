@@ -54,9 +54,8 @@ fresh export first (see the next section).
 
 1. Download the newest weekly artifact for the database you are restoring
    (`d1-backup-waitlist` or `d1-backup-drive`) so the pre-restore state is also
-   saved. The drive database has no dump in its artifact while the weekly run
-   is red on it (see "The weekly backup"), so a drive restore has no copy
-   beyond the bookmark itself.
+   saved. Both databases ship one, so either restore has a copy beyond the
+   bookmark itself.
 2. Preview the restore (harmless):
 
    ```sh
@@ -99,18 +98,23 @@ nothing. The dumps are sealed with `age` before upload: anyone with read
 access to this public repository can download its workflow artifacts, so only
 the ciphertext leaves the runner.
 
-**The drive database has no dump in its artifact, and its job is red on
-purpose.** The stock D1 export API does not take a database that holds
-virtual tables, and the FTS5 index on `file_index` (migration
-`0039_file_index_fts.sql`) is live production schema, so the drive database
-is the dump the export step records and fails on. Every Monday its job names
-it in an `::error::` annotation and exits red, while the waitlist job stays
-green and ships its own dump. The drive database's only recovery point is
-then D1 Time Travel, which keeps 30 days and lives on Cloudflare: for that
-database a restore further back than 30 days, a deleted database, or a loss
-on Cloudflare's side is not recoverable. The gap closes by itself — its job
-goes green and `drive-<date>.sql.age` appears in its artifact — when a
-mechanism lands (fleet-ops#10745); drive#1027 stays open until then.
+**The drive dump carries every table but the FTS5 index.** The stock D1
+export API refuses a dump that holds a virtual table, and the FTS5 index on
+`file_index` (migration `0039_file_index_fts.sql`) is live production schema.
+The refusal is a property of the dump options, not of the database: the drive
+job sends `dump_options.tables`, the explicit list of tables the dump may
+carry, and leaves the index and its five shadow tables out. So the drive job
+is green and `drive-<date>.sql.age` appears in its artifact like the
+waitlist dump does.
+
+The index rides a restore rather than the dump, because it is derived data:
+a restore replays the migrations, which run `0039_file_index_fts.sql` and
+rebuild it from `file_index`, and the nightly reconciler
+(`src/search.js reconcileIndex`) keeps it true after that. The table list
+itself is pinned by `test/d1-export.test.mjs`, which derives it from
+`migrations/drive/`, so a migration that adds a table fails the test until the
+list grows. The gap that used to be here — drive#1027, a database whose only
+recovery point was D1 Time Travel — is closed.
 
 **One-time setup (Nish):** run `age-keygen -o d1-backup-key.txt` on a
 machine you keep keys on, and put the public key line it prints (`age1…`)
@@ -122,10 +126,9 @@ nothing, is the invisibility drive#520 exists to end.
 
 Restore from a dump:
 
-1. Download the artifact for that database from the run's summary page. While
-   the drive job is red there is no drive dump to download (see above), so a
-   drive restore goes through the Time Travel bookmark in the previous
-   section.
+1. Download the artifact for that database from the run's summary page. Both
+   databases ship one, so a drive restore has a dump to read as well as the
+   Time Travel bookmark in the previous section.
 2. Decrypt it with the private key, and check the sha256 the run log
    printed against the decrypted file:
 

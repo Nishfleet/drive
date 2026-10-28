@@ -1,12 +1,60 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { MIGRATION_FILES } from "./d1-sqlite.mjs";
 
 const WF = readFileSync(new URL("../.github/workflows/d1-export.yml", import.meta.url), "utf8");
 const DEPLOY = readFileSync(
   new URL("../.github/workflows/deploy-production.yml", import.meta.url),
   "utf8",
 );
+
+// The five shadow tables SQLite builds beside an FTS5 virtual table, named
+// after it (https://www.sqlite.org/fts5.html): the file format, not a choice
+// this repository makes.
+const FTS5_SHADOW_TABLES = ["_config", "_content", "_data", "_docsize", "_idx"];
+// Two tables no migration creates: D1's own `_cf_KV`, and the `d1_migrations`
+// ledger `wrangler d1 migrations apply` writes. The export API dumps what the
+// database holds, so the backup's list carries them.
+const PLATFORM_TABLES = ["_cf_KV", "d1_migrations"];
+
+/**
+ * Every table the drive database's migrations create, minus the FTS5 family the
+ * export API refuses a dump over. Built by running the real migrations, never
+ * written out by hand, so a migration that adds a table fails the test below
+ * until the backup's own list grows to carry it.
+ *
+ * @returns {string[]}
+ */
+function driveTablesFromMigrations() {
+  const sqlite = new DatabaseSync(":memory:");
+  for (const name of MIGRATION_FILES)
+    sqlite.exec(readFileSync(new URL(`../migrations/drive/${name}`, import.meta.url), "utf8"));
+  const rows = sqlite
+    .prepare(
+      "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+    )
+    .all();
+  const refused = new Set(
+    rows
+      .filter((row) => /^CREATE VIRTUAL TABLE/i.test(row.sql ?? ""))
+      .flatMap((row) => [row.name, ...FTS5_SHADOW_TABLES.map((shadow) => row.name + shadow)]),
+  );
+  return rows.map((row) => row.name).filter((name) => !refused.has(name));
+}
+
+/**
+ * The `dump_options.tables` list the drive matrix entry sends.
+ *
+ * @returns {string[]}
+ */
+function driveDumpTables() {
+  const matrix = WF.slice(WF.indexOf("matrix:"), WF.indexOf("steps:"));
+  const drive = matrix.slice(matrix.indexOf("name: drive"));
+  return JSON.parse(drive.match(/tables: (\[[^\]]*\])/)[1]);
+}
 
 /** The top-level `on:` block of a workflow. @param {string} text */
 const onBlock = (text) => {
@@ -48,11 +96,57 @@ test("the backup walks exactly the databases the deploy migrates", () => {
   assert.ok(deployIds.length >= 2, "both databases are exported");
 });
 
-test("a database that cannot be dumped fails its own job, and the others still ship", () => {
-  // The drive database is in the matrix the export API refuses, so its job is
-  // red on purpose. What must never happen is a green run that carried only
-  // the waitlist dump, which is what shipping a partial backup silently
-  // would look like.
+test("the drive dump carries every table the migrations build, and no virtual table", () => {
+  const tables = driveDumpTables();
+  // Exact, both ways: a migration that adds a table fails here until the list
+  // grows, and a name the schema does not have fails here too.
+  const expected = [...driveTablesFromMigrations(), ...PLATFORM_TABLES].sort();
+  assert.deepEqual([...tables].sort(), expected);
+  // The FTS5 index is the one thing the dump cannot carry, and the only reason
+  // the drive database needs a list at all.
+  assert.ok(!tables.includes("file_index_fts"), "the virtual table stays out of the dump");
+  for (const shadow of FTS5_SHADOW_TABLES)
+    assert.ok(!tables.includes(`file_index_fts${shadow}`), `${shadow} stays out of the dump`);
+});
+
+test("the waitlist database exports whole and sends no table filter", () => {
+  const matrix = WF.slice(WF.indexOf("matrix:"), WF.indexOf("steps:"));
+  const waitlist = matrix.slice(matrix.indexOf("name: waitlist"), matrix.indexOf("name: drive"));
+  assert.match(waitlist, /tables: \[\]/);
+  assert.match(WF, /DB_TABLES: \$\{\{ toJSON\(matrix\.database\.tables\) \}\}/);
+});
+
+test("the dump request body is the stock export call, filtered only where it must be", () => {
+  // The real script from the workflow, run: a body the API would refuse, or a
+  // waitlist dump filtered by mistake, is a backup that does not restore.
+  const script = WF.match(/body=\$\(node -e '([^']*)' "\$bookmark"\)/)[1];
+  assert.ok(script, "the dump request body is built by the runtime, not by shell quoting");
+  /** @returns {Record<string, unknown>} */
+  const body = (tables, bookmark) =>
+    JSON.parse(
+      execFileSync(process.execPath, ["-e", script, bookmark], {
+        encoding: "utf8",
+        env: { ...process.env, DB_TABLES: JSON.stringify(tables) },
+      }),
+    );
+  assert.deepEqual(body([], ""), { output_format: "polling" });
+  assert.deepEqual(body([], "bm"), { output_format: "polling", current_bookmark: "bm" });
+  assert.deepEqual(body(["file_index"], ""), {
+    output_format: "polling",
+    dump_options: { tables: ["file_index"] },
+  });
+  assert.deepEqual(body(["file_index"], "bm"), {
+    output_format: "polling",
+    current_bookmark: "bm",
+    dump_options: { tables: ["file_index"] },
+  });
+});
+
+test("the matrix walks every database, and one failure costs only its own job", () => {
+  // Both databases ride the matrix, and the stock shape is what makes a refusal
+  // visible: `fail-fast: false` keeps a refused database from cancelling the
+  // other, and each job uploads its own dump as its own artifact, so a run that
+  // carried one dump is never read as "both databases are backed up".
   const strategy = WF.slice(WF.indexOf("strategy:"), WF.indexOf("steps:"));
   assert.match(
     strategy,
@@ -61,7 +155,7 @@ test("a database that cannot be dumped fails its own job, and the others still s
   );
   assert.match(
     strategy,
-    /matrix:\n {8}database:\n(?: {10}- name: \w+\n {12}id: [0-9a-f-]{36}\n){2}/,
+    /matrix:\n {8}database:\n(?: {10}- \{ name: \w+, id: [0-9a-f-]{36}, tables: \[[^\]]*\] \}\n(?: {10}#[^\n]*\n)*){2}/,
     "one job per database, each carrying its own id",
   );
   // The stock shape, not a hand-rolled loop: nothing collects the failures,

@@ -1,5 +1,5 @@
 # A weekly SQL dump of every D1 database the deploy migrates, kept off
-# Cloudflare (drive#520).
+# Cloudflare (drive#1027).
 #
 # Time Travel covers the last 30 days, and the deploy records a restore-point
 # bookmark only when a migration runs (deploy-production.yml). The weekly dump
@@ -19,25 +19,40 @@
 # Cloudflare's OpenAPI schema): the first call starts the dump, later calls
 # poll with the returned `at_bookmark` until `status: "complete"` carries a
 # `signed_url`, valid one hour. The pinned cf CLI has no d1 export command, so
-# this is the stock REST call, not hand-rolled backup logic.
+# this is the stock REST call, not hand-rolled backup logic. The same call
+# carries `dump_options.tables`, the explicit list of tables the dump may hold:
+# the waitlist database exports whole and sends no such list, and the drive
+# database sends one because its dump would otherwise carry a virtual table.
 #
 # The matrix is the stock shape for "try each database and let the one that
 # fails fail on its own": GitHub runs one job per database, `fail-fast: false`
 # keeps a refused database from cancelling the other, and each job uploads its
-# own dump as its own artifact. So the waitlist job stays green while the drive
-# job is red, and a new failure on either database shows up on that database's
-# own job instead of as one more line in a run that was already red.
+# own dump as its own artifact. So a new failure on either database shows up on
+# that database's own job instead of as one more line in a run that was already
+# red, and one green job is never read as "both databases are backed up".
 #
-# The drive database stays in the matrix and its job stays red on purpose: the
-# export API does not take a database that holds virtual tables, and the FTS5
-# index on `file_index` (migration `0039_file_index_fts.sql`) is live
-# production schema, so the refusal is a property of the database, not of the
-# dump options. Its only recovery point is then D1 Time Travel, 30 days, on
-# Cloudflare. The gap closes by itself when a mechanism lands
-# (fleet-ops#10745): the drive database exports like any other and the job
-# goes green. Until then drive#1027 stays open, and test/d1-export.test.mjs
-# fails if a database the deploy migrates leaves the matrix, or if a job stops
-# failing on its own database.
+# The drive database holds the FTS5 index on `file_index` (migration
+# `0039_file_index_fts.sql`), and the export API refuses a dump that carries a
+# virtual table. The refusal is a property of the dump options, not of the
+# database: the same call takes the drive database when `dump_options.tables`
+# names every table the dump may carry and leaves the index and its five shadow
+# tables out (proven on the drive database itself, run 40759220057). So the
+# drive job names them, and the index rides a restore through the migrations'
+# replay and the nightly reconciler rather than through the dump, because it is
+# derived data rebuilt from `file_index` (src/search.js reconcileIndex).
+# test/d1-export.test.mjs derives that list from the migrations, so a migration
+# that adds a table fails the test until the list grows, and fails too if a
+# database the deploy migrates leaves the matrix.
+#
+# The drive database has no s3-compatible gateway, so its dump and its probe
+# walk the same two steps the other backups do: the API holds the dump for one
+# hour, and a dump nobody moved to R2 is a dump that expires. So both jobs fetch
+# the signed URL straight off the API answer, encrypt locally, and hand
+# Cloudflare the already-encrypted bytes. `age` is the stock tool
+# (`docs/runbook.md`, The weekly backup); its release archive is fetched from
+# `filippo.io/age/releases` over TLS, and the checksum beside it is the one
+# published on that release page. Neither job gets a bucket token, because
+# neither writes to a bucket.
 #
 # Secrets stay behind `environment: production` (drive#507; enforced by
 # test/workflow-secrets.test.mjs). Retention 90 days keeps 13 weekly points.
@@ -68,16 +83,26 @@ jobs:
       fail-fast: false # a database the API refuses costs the others nothing
       matrix:
         database:
-          - name: waitlist
-            id: 93c9f523-159c-4261-8541-d4c059906df3
-          - name: drive
-            id: 0f636b57-4a2e-482a-bf40-8aa315e2403e
+          - { name: waitlist, id: 93c9f523-159c-4261-8541-d4c059906df3, tables: [] }
+          # Every table the drive dump may carry. The export API refuses a dump
+          # that holds a virtual table, and the FTS5 index on `file_index`
+          # (migration 0039_file_index_fts.sql) is one, with five shadow tables
+          # of its own, so those six stay out and the other forty ride. The
+          # index is derived data: a restore replays the migrations and the
+          # nightly reconciler rebuilds it (src/search.js reconcileIndex), so
+          # the dump loses nothing the schema and `file_index` cannot rebuild.
+          # test/d1-export.test.mjs derives this list from the migrations and
+          # fails the moment one adds a table the dump does not carry.
+          - { name: drive, id: 0f636b57-4a2e-482a-bf40-8aa315e2403e, tables: ["_cf_KV", "account", "accounts", "agent_caps", "balance_ledger", "billing_pushes", "branches", "d1_migrations", "daily_draws", "device_codes", "device_queue_reports", "device_tokens", "devices", "events_seen", "fair_use_decisions", "file_index", "file_index_staging", "file_versions", "known_bad_feed_state", "known_bad_hashes", "meter_account_rerolls", "meter_rollup_state", "nightly_sizes", "passkey", "prepaid_draw_marks", "rateLimit", "session", "shares", "signin_account_sends", "signin_address_sends", "signin_return", "team_members", "teams", "twoFactor", "upload_requests", "usage_minutes", "user", "verification", "webhook_deliveries", "webhook_endpoints"] }
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       AGE_RECIPIENT: ${{ vars.AGE_RECIPIENT }}
       DB_NAME: ${{ matrix.database.name }}
       DB_ID: ${{ matrix.database.id }}
+      # The tables the dump may carry, as JSON. `tables: []` on the waitlist
+      # database sends no `dump_options` at all, so nothing filters that dump.
+      DB_TABLES: ${{ toJSON(matrix.database.tables) }}
     steps:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -104,7 +129,7 @@ jobs:
           bookmark="" url=""
           for attempt in $(seq 1 20); do
             echo "poll $attempt for $DB_NAME"
-            body='{"output_format":"polling"}'; [ -n "$bookmark" ] && body="{\"output_format\":\"polling\",\"current_bookmark\":\"$bookmark\"}"
+            body=$(node -e 'const tables=JSON.parse(process.env.DB_TABLES),bookmark=process.argv[1];process.stdout.write(JSON.stringify({output_format:"polling",...(bookmark?{current_bookmark:bookmark}:{}),...(tables.length?{dump_options:{tables}}:{})}))' "$bookmark")
             resp=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors \
               -H "@$headers" -H 'content-type: application/json' -d "$body" \
               "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$DB_ID/export") \
