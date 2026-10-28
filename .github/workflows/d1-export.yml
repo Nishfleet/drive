@@ -140,7 +140,8 @@ jobs:
             if (process.env.PROBE) {
               for (const sql of process.env.PROBE.split("|")) {
                 try {
-                  console.log(`PROBE OK [${sql.slice(0, 70)}]: ${JSON.stringify(await query(sql.slice(0, 800)))}`.slice(0, 600));
+                  const params = sql.includes("?") ? [0] : [];
+                  console.log(`PROBE OK [${sql.slice(0, 70)}]: ${JSON.stringify(await query(sql.slice(0, 800), params))}`.slice(0, 600));
                 } catch (e) {
                   console.log(`PROBE FAIL [${sql.slice(0, 70)}]: ${e.message.slice(0, 200)}`);
                 }
@@ -254,7 +255,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           AGE_RECIPIENT: ${{ vars.AGE_RECIPIENT }}
-          PROBE: SELECT rowid AS r, * FROM file_index LIMIT 1|SELECT _rowid_ AS r FROM file_index LIMIT 1|SELECT oid AS r FROM file_index LIMIT 1|SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type = 'table' LIMIT 3|SELECT max(rowid) m FROM file_index|SELECT COUNT(*) c FROM file_index
+          PROBE: SELECT rowid AS r, * FROM file_index WHERE rowid > ? ORDER BY rowid LIMIT 500|SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%'|SELECT p FROM (SELECT rowid AS p FROM file_index) LIMIT 2|SELECT id FROM balances LIMIT 1
       - name: Upload the sealed dumps off Cloudflare
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
