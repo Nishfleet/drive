@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { appendFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { platform } from "node:os";
 import { test } from "node:test";
@@ -18,6 +17,7 @@ import worker from "../src/index.js";
 import { dispatch } from "../workers/api/src/index.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
+import { reportSkip } from "./proof-skip.mjs";
 
 // No bucket is named at module level: the bucket this proof provisions is the
 // account's own (`drv-<accountId>`, keyprovider.js `bucketForAccount`),
@@ -158,17 +158,6 @@ function providerDayGbMinutes(versions, day) {
 // The test then waitFor(3, 60) and waitFor(4, 60) for webhook deliveries.
 // node:test's default 5s timeout killed startup (drive#457: 4999.68ms on PR 435).
 const STANDIN_TEST_TIMEOUT_MS = 30_000 + 60_000 + 60_000 + 60_000;
-
-/**
- * One line per named proof that skipped, written when CI asks for it
- * (DRIVE_PROOF_REPORT), so CI counts it (drive#582).
- * @param {string} name
- * @param {string} reason
- */
-function reportSkip(name, reason) {
-  const report = process.env.DRIVE_PROOF_REPORT;
-  if (report) appendFileSync(report, `${name}: ${reason}\n`);
-}
 
 test("a full day of GB-minutes matches the storage provider's own report within 1%", {
   timeout: STANDIN_TEST_TIMEOUT_MS,

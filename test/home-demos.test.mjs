@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { killTracked, spawnTracked } from "./minio-standin.mjs";
+import { reportSkip } from "./proof-skip.mjs";
 import { rivalHits } from "./rival-terms.mjs";
 
 const run = promisify(execFile);
@@ -707,19 +708,6 @@ function assertSameDemoRows(committedDoc, rows) {
       committed.join(", ") || "no rows"
     }; if the demos changed, re-record the file in the same commit (DRIVE_DEMOS_DOC=docs/demos.md)`,
   );
-}
-
-/**
- * One line per named proof that skipped, written when CI asks for it
- * (DRIVE_PROOF_REPORT). CI counts these and fails on a proof whose tool the
- * runner has, so a skipped proof is a number in the log and not a silence
- * (drive#582). Unset locally, so a developer's machine skips honestly.
- * @param {string} name
- * @param {string} reason
- */
-function reportSkip(name, reason) {
-  const report = process.env.DRIVE_PROOF_REPORT;
-  if (report) appendFileSync(report, `${name}: ${reason}\n`);
 }
 
 /** @returns {string} */

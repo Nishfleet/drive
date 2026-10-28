@@ -256,7 +256,7 @@ jobs:
           trap 'rm -f "$headers"' EXIT
           (umask 077 && printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' \
             "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$headers")
-          body=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors -H "@$headers" \
+          body=$(curl -sS --fail --max-time 10 --retry 5 --retry-delay 5 --retry-all-errors -H "@$headers" \
             https://storagebun.com/api/health) || { echo "::error::/api/health did not answer 200"; exit 1; }
           printf '%s' "$body" | node -e 'if(JSON.parse(require("fs").readFileSync(0,"utf8")).ok!==true)process.exit(1)' ||
             { echo "::error::/api/health is not ok: $body"; exit 1; }

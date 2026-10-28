@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import path from "node:path";
@@ -19,6 +19,7 @@ import { createS3Client, provisionBucket } from "../core/s3.js";
 import { createS3KeyProvider } from "../core/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
+import { reportSkip } from "./proof-skip.mjs";
 
 const run = promisify(execFile);
 const TEST_FILE = fileURLToPath(import.meta.url);
@@ -53,20 +54,6 @@ const RESULT_FILE = process.env.DRIVE_CAP_MOUNT_RESULT;
 /** @param {string} status @param {string} [detail] */
 function reportResult(status, detail = "") {
   if (RESULT_FILE) writeFileSync(RESULT_FILE, detail ? `${status}: ${detail}\n` : `${status}\n`);
-}
-
-/**
- * One line per named proof that skipped, written when CI asks for it
- * (DRIVE_PROOF_REPORT): the workflow's "Named proofs that skipped" step counts
- * them and fails on a proof whose tool the runner has, so a skip is a number
- * in the build log and not a silence (drive#582). Unset locally, so a
- * developer's machine still skips honestly and quietly.
- * @param {string} name
- * @param {string} reason
- */
-function reportSkip(name, reason) {
-  const report = process.env.DRIVE_PROOF_REPORT;
-  if (report) appendFileSync(report, `${name}: ${reason}\n`);
 }
 
 /** @param {string} bin */
@@ -403,7 +390,7 @@ test("a real capped mount goes read-only, keeps the file, and sends the queued u
   const rcloneBin = findRclone();
   if (!rcloneBin) {
     reportResult("skipped", "no rclone");
-    reportSkip("cap-mount", "rclone is not installed");
+    reportSkip("cap-mount-rclone", "rclone is not installed");
     return t.skip("rclone is not installed; set DRIVE_STANDIN_RCLONE");
   }
   if (!CONFIGURED_ENDPOINT && ROOT_SECRET_KEY.length < 8) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { platform } from "node:os";
 import { test } from "node:test";
@@ -21,6 +21,7 @@ import {
 import { createS3KeyProvider, policyForScope } from "../core/s3-keys.js";
 import { dispatch } from "../workers/api/src/index.js";
 import { startMinioStandin } from "./minio-standin.mjs";
+import { reportSkip } from "./proof-skip.mjs";
 
 // The last MinIO release, pinned by tag. MinIO's own downloads and Docker Hub
 // images were taken down at the end of 2025 and its GitHub repo is archived;
@@ -181,17 +182,6 @@ test("S3 signing is aws4fetch, not a hand-written SigV4 module", () => {
   const s3 = readFileSync(new URL("../core/s3.js", import.meta.url), "utf8");
   assert.match(s3, /from "aws4fetch"/);
 });
-
-/**
- * One line per named proof that skipped, written when CI asks for it
- * (DRIVE_PROOF_REPORT), so CI counts it (drive#582).
- * @param {string} name
- * @param {string} reason
- */
-function reportSkip(name, reason) {
-  const report = process.env.DRIVE_PROOF_REPORT;
-  if (report) appendFileSync(report, `${name}: ${reason}\n`);
-}
 
 test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event", async (t) => {
   if (platform() !== "linux" && !CONFIGURED_ENDPOINT) {
