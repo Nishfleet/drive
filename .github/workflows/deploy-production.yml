@@ -3,15 +3,13 @@
 # drive#499: a push to main used to deploy even when the same commit's CI was
 # red (CI run 37254363049 failed, deploy 37254362979 on 2f62b7a succeeded).
 # GitHub's `workflow_run` on CI's conclusion is the stock gate: the job runs
-# only when CI on a main push succeeded, and it checks out the commit CI
-# tested. It does not re-run CI. It builds, ships, checks the live Worker
-# version and health, and rolls the Worker version back when that check fails.
+# only when CI on a main push succeeded, and it ships the commit CI tested
+# without re-running CI. It builds, ships, checks the live Worker version and
+# health, and rolls the Worker version back when that check fails.
 #
-# drive#132: the old caller pointed at nish3451/shared-workflows (archived).
-# That reusable workflow had no deploy target for drive and waited on every
-# check on the main SHA, so merging to main never shipped the site and the
-# live drive-pricing Worker went stale. This is the plain deploy job 0509
-# already runs, adapted to drive's `cf` CLI (`cloudflare.config.ts`).
+# drive#132: the old caller pointed at nish3451/shared-workflows (archived),
+# which had no deploy target for drive and waited on every main-SHA check, so
+# merging never shipped the site. This is 0509's plain deploy job, on `cf`.
 name: Deploy production
 
 # zizmor's dangerous-triggers flags workflow_run because a fork's PR run can
@@ -58,12 +56,14 @@ jobs:
       - name: Ship only a CI-green main head
         # A rerun of an old CI run, or a hand start on a red main, must not
         # ship. The commit must still be main's head, and CI must have passed
-        # on it. A stale commit stops here, because the newer commit's own CI
-        # run deploys that one.
+        # on it. A push's trigger already carries that proof, so only a start
+        # by hand reads the run list (drive#1046). A stale commit stops here,
+        # because the newer commit's own CI run deploys that one.
         run: |
           head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
           test "$SHA" = "$head" || { echo "::error::$SHA is no longer main's head ($head)"; exit 1; }
-          green=$(gh run list -R "$GITHUB_REPOSITORY" --workflow CI --branch main --commit "$SHA" --status success --json databaseId --jq length)
+          green=1
+          [ "$GITHUB_EVENT_NAME" = "workflow_run" ] || green=$(gh run list -R "$GITHUB_REPOSITORY" --workflow CI --branch main --commit "$SHA" --status success --json databaseId --jq length)
           test "$green" -gt 0 || { echo "::error::CI has not passed on $SHA"; exit 1; }
           echo "shipping $SHA: main head, CI passed"
         env:
