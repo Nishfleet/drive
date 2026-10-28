@@ -75,7 +75,9 @@ jobs:
             url=""
             for attempt in $(seq 1 20); do
               echo "poll $attempt for $name"
-              if [ -n "$bookmark" ]; then
+              if [ "$name" = drive ]; then
+                body='{"output_format":"polling","dump_options":{"no_schema":true}}'
+              elif [ -n "$bookmark" ]; then
                 body="{\"output_format\":\"polling\",\"current_bookmark\":\"$bookmark\"}"
               else
                 body='{"output_format":"polling"}'
