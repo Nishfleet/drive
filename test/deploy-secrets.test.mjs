@@ -7,16 +7,7 @@ import { test } from "node:test";
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
-/**
- * The one place the cf-secret rule lives, so cloudflare.config.ts and
- * docs/runbook.md cannot drift apart: a file that tells an operator to set a
- * Worker secret names the cf command, never wrangler, which this repo does not
- * use (drive#189). The names are per file: the config declares the mail pair,
- * and the runbook sets the signed door's secret, which the config leaves
- * undeclared on purpose.
- * @param {string} path
- * @param {string[]} names
- */
+/** @param {string} path @param {string[]} names */
 const assertCfSecretCommands = (path, names) => {
   const text = read(path);
   assert.ok(
@@ -25,7 +16,7 @@ const assertCfSecretCommands = (path, names) => {
   );
   for (const name of names) {
     assert.ok(
-      new RegExp(`cf workers secrets update ${name}\\b`).test(text),
+      new RegExp(`cf workers secrets update ${name} --type secret_text\\b`).test(text),
       `${path} must show the cf command that sets ${name}`,
     );
   }
@@ -161,9 +152,5 @@ test("the config tells an operator how to set the undeclared secrets with cf", (
 });
 
 test("the runbook sets the signed webhook secret with cf, not wrangler", () => {
-  // The same rule as the config above, from the one helper: the runbook told an
-  // operator to run `npx wrangler secret put ... --env production`, and this
-  // repo has no wrangler and no production environment to name, so the signed
-  // door stayed at 503. drive#1092.
   assertCfSecretCommands("docs/runbook.md", ["STORAGE_EVENTS_WEBHOOK_SECRET"]);
 });

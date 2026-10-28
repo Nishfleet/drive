@@ -197,8 +197,8 @@ operator steps below run in this order:
 
 1. Set the secret: `cf workers secrets update STORAGE_EVENTS_WEBHOOK_SECRET --type secret_text --text <value> --worker drive-pricing`,
    with a value of the Standard Webhooks shape (`whsec_<32 random bytes, base64>`).
-   `--type` is required: cf refuses the update without it, and the value
-   survives a deploy.
+   `--type` is required: cf refuses the update without it.
+   The value survives a deploy.
 2. Add one notification rule per bucket in the provider's own console
    (iDrive e2 / MinIO: KeySpace event notifications) pointed at
    `https://storagebun.com/api/storage-events/signed`
