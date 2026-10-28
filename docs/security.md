@@ -24,8 +24,13 @@ with write access here, and how each download that CI executes is pinned
   (`gh pr close --delete-branch`, fleet-ops#8457). Neither job checks out code,
   so the write token never meets PR head code. If fleet-ops drops both, drop
   `contents: write` from the stub too.
-- **What limits the risk.** Both repositories are private, both `main`
-  branches are protected, and fleet-ops is Nish's own repository.
+- **What limits the risk.** Both `main` branches are protected, and
+  fleet-ops is Nish's own repository.
+- **What a stranger can read.** Both repositories are public, so every
+  workflow, run log and artifact here is readable by anyone. The weekly backup
+  seals each dump with `age` before upload for that reason (`d1-export.yml`):
+  a database dump is customer data, and only its ciphertext leaves the
+  runner.
 
 ## Switching the dispatch stub off
 
