@@ -52,8 +52,11 @@ waitlist (bookmark): …"). The bookmark is the point a restore returns to.
 writes made since are gone.** It is destructive and it is Nish's call, on a
 fresh export first (see the next section).
 
-1. Download the newest weekly artifact (`d1-backup`) so the pre-restore
-   state is also saved.
+1. Download the newest weekly artifact for the database you are restoring
+   (`d1-backup-waitlist` or `d1-backup-drive`) so the pre-restore state is also
+   saved. The drive database has no dump in its artifact while the weekly run
+   is red on it (see "The weekly backup"), so a drive restore has no copy
+   beyond the bookmark itself.
 2. Preview the restore (harmless):
 
    ```sh
@@ -87,23 +90,27 @@ escapes, cheapest first:
 
 ## The weekly backup
 
-`d1-export.yml` runs Mondays 05:37 UTC (or by hand) and uploads
-`waitlist-<date>.sql.age` as the `d1-backup` GitHub artifact, kept 90 days —
-the copy that survives a wrong restore, a deleted database or a provider
-problem. The dump is sealed with `age` before upload: anyone with read access
-to this private repository can download its workflow artifacts, so only the
-ciphertext leaves the runner.
+`d1-export.yml` runs Mondays 05:37 UTC (or by hand) and uploads each
+database's dump as its own GitHub artifact — `d1-backup-waitlist` and
+`d1-backup-drive` — kept 90 days: the copy that survives a wrong restore, a
+deleted database or a provider problem. The two databases run as two jobs, so
+a database that cannot be dumped fails its own job and costs the other
+nothing. The dumps are sealed with `age` before upload: anyone with read
+access to this public repository can download its workflow artifacts, so only
+the ciphertext leaves the runner.
 
-**What it does not cover: the drive database.** The stock D1 export API
-refuses a database that holds virtual tables, and the FTS index on
-`file_index` (migration `0039_file_index_fts.sql`) is live production schema,
-so the refusal is a property of the database and not of the dump options:
-`dump_options.tables` and `dump_options.no_schema` were both tried on live
-runs and refused. Cloudflare's own workaround — dropping and recreating the
-virtual tables around each export — stops search writes on a production
-database for the width of a dump, so it is not a real fix either. Until a
-mechanism lands (fleet-ops#10745), the drive database's only recovery point
-is D1 Time Travel, which keeps 30 days and lives on Cloudflare.
+**The drive database has no dump in its artifact, and its job is red on
+purpose.** The stock D1 export API does not take a database that holds
+virtual tables, and the FTS5 index on `file_index` (migration
+`0039_file_index_fts.sql`) is live production schema, so the drive database
+is the dump the export step records and fails on. Every Monday its job names
+it in an `::error::` annotation and exits red, while the waitlist job stays
+green and ships its own dump. The drive database's only recovery point is
+then D1 Time Travel, which keeps 30 days and lives on Cloudflare: for that
+database a restore further back than 30 days, a deleted database, or a loss
+on Cloudflare's side is not recoverable. The gap closes by itself — its job
+goes green and `drive-<date>.sql.age` appears in its artifact — when a
+mechanism lands (fleet-ops#10745); drive#1027 stays open until then.
 
 **One-time setup (Nish):** run `age-keygen -o d1-backup-key.txt` on a
 machine you keep keys on, and put the public key line it prints (`age1…`)
@@ -115,7 +122,10 @@ nothing, is the invisibility drive#520 exists to end.
 
 Restore from a dump:
 
-1. Download the artifact from the run's summary page.
+1. Download the artifact for that database from the run's summary page. While
+   the drive job is red there is no drive dump to download (see above), so a
+   drive restore goes through the Time Travel bookmark in the previous
+   section.
 2. Decrypt it with the private key, and check the sha256 the run log
    printed against the decrypted file:
 
@@ -133,7 +143,6 @@ Restore from a dump:
    `--sql` carries the statements in the command line, so split a large dump
    into statement-sized files rather than growing one argument past the
    shell's limit.
-
 4. A whole-database import of a large dump is the D1 import API's
    init/upload/ingest protocol; prefer the Time Travel restore for point-in-
    time recovery and keep the dump for reading and surgical repairs.
@@ -146,6 +155,17 @@ resume. A paused monitor opens an issue after two missed windows (about two
 hours for the hourly meter) — pause or delete the matching monitor too if
 the pause is deliberate.
 
+## Switch the weekly backup off
+
+- Stop the schedule only: delete the `- cron: "37 5 * * 1"` line from
+  `.github/workflows/d1-export.yml` and merge through CI. `workflow_dispatch`
+  stays, so a restore drill still starts a backup by hand.
+- Stop it completely: delete `.github/workflows/d1-export.yml` and merge
+  through CI.
+- Keep the `AGE_RECIPIENT` repository variable either way: it is the backup
+  key's public half, and a backup turned back on later fails loud without it
+  rather than shipping plaintext dumps.
+
 ## The Access service token and the uptime monitors
 
 The site sits behind Cloudflare Access (drive#159), so `/api/health` needs a
@@ -153,8 +173,7 @@ service token before any monitor can reach it:
 
 1. Zero Trust → Access → Service Auth → Service Tokens: create one token.
 2. Give it an Access policy on the self-hosted app for the
-   `storagebun.com` hostname (and keep the existing workers.dev app until
-   that hostname answers), scoped to the `/api/health` path only, so the
+   `storagebun.com` hostname, scoped to the `/api/health` path only, so the
    token cannot open the drive itself.
 3. Set the token's id and secret as `CF_ACCESS_CLIENT_ID` /
    `CF_ACCESS_CLIENT_SECRET` on the `production` environment — the deploy
@@ -166,16 +185,19 @@ service token before any monitor can reach it:
    `"ok":true`: Access answers a dead or missing token with a 302 redirect,
    which counts as down.
 
-Two tokens, one job each. Both are scoped to `/api/health` only, so neither
-can open the drive itself, and a leaked monitor token is revoked and
-replaced on its own, without touching the deploy smoke's credentials or
-deploying anything (review finding on PR #697).
+Two tokens for the health check, one job each. Both are scoped to
+`/api/health` only, so neither can open the drive itself, and a leaked
+monitor token is revoked and replaced on its own, without touching the
+deploy smoke's credentials or deploying anything (review finding on PR
+#697). The storage-event webhook carries a third service token of its own,
+scoped to its path only, for the same reason - see "Registering a bucket's
+storage notifications" below.
 
 ## The merge gate: required checks and the ratchet
 
 Ruleset `main gate` (id 24262668) guards `main` with a merge queue. Before 2026-10-12 it required `verify` and `go`; it now also requires `ratchet / ratchet` (no other field changed). That check is fleet-ops' no-glue ratchet: a PR's net added lines under `.github/workflows`, `.github/actions`, `scripts` and `bin` must be 0 or fewer. `.github/workflows/ratchet.yml` only calls `Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main`, so the rule is fleet-ops' main copy and a PR cannot loosen it; a PR that edits the caller's `ratchet` job fails. Keep `@main`: a SHA pin queues forever on the fleet's runner group.
 
-- Bypass list: `gh api repos/Nishfleet/drive/rulesets/24262668 --jq '.bypass_actors, .current_user_can_bypass'` prints `[]` and `"never"`. It was already empty in every version of the ruleset's history (3 versions), the last month has no rule-suite with result `bypass`, and nothing here merges through the REST API (`auto-merge-arm.yml` runs `gh pr merge --auto --squash`, which goes through the queue). Nothing automated depends on a bypass.
+- Bypass list: `gh api repos/Nishfleet/drive/rulesets/24262668 --jq '.bypass_actors, .current_user_can_bypass'` prints `[]` and `"never"`. It was already empty in every version of the ruleset's history (3 versions), the last month has no rule-suite with result `bypass`, and nothing here merges through the REST API (the fleet dispatch enables auto-merge on claim pull requests, and the queue performs the merge). Nothing automated depends on a bypass.
 - Undo (Nish only, removes the ratchet requirement): `gh api repos/Nishfleet/drive/rulesets/24262668 | jq '{name,target,enforcement,bypass_actors,conditions,rules:(.rules|map(if .type=="required_status_checks" then .parameters.required_status_checks|=map(select(.context!="ratchet / ratchet")) else . end))}' | gh api -X PUT repos/Nishfleet/drive/rulesets/24262668 --input -`.
 
 ## Registering a bucket's storage notifications (drive#831)
@@ -191,19 +213,43 @@ The signed door ships closed: with `STORAGE_EVENTS_WEBHOOK_SECRET` unset it
 answers `503` and accepts nothing, the same closed door
 `/api/billing/webhook` answers with `DODO_WEBHOOK_SECRET` unset. That name is
 not declared in `cloudflare.config.ts` on purpose - a declared
-`bindings.secret()` with no value behind it fails every deploy - so the two
-steps below are the operator's, in this order:
+`bindings.secret()` with no value behind it fails every deploy - so the
+operator steps below run in this order:
 
-1. Set the secret: `npx wrangler secret put STORAGE_EVENTS_WEBHOOK_SECRET --env production`,
+1. Set the secret: `cf workers secrets update STORAGE_EVENTS_WEBHOOK_SECRET --type secret_text --text <value> --worker drive-pricing`,
    with a value of the Standard Webhooks shape (`whsec_<32 random bytes, base64>`).
+   `--type` is required: cf refuses the update without it.
+   The value survives a deploy.
 2. Add one notification rule per bucket in the provider's own console
    (iDrive e2 / MinIO: KeySpace event notifications) pointed at
-   `https://drive-pricing.nishant345.workers.dev/api/storage-events/signed`
+   `https://storagebun.com/api/storage-events/signed`
    for `s3:ObjectCreated:*` and `s3:ObjectRemoved:*`. A rule that cannot sign
    (a vendor webhook carrying only a bearer token) stays on
    `/api/storage-events` with `METER_EVENT_TOKEN`.
-3. Confirm it: post one signed event (headers `webhook-id`,
-   `webhook-timestamp`, `webhook-signature` from `core/topup.js` `signWebhook`;
+3. Let the rule through Cloudflare Access (operator step, drive#1076). The
+   `storagebun.com` app answers every path with the sign-in redirect
+   (drive#159), and a vendor webhook cannot follow one, so the rule needs a
+   service token as well as its own credential. In the Zero Trust dashboard
+   (Access → Applications → the self-hosted app for the host the rule posts
+   to: `storagebun.com`, and the workers.dev app while that address stays
+   on), add a service-token policy scoped to the `/api/storage-events/*`
+   path - create it, or extend an existing service-token policy that already
+   covers this path - and put a token whose only policy is this one in the
+   rule's `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers, in the
+   provider's console on the rule from step 2. A wildcard path does not
+   cover its parent, so a rule on the bare `/api/storage-events` door needs
+   the `/api/storage-events` path too (Cloudflare One, "Application paths").
+   Nothing in this repo applies an Access policy, and the
+   `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` values the deploy reads
+   are the health probe's, so this step is Nish's, in the dashboard, once per
+   app. Confirm it through the wall: the post in the next step carries this
+   token in the two headers and no browser, and a `{"ok":true,...}` answer
+   is the policy matching. A `302` to
+   `https://<account>.cloudflareaccess.com/` is the policy not matching this
+   path, and the provider retries that redirect and drops the event.
+4. Confirm it: post one signed event (headers `webhook-id`,
+   `webhook-timestamp`, `webhook-signature` from `core/topup.js` `signWebhook`,
+   plus `CF-Access-Client-Id` and `CF-Access-Client-Secret` from step 3;
    body the fixture in `test/storage-events-signed.test.mjs`, a create with
    `eventName`, `keyName` `u/<account>/notes.md`, and `bucket` that account's
    own name) and expect `{"ok":true,"stored":1,"deduped":0,"enqueued":1}`.
