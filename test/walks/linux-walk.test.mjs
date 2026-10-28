@@ -54,8 +54,9 @@ const NOTIFICATION_ARN = `arn:minio:sqs::${NOTIFICATION_NAME}:webhook`;
 const CONFIGURED_ENDPOINT = process.env.DRIVE_STANDIN_ENDPOINT ?? null;
 const EVENT_TOKEN = process.env.DRIVE_STANDIN_EVENT_TOKEN ?? randomBytes(24).toString("hex");
 const WEBHOOK_SECRET = process.env.DODO_WEBHOOK_SECRET ?? randomBytes(24).toString("hex");
-const WALK_CLI = process.env.DRIVE_WALK_CLI === "1";
 const IS_CI = process.env.CI === "true";
+const WALK_CLI = process.env.DRIVE_WALK_CLI === "1";
+const WALK_JOB = process.env.GITHUB_JOB === "verify";
 
 /** A signed-in account, the cookie its browser would carry, and the database. */
 function accountEnv() {
@@ -193,12 +194,8 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
       `DRIVE_STANDIN_SECRET_KEY is ${ROOT_SECRET_KEY.length} characters; MinIO's minimum is 8`,
     );
   }
-  // The dedicated CI `walk` job must set DRIVE_WALK_CLI=1. GitHub names that
-  // job `walk` in GITHUB_JOB, so a forgotten env var fails here instead of
-  // passing as a skip. `verify`'s `npm test` runs as GITHUB_JOB=verify and
-  // skips the CLI half by design, because that job has no promise to keep.
-  if (IS_CI && process.env.GITHUB_JOB === "walk" && !WALK_CLI) {
-    assert.fail("the walk job must set DRIVE_WALK_CLI=1");
+  if (WALK_JOB && !WALK_CLI) {
+    assert.fail("the verify job must set DRIVE_WALK_CLI=1, or its walk proof skips");
   }
 
   const receiver = await startEventReceiver(process.env.DRIVE_STANDIN_WEBHOOK_URL ?? null);
@@ -601,11 +598,6 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
   // ------------------------------------------------------- the CLI half
   await t.test("the CLI mounts, uses and uninstalls with nothing left behind", async (t) => {
     if (!WALK_CLI) {
-      // Not a failure: the dedicated CI `walk` job sets DRIVE_WALK_CLI=1 and
-      // runs this proof. `verify`'s `npm test` discovers this file too but
-      // does not install Go or promise the mount, so it skips here rather
-      // than turning that job red (drive#501's rule is for the job that
-      // promised the proof, which is the walk job).
       t.skip("DRIVE_WALK_CLI=1 is not set, so the CLI mount proof is not running on this host");
       return;
     }
@@ -653,6 +645,7 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
 async function cliWalk(t, { endpoint, bucket, deviceKey }) {
   const go = await run("go", ["version"]);
   if (go.code !== 0) {
+    if (WALK_JOB) assert.fail("the verify job must install Go: the walk builds the CLI here");
     t.skip("no Go toolchain to build the CLI from this commit");
     return;
   }
@@ -672,7 +665,10 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
   // `--foreground` runs rclone in this process because the harness has no
   // systemd user manager to start the unit; the unit file itself is still
   // written, and `drive uninstall` removes it below.
-  const mountDir = join(home, "drive");
+  // The product mounts at <home>/Drive on Linux and macOS. The walk reads the
+  // mount point the CLI itself owns, and `drive status` below proves the
+  // product names the same one.
+  const mountDir = join(home, "Drive");
   const child = spawn(
     bin,
     [
@@ -734,6 +730,12 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
   assert.equal(existsSync(file), false, "the old name is gone through the mount");
   assert.equal(readFileSync(renamed, "utf8"), "written through the mount\n");
   unlinkSync(renamed);
+
+  // The product's own view of the mount, so the walk cannot pass against a
+  // directory the CLI did not mount.
+  const status = await run(bin, ["status", "--home", home]);
+  const reported = /^drive: mounted at (.+)$/m.exec(status.stdout);
+  assert.equal(reported?.[1], mountDir, `drive status must name the mounted dir: ${status.stdout}`);
 
   // The mount is taken down before uninstall because the harness has no
   // systemd user manager; uninstall's own job here is to remove the login
