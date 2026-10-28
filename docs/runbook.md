@@ -88,11 +88,22 @@ escapes, cheapest first:
 ## The weekly backup
 
 `d1-export.yml` runs Mondays 05:37 UTC (or by hand) and uploads
-`waitlist-<date>.sql.age` and `drive-<date>.sql.age` as the `d1-backup`
-GitHub artifact, kept 90 days — the copy that survives a wrong restore, a
-deleted database or a provider problem. The dumps are sealed with `age`
-before upload: anyone with read access to this private repository can
-download its workflow artifacts, so only the ciphertext leaves the runner.
+`waitlist-<date>.sql.age` as the `d1-backup` GitHub artifact, kept 90 days —
+the copy that survives a wrong restore, a deleted database or a provider
+problem. The dump is sealed with `age` before upload: anyone with read access
+to this private repository can download its workflow artifacts, so only the
+ciphertext leaves the runner.
+
+**What it does not cover: the drive database.** The stock D1 export API
+refuses a database that holds virtual tables, and the FTS index on
+`file_index` (migration `0039_file_index_fts.sql`) is live production schema,
+so the refusal is a property of the database and not of the dump options:
+`dump_options.tables` and `dump_options.no_schema` were both tried on live
+runs and refused. Cloudflare's own workaround — dropping and recreating the
+virtual tables around each export — stops search writes on a production
+database for the width of a dump, so it is not a real fix either. Until a
+mechanism lands (fleet-ops#10745), the drive database's only recovery point
+is D1 Time Travel, which keeps 30 days and lives on Cloudflare.
 
 **One-time setup (Nish):** run `age-keygen -o d1-backup-key.txt` on a
 machine you keep keys on, and put the public key line it prints (`age1…`)
@@ -109,8 +120,8 @@ Restore from a dump:
    printed against the decrypted file:
 
    ```sh
-   age -d -i d1-backup-key.txt -o drive-<date>.sql drive-<date>.sql.age
-   sha256sum drive-<date>.sql
+   age -d -i d1-backup-key.txt -o waitlist-<date>.sql waitlist-<date>.sql.age
+   sha256sum waitlist-<date>.sql
    ```
 
 3. Small dumps, or a table at a time, go back through the CLI:
@@ -123,15 +134,6 @@ Restore from a dump:
    into statement-sized files rather than growing one argument past the
    shell's limit.
 
-   The `drive` dump carries the real tables only: the D1 export API refuses
-   any database with virtual tables (Cloudflare's documented limitation —
-   the FTS index on `file_index` cannot be exported), so the workflow dumps
-   the schema and rows over the query API instead and leaves the FTS
-   objects out. After the restore replays
-   `migrations/drive/0039_file_index_fts.sql` against the database, the
-   index triggers fill the index again with new writes; existing files
-   appear through the index as they are touched. The `waitlist` dump rides
-   the stock export API and carries no such gap.
 4. A whole-database import of a large dump is the D1 import API's
    init/upload/ingest protocol; prefer the Time Travel restore for point-in-
    time recovery and keep the dump for reading and surgical repairs.

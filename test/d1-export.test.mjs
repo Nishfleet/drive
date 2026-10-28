@@ -33,19 +33,40 @@ test("the backup reads only the deploy credentials, behind the production enviro
   assert.deepEqual([...new Set(secrets)].sort(), ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]);
 });
 
-test("the backup walks exactly the databases the deploy migrates", () => {
+test("the backup exports the waitlist database and only it", () => {
+  // The deploy migrates both databases, and the backup used to walk both.
+  // The stock export API refuses one of them: Cloudflare's documented
+  // limitation is that the export API rejects a database that holds virtual
+  // tables, and the FTS5 index on `file_index` (migration 0039) is live
+  // production schema. Proven on live runs — #40714070907 exported
+  // `waitlist` and died on `drive` with "cannot export databases with
+  // virtual tables (like FTS5)"; #40715881740 handed every real table to
+  // `dump_options.tables` and got the same error; #40726174871 tried
+  // `no_schema` and got it again. The refusal is a property of the
+  // database, not of the dump options, so no option or filter unblocks it.
+  //
+  // The drive database therefore has no stock off-site backup, and this
+  // workflow ships the one database the stock API accepts instead of a
+  // backup that dies half of the way through and uploads nothing:
+  // fleet-ops#10745 tracks the mechanism for the drive half. This assert is
+  // the guard — a drive database id that reaches the export API turns the
+  // weekly run red again, which is where drive#1027 started.
+  const ids = [...WF.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g)].map(
+    (m) => m[0],
+  );
+  assert.deepEqual(ids, ["93c9f523-159c-4261-8541-d4c059906df3"]);
   const deployIds = [
     ...DEPLOY.matchAll(
       /migrations apply ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g,
     ),
   ].map((m) => m[1]);
-  const pairLine = WF.split("\n").find((line) => line.includes("for pair in"));
-  assert.ok(pairLine, "the export walks the databases in one list");
-  const backupIds = [
-    ...pairLine.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
-  ].map((m) => m[0]);
-  assert.deepEqual(backupIds.sort(), deployIds.sort());
-  assert.ok(deployIds.length >= 2, "both databases are exported");
+  assert.ok(
+    deployIds.includes("93c9f523-159c-4261-8541-d4c059906df3"),
+    "the exported database is one the deploy migrates",
+  );
+  // The gap is named in the workflow itself, so a reader of the run log or
+  // the file learns what is not covered instead of assuming it is.
+  assert.match(WF, /fleet-ops#10745/);
 });
 
 test("the export polls the stock D1 export API and fails loud at every exit", () => {
@@ -87,48 +108,7 @@ test("the dump is fetched as data by the runtime, never as a curl executable dow
   assert.doesNotMatch(WF, /\bwget\b/);
 });
 
-test("the drive database rides the query API, not the export API", () => {
-  // The stock export API refuses a database that holds virtual tables
-  // (FTS5 — Cloudflare's documented limitation, proven on a live run: run
-  // #40714070907 exported `waitlist` and died on `drive` with "cannot export
-  // databases with virtual tables (like FTS5)"), and table filtering does
-  // not silence that refusal (run #40715881740, same error with every real
-  // table handed to `dump_options.tables`). So `waitlist` keeps the stock
-  // export call and `drive` is a schema dump that travels over the read-only
-  // query API, paged by rowid.
-  assert.match(
-    WF,
-    /for pair in "waitlist [0-9a-f-]+ export" "drive [0-9a-f-]+ dump";/,
-    "the waitlist pair exports through the D1 export API, the drive pair dumps over the query API",
-  );
-  assert.match(WF, /\/d1\/database\/\$\{DB\}\/query/);
-  assert.match(WF, /const query = \(sql, params\) => \{/);
-  assert.match(WF, /WHERE rowid > \? ORDER BY rowid LIMIT \$\{PAGE\}/);
-  // The dump program exists only inside the run, never as a check-out file:
-  // the workflow writes it into $RUNNER_TEMP (runnable code in `bin/` or
-  // `scripts/` is banned in this repository) and deletes it with the run.
-  assert.match(WF, /cat > "\$RUNNER_TEMP\/d1-dump\.cjs" <<'DUMP'/);
-  assert.match(WF, /rm -f "\$RUNNER_TEMP\/d1-dump\.cjs"/);
-  assert.doesNotMatch(WF, /[^/]d1-dump\.cjs$/m, "no d1-dump file at the repository root");
-});
-
-test("the dump leaves the FTS objects out and fails loud", () => {
-  // FTS5's shadow tables and triggers carry the virtual table's name as a
-  // prefix (file_index_fts_data, file_index_fts_ai), so the same prefix rule
-  // that keeps the shadow tables out keeps the triggers out; migration 0039
-  // rebuilds the whole FTS index on a restore (docs/runbook.md).
-  assert.match(WF, /n === v \|\| n\.startsWith\(v \+ "_"\)/);
-  assert.match(WF, /type IN \('table','index','trigger'\)/);
-  // A backup that quietly refuses to ship is drive#520's invisibility again:
-  // an empty schema fails the run instead of shipping an empty dump, and a
-  // table that cannot be paged through inside one window fails the run
-  // instead of truncating.
-  assert.match(WF, /the schema has no real tables to back up/);
-  assert.match(WF, /MAX_PAGES \* PAGE/);
-});
-
-
-test("the dumps are encrypted before they touch an artifact", () => {
+test("the dump is encrypted before it touches an artifact", () => {
   // The weekly dump is customer data, and a GitHub artifact is readable by
   // everyone with repo read, so only ciphertext ships (review finding on PR
   // #697). The recipient is the repo variable `AGE_RECIPIENT` — a public
