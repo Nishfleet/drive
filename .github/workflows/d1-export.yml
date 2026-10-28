@@ -139,7 +139,7 @@ jobs:
           (async () => {
             if (!NAME || !DB || !OUT) throw new Error("the dump is not wired: BACKUP_NAME, BACKUP_DB and BACKUP_OUT are all required");
             if (!ACCT || !TOKEN) throw new Error("the account or the token is missing from the environment");
-            const objects = await query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY rowid");
+            const objects = await query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%'");
             // FTS5's internal tables and triggers carry the virtual table's
             // name as a prefix (file_index_fts_data, file_index_fts_ai). The
             // dump carries only the real tables and the indexes and triggers
