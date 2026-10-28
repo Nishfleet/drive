@@ -7,6 +7,21 @@ import { test } from "node:test";
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
+/** @param {string} path @param {string[]} names */
+const assertCfSecretCommands = (path, names) => {
+  const text = read(path);
+  assert.ok(
+    !/wrangler/.test(text),
+    `${path} must not name wrangler: the deploy runs \`npx cf deploy\` (drive#189)`,
+  );
+  for (const name of names) {
+    assert.ok(
+      new RegExp(`cf workers secrets update ${name} --type secret_text\\b`).test(text),
+      `${path} must show the cf command that sets ${name}`,
+    );
+  }
+};
+
 // The pin rides the CLI's own beta line, so a plain version reader is not
 // enough: 1.0.0-beta.10 is later than 1.0.0-beta.7 while "beta.10" sorts
 // before "beta.7" as a string. Both the floor and the candidate go through
@@ -133,15 +148,9 @@ test("the config tells an operator how to set the undeclared secrets with cf", (
   // config has to name a command that exists. It named `wrangler secret put`
   // for a while, which this repo does not use anywhere; the equivalent here is
   // `cf workers secrets update <name> --text <value>`.
-  const config = read("cloudflare.config.ts");
-  assert.ok(
-    !/wrangler/.test(config),
-    "cloudflare.config.ts must not name wrangler: the deploy runs `npx cf deploy` (drive#189)",
-  );
-  for (const name of ["EMAIL_SEND_TOKEN", "MAIL_FROM"]) {
-    assert.ok(
-      new RegExp(`cf workers secrets update ${name}\\b`).test(config),
-      `cloudflare.config.ts must show the cf command that sets ${name}`,
-    );
-  }
+  assertCfSecretCommands("cloudflare.config.ts", ["EMAIL_SEND_TOKEN", "MAIL_FROM"]);
+});
+
+test("the runbook sets the signed webhook secret with cf, not wrangler", () => {
+  assertCfSecretCommands("docs/runbook.md", ["STORAGE_EVENTS_WEBHOOK_SECRET"]);
 });
