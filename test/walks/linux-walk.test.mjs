@@ -58,6 +58,9 @@ const WEBHOOK_SECRET = process.env.DODO_WEBHOOK_SECRET ?? randomBytes(24).toStri
 const IS_CI = process.env.CI === "true";
 const WALK_CLI = process.env.DRIVE_WALK_CLI === "1";
 const WALK_JOB = process.env.GITHUB_JOB === "verify";
+// The mount writes this into the cache directory so backup tools skip the whole
+// thing (`cmd/drive/mount.go`, `writeCacheTag`). It is not a cached file.
+const cacheDirTagName = "CACHEDIR.TAG";
 
 /** A signed-in account, the cookie its browser would carry, and the database. */
 function accountEnv() {
@@ -770,12 +773,15 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
 
   // The cache is emptied with the product's own command: uninstall keeps the
   // cache by design, so the walk clears it and proves nothing is left in it.
+  // The cache directory tag the mount writes is not a cached file: it marks the
+  // whole directory for backup tools and the clear does not own it
+  // (`cmd/drive/mount.go`, `writeCacheTag`).
   const cacheRoot = join(home, ".cache", "drive");
   const mountLogPath = join(home, ".config", "drive", "mount.log");
   const mountLog = existsSync(mountLogPath) ? readFileSync(mountLogPath, "utf8") : "(no mount.log)";
   const clear = await run(bin, ["cache", "--clear", "--home", home]);
   assert.equal(clear.code, 0, `drive cache --clear must succeed: ${clear.stderr}`);
-  const leftInCache = dirFileCount(join(cacheRoot, "vfs"));
+  const leftInCache = cachedFileCount(join(cacheRoot, "vfs"));
   if (leftInCache !== 0) {
     // rclone's log is the one place that names every cache file it removed and
     // every one it kept, which is what a leftover's origin is read from.
@@ -786,6 +792,11 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
     leftInCache,
     0,
     `the mount cache holds no files after the clear: ${cacheInventory(cacheRoot).join(" | ")}`,
+  );
+  assert.equal(
+    existsSync(join(cacheRoot, "vfs", cacheDirTagName)),
+    true,
+    "the cache directory tag the mount wrote is still there after the clear",
   );
   t.diagnostic(`CLI mount + uninstall proof ran in ${home}`);
 }
@@ -807,24 +818,6 @@ function mountIsLive(dir) {
 }
 
 /**
- * How many files sit under a directory, recursively, without following links.
- * @param {string} dir
- */
-function dirFileCount(dir) {
-  if (!existsSync(dir)) return 0;
-  let count = 0;
-  /** @param {string} current */
-  const walk = (current) => {
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      if (entry.isDirectory()) walk(join(current, entry.name));
-      else count += 1;
-    }
-  };
-  walk(dir);
-  return count;
-}
-
-/**
  * Every file under a directory, recursively, as paths relative to it, without
  * following links.
  * @param {string} dir
@@ -843,6 +836,17 @@ function dirFiles(dir) {
   };
   walk(dir);
   return found.sort();
+}
+
+/**
+ * How many files the mount's cache holds. The cache directory tag the mount
+ * writes is left out: it is not a cached file, and counting it made the walk
+ * fail on a mount that left nothing behind.
+ * @param {string} vfsDir the data cache root, `vfs` under the cache directory
+ * @returns {number}
+ */
+function cachedFileCount(vfsDir) {
+  return dirFiles(vfsDir).filter((rel) => rel !== cacheDirTagName).length;
 }
 
 /**
