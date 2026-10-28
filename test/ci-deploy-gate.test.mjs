@@ -16,8 +16,9 @@ const DEPLOY = read(".github/workflows/deploy-production.yml");
 const stepRun = (name) => {
   const start = DEPLOY.indexOf(name);
   assert.ok(start !== -1, `step missing: ${name}`);
-  const block = DEPLOY.slice(start, DEPLOY.indexOf("\n      - name:", start + 1));
-  const body = /\n {8}run: \|\n((?: {10}.*\n)+)/.exec(block)?.[1];
+  const next = DEPLOY.indexOf("\n      - name:", start + 1);
+  const block = DEPLOY.slice(start, next === -1 ? DEPLOY.length : next);
+  const body = /\n {8}run: \|\n((?:(?: {10}.*|\n)+))/.exec(block)?.[1];
   assert.ok(body, `step has no run block: ${name}`);
   return body.replace(/^ {10}/gm, "");
 };
@@ -101,13 +102,20 @@ test("a push trigger ships without reading CI's run list", (t) => {
   const gh = join(dir, "gh");
   writeFileSync(
     gh,
-    '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$1" = api ]; then printf "%s\\n" "$HEAD"; else printf "%s\\n" "$GREEN"; fi\n',
+    `#!/bin/sh
+printf "%s\\n" "$*" >> "$CALLS"
+case "$1 $2" in
+  "api repos/$GITHUB_REPOSITORY/commits/main") printf "%s\\n" "$HEAD" ;;
+  "run list") printf "%s\\n" "$GREEN" ;;
+  *) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac
+`,
   );
   chmodSync(gh, 0o755);
   /** @param {Record<string, string>} extra */
   const run = (extra) => {
     const calls = join(dir, `calls-${Math.random().toString(36).slice(2)}`);
-    const out = spawnSync("bash", ["-e"], {
+    const out = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail"], {
       input: shell,
       env: {
         PATH: `${dir}:${process.env.PATH}`,
