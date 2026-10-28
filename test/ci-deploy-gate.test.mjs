@@ -448,6 +448,7 @@ test("a skip of a proof this runner can run is a failure under CI=true (drive#58
   };
   try {
     process.env.CI = "true";
+    delete process.env.DRIVE_PROOF_REPORT;
     process.stdout.write = capture;
     for (const name of gated) {
       assert.throws(
@@ -457,6 +458,11 @@ test("a skip of a proof this runner can run is a failure under CI=true (drive#58
       );
     }
     for (const name of ungated) {
+      assert.equal(
+        process.env.DRIVE_PROOF_REPORT,
+        undefined,
+        "the ambient proof report is unset while the ungated skips run, so a skip this test makes cannot reach the caller's real report",
+      );
       assert.doesNotThrow(
         () => reportSkip(name, "the runner cannot do this"),
         `${name} still skips, because this runner cannot run it`,
