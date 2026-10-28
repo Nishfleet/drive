@@ -122,6 +122,16 @@ Restore from a dump:
    `--sql` carries the statements in the command line, so split a large dump
    into statement-sized files rather than growing one argument past the
    shell's limit.
+
+   The `drive` dump carries the real tables only: the D1 export API refuses
+   any database with virtual tables (Cloudflare's documented limitation —
+   the FTS index on `file_index` cannot be exported), so the workflow dumps
+   the schema and rows over the query API instead and leaves the FTS
+   objects out. After the restore replays
+   `migrations/drive/0039_file_index_fts.sql` against the database, the
+   index triggers fill the index again with new writes; existing files
+   appear through the index as they are touched. The `waitlist` dump rides
+   the stock export API and carries no such gap.
 4. A whole-database import of a large dump is the D1 import API's
    init/upload/ingest protocol; prefer the Time Travel restore for point-in-
    time recovery and keep the dump for reading and surgical repairs.

@@ -14,11 +14,26 @@
 # quietly shipped nothing, is exactly the invisibility drive#520 exists to
 # end. The age release itself is digest-pinned (docs/security.md).
 #
-# The export goes through the stock D1 export API (`output_format: "polling"`,
-# Cloudflare's OpenAPI schema): the first call starts the dump, later calls
-# poll with the returned `at_bookmark` until `status: "complete"` carries a
-# `signed_url`, valid one hour. The pinned `cf` CLI has no d1 export command,
-# so this is the stock REST call, not hand-rolled backup logic.
+# The waitlist dump goes through the stock D1 export API
+# (`output_format: "polling"`, Cloudflare's OpenAPI schema): the first call
+# starts the dump, later calls poll with the returned `at_bookmark` until
+# `status: "complete"` carries a `signed_url`, valid one hour. The pinned
+# `cf` CLI has no d1 export command, so this is the stock REST call, not
+# hand-rolled backup logic.
+#
+# The drive database cannot ride that API: the export refuses a database that
+# holds virtual tables (FTS5 — Cloudflare's documented limitation, "Export is
+# not supported for virtual tables"), the FTS index on `file_index` is live
+# production schema (migration 0039), and Cloudflare's own workaround — drop
+# and recreate the virtual tables around each export — would stop search
+# writes for the width of a dump and is not a real fix. Its backup is
+# therefore a SQL dump through the stock query API (SELECT per table, paged
+# by rowid), written below into `$RUNNER_TEMP/d1-dump.cjs` and run, never a
+# check-out file; the FTS objects and their shadow tables are left out and a
+# restore replays `migrations/drive/0039_file_index_fts.sql` to rebuild them
+# (docs/runbook.md, "The weekly backup"). A table added later is backed up
+# without a change here, and the dump fails loud rather than shipping a
+# partial one.
 #
 # Secrets stay behind `environment: production` (drive#507; enforced by
 # test/workflow-secrets.test.mjs). Retention 90 days keeps 13 weekly points.
@@ -68,70 +83,146 @@ jobs:
           headers="$RUNNER_TEMP/d1-headers"
           trap 'rm -f "$headers"' EXIT
           (umask 077 && printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
-          for pair in "waitlist 93c9f523-159c-4261-8541-d4c059906df3" "drive 0f636b57-4a2e-482a-bf40-8aa315e2403e"; do
-            read -r name db <<<"$pair"
+          cat > "$RUNNER_TEMP/d1-dump.cjs" <<'DUMP'
+          const { writeFileSync } = require("fs");
+          const NAME = process.env.BACKUP_NAME ?? "";
+          const DB = process.env.BACKUP_DB ?? "";
+          const OUT = process.env.BACKUP_OUT ?? "";
+          const ACCT = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
+          const TOKEN = process.env.CLOUDFLARE_API_TOKEN ?? "";
+          const PAGE = 500;
+          // 2,048,000 rows per table before the dump quits: past the width
+          // of one window it must fail loud, not drift on.
+          const MAX_PAGES = 4096;
+          const api = (sql, params) =>
+            fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCT}/d1/database/${DB}/query`, {
+              method: "POST",
+              headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+              body: JSON.stringify({ sql, params }),
+            }).then(async (r) => {
+              if (!r.ok) throw new Error(`query: HTTP ${r.status}`);
+              const j = await r.json();
+              if (j.success !== true) throw new Error("query: " + (j.errors?.[0]?.message ?? "not success"));
+              const res = (j.result ?? [])[0] ?? {};
+              if (res.success === false) throw new Error(res.error ?? "query failed");
+              return res.results ?? [];
+            });
+          const query = (sql, params) => {
+            const attempt = async (n) => {
+              try {
+                return await api(sql, params);
+              } catch (e) {
+                if (n >= 3) throw e;
+                console.error(`retrying after: ${e.message}`);
+                await new Promise((r) => setTimeout(r, 5000));
+                return attempt(n + 1);
+              }
+            };
+            return attempt(1);
+          };
+          const idq = (n) => '"' + String(n).replace(/"/g, '""') + '"';
+          const literal = (v) => {
+            if (v === null) return "NULL";
+            if (typeof v === "number") return String(v);
+            if (typeof v === "boolean") return String(Number(v));
+            if (Array.isArray(v)) return `X'${Buffer.from(v).toString("hex")}'`;
+            return `'` + String(v).replaceAll(`'`, `''`) + `'`;
+          };
+          (async () => {
+            if (!NAME || !DB || !OUT) throw new Error("the dump is not wired: BACKUP_NAME, BACKUP_DB and BACKUP_OUT are all required");
+            if (!ACCT || !TOKEN) throw new Error("the account or the token is missing from the environment");
+            const objects = await query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY rowid");
+            // FTS5's internal tables and triggers carry the virtual table's
+            // name as a prefix (file_index_fts_data, file_index_fts_ai). The
+            // dump carries only the real tables and the indexes and triggers
+            // that belong to them; migration 0039 rebuilds the rest on a
+            // restore.
+            const virtual = objects.filter((o) => o.type === "table" && String(o.sql ?? "").toUpperCase().startsWith("CREATE VIRTUAL TABLE")).map((o) => o.name);
+            const shadow = (n) => virtual.some((v) => n === v || n.startsWith(v + "_"));
+            const tables = objects.filter((o) => o.type === "table" && !shadow(o.name) && o.sql);
+            const others = objects.filter((o) => o.type !== "table" && o.sql !== null && !shadow(o.name) && !shadow(o.tbl_name));
+            if (tables.length === 0) throw new Error("the schema has no real tables to back up — refusing to ship an empty dump");
+            const parts = ["PRAGMA foreign_keys=OFF;"];
+            for (const t of tables) parts.push(t.sql + ";");
+            let total = 0;
+            for (const t of tables) {
+              const tn = idq(t.name);
+              let after = 0;
+              let pages = 0;
+              let count = 0;
+              for (;;) {
+                // rowid exists on every ordinary table here (none is WITHOUT
+                // ROWID); the keyset on it keeps one SELECT per page steady
+                // while rows change under the dump.
+                const rows = await query(`SELECT rowid AS __backup_rid, * FROM ${tn} WHERE rowid > ? ORDER BY rowid LIMIT ${PAGE}`, [after]);
+                for (const row of rows) {
+                  const { __backup_rid, ...cols } = row;
+                  const names = Object.keys(cols).map(idq).join(", ");
+                  const values = Object.keys(cols).map((k) => literal(cols[k])).join(", ");
+                  parts.push(`INSERT INTO ${tn} (${names}) VALUES (${values});`);
+                }
+                count += rows.length;
+                if (rows.length < PAGE) break;
+                after = rows[rows.length - 1].__backup_rid;
+                pages += 1;
+                if (pages > MAX_PAGES) throw new Error(`${t.name}: more than ${MAX_PAGES * PAGE} rows — refusing to page past the backup window`);
+              }
+              console.log(`${t.name}: ${count} rows`);
+              total += count;
+            }
+            for (const o of others) parts.push(o.sql + ";");
+            writeFileSync(OUT, parts.join("\n") + "\n");
+            console.log(`${NAME}: ${total} rows from ${tables.length} tables (+${others.length} indexes and triggers) -> ${OUT}`);
+          })().catch((e) => {
+            console.error("dump: " + e.message);
+            process.exit(1);
+          });
+          DUMP
+          for pair in "waitlist 93c9f523-159c-4261-8541-d4c059906df3 export" "drive 0f636b57-4a2e-482a-bf40-8aa315e2403e dump"; do
+            read -r name db mode <<<"$pair"
             file="$RUNNER_TEMP/d1-export/$name-$stamp.sql"
-            bookmark=""
-            url=""
-            for attempt in $(seq 1 20); do
-              echo "poll $attempt for $name"
-              if [ -n "$bookmark" ]; then
-                body="{\"output_format\":\"polling\",\"current_bookmark\":\"$bookmark\"}"
-              else
-                # D1's export refuses a database that holds virtual tables
-                # (FTS5 — Cloudflare's documented limitation, d1/best-practices/
-                # import-export-data: "Export is not supported for virtual
-                # tables"). The first call lists the tables from sqlite_master
-                # and hands the export every real table, so the FTS index and
-                # its shadow tables stay out of the dump; a restore drills the
-                # index back with migrations/drive/0039_file_index_fts.sql
-                # (docs/runbook.md, The weekly backup). The list is read at
-                # run time, so a table added later is backed up without a
-                # change here.
-                tablelist=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors \
-                  -H "@$headers" -H 'content-type: application/json' \
-                  --data-raw "$(node -e 'process.stdout.write(JSON.stringify({sql: process.argv[1], params: []}))' "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")" \
-                  "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$db/query") \
-                  || { echo "::error::$name backup: the table listing call failed"; exit 1; }
-                tables=$(printf '%s' "$tablelist" | node -e '
+            if [ "$mode" = dump ]; then
+              BACKUP_NAME="$name" BACKUP_DB="$db" BACKUP_OUT="$file" node "$RUNNER_TEMP/d1-dump.cjs" \
+                || { echo "::error::$name backup: the SQL dump failed"; exit 1; }
+            else
+              bookmark=""
+              url=""
+              for attempt in $(seq 1 20); do
+                echo "poll $attempt for $name"
+                if [ -n "$bookmark" ]; then
+                  body="{\"output_format\":\"polling\",\"current_bookmark\":\"$bookmark\"}"
+                else
+                  body='{"output_format":"polling"}'
+                fi
+                resp=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors \
+                  -H "@$headers" -H 'content-type: application/json' -d "$body" \
+                  "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$db/export") \
+                  || { echo "::error::$name export: the API call failed"; exit 1; }
+                state=$(printf '%s' "$resp" | node -e '
                   const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
                   if (r.success !== true) { console.error("api: " + (r.errors?.[0]?.message ?? "not success")); process.exit(1); }
-                  const rows = r.result?.results ?? [];
-                  const virtual = rows.filter((t) => String(t.sql ?? "").toUpperCase().startsWith("CREATE VIRTUAL TABLE")).map((t) => t.name);
-                  const real = rows.map((t) => t.name).filter((n) => !virtual.some((v) => n === v || n.startsWith(v + "_")));
-                  if (real.length === 0) { console.error("export: the table list is empty — nothing to back up"); process.exit(1); }
-                  process.stdout.write(JSON.stringify(real));
-                ') || { echo "::error::$name backup: the table listing answer is not valid"; exit 1; }
-                body="{\"output_format\":\"polling\",\"dump_options\":{\"tables\":$tables}}"
-              fi
-              resp=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors \
-                -H "@$headers" -H 'content-type: application/json' -d "$body" \
-                "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$db/export") \
-                || { echo "::error::$name export: the API call failed"; exit 1; }
-              state=$(printf '%s' "$resp" | node -e '
-                const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
-                if (r.success !== true) { console.error("api: " + (r.errors?.[0]?.message ?? "not success")); process.exit(1); }
-                const t = r.result ?? {};
-                if (t.status === "error") { console.error("export: " + (t.error ?? "failed")); process.exit(1); }
-                if (t.status === "complete") { process.stdout.write("done " + (t.result?.signed_url ?? "")); }
-                else { process.stdout.write("wait " + (t.at_bookmark ?? "")); }
-              ') || { echo "::error::$name export: the API answer is not a valid export response"; exit 1; }
-              case "$state" in
-                done\ *) url="${state#done }"; break ;;
-                wait\ *) bookmark="${state#wait }" ;;
-                *) echo "::error::$name export: unreadable poll state"; exit 1 ;;
-              esac
-              sleep 15
-            done
-            test -n "$url" || { echo "::error::$name export: no download URL after 20 polls"; exit 1; }
-            # The signed URL's dump is data, not code: it is written to
-            # $RUNNER_TEMP and shipped as an artifact, never executed, and it
-            # changes every run so no digest can be pinned. The runtime's own
-            # fetch (TLS, no shell quoting) takes it instead of curl, which
-            # test/workflow-downloads.test.mjs would read as an unpinned
-            # executable download (drive#581's gate is about assets that run).
-            node -e 'const fs=require("fs");(async()=>{const r=await fetch(process.argv[1]);if(!r.ok){console.error("download: HTTP "+r.status);process.exit(1);}fs.writeFileSync(process.argv[2],Buffer.from(await r.arrayBuffer()));})()' "$url" "$file" \
-              || { echo "::error::$name export: the dump download failed"; exit 1; }
+                  const t = r.result ?? {};
+                  if (t.status === "error") { console.error("export: " + (t.error ?? "failed")); process.exit(1); }
+                  if (t.status === "complete") { process.stdout.write("done " + (t.result?.signed_url ?? "")); }
+                  else { process.stdout.write("wait " + (t.at_bookmark ?? "")); }
+                ') || { echo "::error::$name export: the API answer is not a valid export response"; exit 1; }
+                case "$state" in
+                  done\ *) url="${state#done }"; break ;;
+                  wait\ *) bookmark="${state#wait }" ;;
+                  *) echo "::error::$name export: unreadable poll state"; exit 1 ;;
+                esac
+                sleep 15
+              done
+              test -n "$url" || { echo "::error::$name export: no download URL after 20 polls"; exit 1; }
+              # The signed URL's dump is data, not code: it is written to
+              # $RUNNER_TEMP and shipped as an artifact, never executed, and it
+              # changes every run so no digest can be pinned. The runtime's own
+              # fetch (TLS, no shell quoting) takes it instead of curl, which
+              # test/workflow-downloads.test.mjs would read as an unpinned
+              # executable download (drive#581's gate is about assets that run).
+              node -e 'const fs=require("fs");(async()=>{const r=await fetch(process.argv[1]);if(!r.ok){console.error("download: HTTP "+r.status);process.exit(1);}fs.writeFileSync(process.argv[2],Buffer.from(await r.arrayBuffer()));})()' "$url" "$file" \
+                || { echo "::error::$name export: the dump download failed"; exit 1; }
+            fi
             echo "exported $name -> $name-$stamp.sql ($(wc -c < "$file") bytes, sha256 $(sha256sum "$file" | cut -d' ' -f1))"
             # Sealed before anything ships: only the .age ciphertext reaches
             # the artifact, and the plaintext dies with the runner's temp.
@@ -139,6 +230,7 @@ jobs:
               || { echo "::error::$name export: the age encryption failed"; exit 1; }
             rm -f "$file"
           done
+          rm -f "$RUNNER_TEMP/d1-dump.cjs"
           sha256sum "$RUNNER_TEMP/d1-export/"*.sql.age
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
