@@ -78,7 +78,31 @@ jobs:
               if [ -n "$bookmark" ]; then
                 body="{\"output_format\":\"polling\",\"current_bookmark\":\"$bookmark\"}"
               else
-                body='{"output_format":"polling"}'
+                # D1's export refuses a database that holds virtual tables
+                # (FTS5 — Cloudflare's documented limitation, d1/best-practices/
+                # import-export-data: "Export is not supported for virtual
+                # tables"). The first call lists the tables from sqlite_master
+                # and hands the export every real table, so the FTS index and
+                # its shadow tables stay out of the dump; a restore drills the
+                # index back with migrations/drive/0039_file_index_fts.sql
+                # (docs/runbook.md, The weekly backup). The list is read at
+                # run time, so a table added later is backed up without a
+                # change here.
+                tablelist=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors \
+                  -H "@$headers" -H 'content-type: application/json' \
+                  --data-raw "$(node -e 'process.stdout.write(JSON.stringify({sql: process.argv[1], params: []}))' "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")" \
+                  "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$db/query") \
+                  || { echo "::error::$name backup: the table listing call failed"; exit 1; }
+                tables=$(printf '%s' "$tablelist" | node -e '
+                  const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+                  if (r.success !== true) { console.error("api: " + (r.errors?.[0]?.message ?? "not success")); process.exit(1); }
+                  const rows = r.result?.results ?? [];
+                  const virtual = rows.filter((t) => String(t.sql ?? "").toUpperCase().startsWith("CREATE VIRTUAL TABLE")).map((t) => t.name);
+                  const real = rows.map((t) => t.name).filter((n) => !virtual.some((v) => n === v || n.startsWith(v + "_")));
+                  if (real.length === 0) { console.error("export: the table list is empty — nothing to back up"); process.exit(1); }
+                  process.stdout.write(JSON.stringify(real));
+                ') || { echo "::error::$name backup: the table listing answer is not valid"; exit 1; }
+                body="{\"output_format\":\"polling\",\"dump_options\":{\"tables\":$tables}}"
               fi
               resp=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors \
                 -H "@$headers" -H 'content-type: application/json' -d "$body" \
