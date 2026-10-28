@@ -9,12 +9,13 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
 import { platform, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -769,10 +770,23 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
 
   // The cache is emptied with the product's own command: uninstall keeps the
   // cache by design, so the walk clears it and proves nothing is left in it.
-  const cacheDir = join(home, ".cache", "drive", "vfs");
+  const cacheRoot = join(home, ".cache", "drive");
+  const mountLogPath = join(home, ".config", "drive", "mount.log");
+  const mountLog = existsSync(mountLogPath) ? readFileSync(mountLogPath, "utf8") : "(no mount.log)";
   const clear = await run(bin, ["cache", "--clear", "--home", home]);
   assert.equal(clear.code, 0, `drive cache --clear must succeed: ${clear.stderr}`);
-  assert.equal(dirFileCount(cacheDir), 0, "the mount cache holds no files after the clear");
+  const leftInCache = dirFileCount(join(cacheRoot, "vfs"));
+  if (leftInCache !== 0) {
+    // rclone's log is the one place that names every cache file it removed and
+    // every one it kept, which is what a leftover's origin is read from.
+    t.diagnostic(`mount log, last lines:\n${mountLog.trim().split("\n").slice(-40).join("\n")}`);
+    t.diagnostic(`cache left behind:\n${cacheInventory(cacheRoot).join("\n")}`);
+  }
+  assert.equal(
+    leftInCache,
+    0,
+    `the mount cache holds no files after the clear: ${cacheInventory(cacheRoot).join(" | ")}`,
+  );
   t.diagnostic(`CLI mount + uninstall proof ran in ${home}`);
 }
 
@@ -808,6 +822,46 @@ function dirFileCount(dir) {
   };
   walk(dir);
   return count;
+}
+
+/**
+ * Every file under a directory, recursively, as paths relative to it, without
+ * following links.
+ * @param {string} dir
+ * @returns {string[]}
+ */
+function dirFiles(dir) {
+  if (!existsSync(dir)) return [];
+  /** @type {string[]} */
+  const found = [];
+  /** @param {string} current */
+  const walk = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(join(current, entry.name));
+      else found.push(relative(dir, join(current, entry.name)));
+    }
+  };
+  walk(dir);
+  return found.sort();
+}
+
+/**
+ * One line per file left in the mount's cache, with the metadata beside it when
+ * the file has any, so a failure names the leftover instead of counting it.
+ * @param {string} root
+ * @returns {string[]}
+ */
+function cacheInventory(root) {
+  return dirFiles(root).map((rel) => {
+    let line = `${rel} (${statSync(join(root, rel)).size} bytes)`;
+    if (!rel.startsWith(`vfsMeta${sep}`)) return line;
+    try {
+      line += ` ${readFileSync(join(root, rel), "utf8").trim()}`;
+    } catch {
+      line += " (unreadable)";
+    }
+    return line;
+  });
 }
 
 /**
