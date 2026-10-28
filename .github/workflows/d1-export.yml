@@ -101,6 +101,19 @@ jobs:
           headers="$RUNNER_TEMP/d1-headers"
           trap 'rm -f "$headers"' EXIT
           (umask 077 && printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
+          node -e '
+            const token = process.env.CLOUDFLARE_API_TOKEN, acct = process.env.CLOUDFLARE_ACCOUNT_ID, db = process.env.DB_ID;
+            (async () => {
+              const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acct}/d1/database/${db}/query`, {
+                method: "POST",
+                headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+                body: JSON.stringify({ sql: "SELECT type, name FROM sqlite_master WHERE name NOT LIKE \u0027sqlite_%\u0027 ORDER BY type, name", params: [] }),
+              });
+              const j = await r.json();
+              if (j.success !== true) { console.error(JSON.stringify(j.errors)); process.exit(1); }
+              for (const row of j.result[0].results) console.log("sqlite_master: " + row.type + "\t" + row.name);
+            })();
+          '
           bookmark="" url=""
           for attempt in $(seq 1 20); do
             echo "poll $attempt for $DB_NAME"
