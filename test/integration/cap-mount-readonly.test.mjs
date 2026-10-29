@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, spawn, spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -17,7 +17,7 @@ import { bucketForAccount } from "../../core/keyprovider.js";
 import { createS3Client, provisionBucket } from "../../core/s3.js";
 import { createS3KeyProvider } from "../../core/s3-keys.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
-import { startMinioStandin } from "../minio-standin.mjs";
+import { killTracked, spawnTracked, startMinioStandin } from "../minio-standin.mjs";
 
 const run = promisify(execFile);
 const TEST_FILE = fileURLToPath(import.meta.url);
@@ -122,7 +122,7 @@ async function startMount({ workDir, label, mountDir, cacheDir, cred }) {
   );
   await run("mkdir", ["-p", mountDir, cacheDir]);
 
-  const child = spawn(
+  const child = spawnTracked(
     rcloneBin,
     [
       "mount",
@@ -146,7 +146,7 @@ async function startMount({ workDir, label, mountDir, cacheDir, cred }) {
     { stdio: ["ignore", "ignore", "pipe"] },
   );
   let stderr = "";
-  child.stderr.on("data", (chunk) => {
+  child.stderr?.on("data", (chunk) => {
     stderr += chunk;
   });
 
@@ -205,10 +205,10 @@ async function stopMount(mount) {
  * @param {LiveMount} mount
  */
 async function killMount(mount) {
-  mount.child.kill("SIGKILL");
+  killTracked(mount.child, "SIGKILL");
   const exited = new Promise((resolve) => mount.child.once("exit", resolve));
   await Promise.race([exited, sleep(10_000)]);
-  if (mount.child.exitCode === null) mount.child.kill("SIGKILL");
+  if (mount.child.exitCode === null) killTracked(mount.child, "SIGKILL");
   // The kernel releases a FUSE point when the last reference to it goes, which
   // a killed process no longer holds; a lazy unmount clears anything the dead
   // mount left behind.

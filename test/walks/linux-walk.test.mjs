@@ -42,7 +42,7 @@ import {
   TEST_BASE_URL,
   TEST_SECRET,
 } from "../harness.mjs";
-import { startMinioStandin } from "../minio-standin.mjs";
+import { killTracked, spawnTracked, startMinioStandin } from "../minio-standin.mjs";
 
 const REGION = process.env.DRIVE_STANDIN_REGION ?? "us-east-1";
 const PORT = Number(process.env.DRIVE_STANDIN_PORT ?? 0);
@@ -673,7 +673,7 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
   // systemd user manager to start the unit; the unit file itself is still
   // written, and `drive uninstall` removes it below.
   const mountDir = join(home, "drive");
-  const child = spawn(
+  const child = spawnTracked(
     bin,
     [
       "mount",
@@ -702,11 +702,11 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
     },
   );
   t.after(() => {
-    if (child.exitCode === null) child.kill("SIGKILL");
+    if (child.exitCode === null) killTracked(child, "SIGKILL");
   });
   let log = "";
-  child.stdout.on("data", (chunk) => (log += chunk));
-  child.stderr.on("data", (chunk) => (log += chunk));
+  child.stdout?.on("data", (chunk) => (log += chunk));
+  child.stderr?.on("data", (chunk) => (log += chunk));
 
   const mounted = await waitFor(() => mountIsLive(mountDir), 30_000);
   if (!mounted) {

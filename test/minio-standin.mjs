@@ -25,6 +25,16 @@ import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 
 /**
+ * A container a run started is left behind when its owner died without
+ * teardown, so it is swept once it is this old: a run that is still going owns
+ * a container only seconds old, and nothing else may remove that.
+ */
+const STALE_AFTER_MS = 2 * 60 * 60 * 1000;
+
+/** The fixture command lines a killed run leaves reparented to init. */
+const FIXTURE_ARGS = /^rclone (?:serve s3|mount) \/tmp\//;
+
+/**
  * Every container the stand-in has started and still has to remove, keyed by
  * name, with the volume it owns.
  * @type {Set<{engine: string, name: string, volume: string}>}
@@ -220,6 +230,10 @@ export async function startMinioStandin({ name, environment, port }, t) {
       "--rm",
       "--name",
       name,
+      "--label",
+      "drive.test=1",
+      "--label",
+      `drive.test.owner=${process.pid}`,
       "--user",
       "0",
       "--network",
@@ -269,4 +283,117 @@ export async function startMinioStandin({ name, environment, port }, t) {
     }
     await sleep(500);
   }
+}
+
+/**
+ * Every fixture process with no owner left: `rclone serve s3` and
+ * `rclone mount` under /tmp reparented to init (ppid 1). A run that is still
+ * going holds its fixture as a child, so this never names one it owns.
+ * @returns {{pid: number, args: string}[]}
+ */
+export function orphanFixtures() {
+  const ps = spawnSync("ps", ["-eo", "pid=,ppid=,args="], { encoding: "utf8" });
+  if (ps.status !== 0) {
+    return [];
+  }
+  /** @type {{pid: number, args: string}[]} */
+  const orphans = [];
+  for (const line of ps.stdout.split("\n")) {
+    const row = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (row !== null && row[2] === "1" && FIXTURE_ARGS.test(row[3])) {
+      orphans.push({ pid: Number(row[1]), args: row[3] });
+    }
+  }
+  return orphans;
+}
+
+/** @param {number} pid */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return /** @type {NodeJS.ErrnoException} */ (err).code === "EPERM";
+  }
+}
+
+/**
+ * The containers a run left behind: a `drive-*` container whose labelled
+ * owner process is gone, or, for one started before the label existed, one
+ * older than the stale limit. A live run's container is never named here.
+ * @param {{olderThanMs?: number}} [options]
+ * @returns {{engine: string, name: string, created: string, reason: string}[]}
+ */
+export function leftoverContainers({ olderThanMs = STALE_AFTER_MS } = {}) {
+  const engine = containerEngine();
+  if (engine === null) {
+    return [];
+  }
+  const listed = spawnSync(
+    engine,
+    ["ps", "-a", "--filter", "name=^drive-", "--format", "{{.ID}}"],
+    { encoding: "utf8" },
+  );
+  const ids = listed.stdout.split("\n").filter((line) => line.trim() !== "");
+  if (listed.status !== 0 || ids.length === 0) {
+    return [];
+  }
+  const inspected = spawnSync(
+    engine,
+    [
+      "inspect",
+      "--format",
+      '{{.Name}}|{{.Created}}|{{index .Config.Labels "drive.test.owner"}}',
+      ...ids,
+    ],
+    { encoding: "utf8" },
+  );
+  if (inspected.status !== 0) {
+    return [];
+  }
+  /** @type {{engine: string, name: string, created: string, reason: string}[]} */
+  const leftovers = [];
+  const now = Date.now();
+  for (const line of inspected.stdout.split("\n")) {
+    if (line.trim() === "") {
+      continue;
+    }
+    const [rawName, created, owner] = line.split("|");
+    const name = rawName.replace(/^\//, "");
+    const age = now - Date.parse(created);
+    const noOwner = owner === "" || owner === "<no value>";
+    if (!noOwner && !alive(Number(owner))) {
+      leftovers.push({ engine, name, created, reason: `its owner ${owner} is gone` });
+    } else if (noOwner && !(age < olderThanMs)) {
+      leftovers.push({ engine, name, created, reason: `older than ${olderThanMs} ms` });
+    }
+  }
+  return leftovers;
+}
+
+/**
+ * Remove what a killed run left: every leftover container with its volume,
+ * and every orphan fixture process. Both lists are the ones above, so a run
+ * that is still going is never touched.
+ * @param {{olderThanMs?: number}} [options]
+ * @returns {{containers: {name: string, reason: string}[], orphans: {pid: number, args: string}[]}}
+ */
+export function sweepLeftovers({ olderThanMs = STALE_AFTER_MS } = {}) {
+  const containers = leftoverContainers({ olderThanMs });
+  for (const container of containers) {
+    removeContainer({
+      engine: container.engine,
+      name: container.name,
+      volume: `${container.name}-data`,
+    });
+  }
+  const orphans = orphanFixtures();
+  for (const orphan of orphans) {
+    try {
+      process.kill(orphan.pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
+  return { containers, orphans };
 }
