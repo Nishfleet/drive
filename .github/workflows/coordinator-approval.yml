@@ -1,0 +1,7 @@
+# Calls fleet-ops' coordinator-approval gate from fleet-ops main (fleet-ops#10952); its check is `coordinator-approval / coordinator-approval`, which ruleset 24262668 must list (drive#578).
+name: Coordinator approval
+on: [pull_request, merge_group]
+permissions: {contents: read, pull-requests: read, statuses: read}
+jobs:
+  coordinator-approval:
+    uses: Nishfleet/fleet-ops/.github/workflows/coordinator-approval.yml@main # zizmor: ignore[unpinned-uses] @main is the rule here: a SHA pin queues forever on the fleet's runner group (docs/runbook.md).
