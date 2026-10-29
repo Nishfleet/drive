@@ -99,6 +99,26 @@ nothing. The dumps are sealed with `age` before upload: anyone with read
 access to this public repository can download its workflow artifacts, so only
 the ciphertext leaves the runner.
 
+**The matrix also carries the fleet's four other product databases**
+(fleet-ops#10594): `siterep_payments` (siterep-public),
+`tinystudio_email_signups` (TinyStudio.io-public), `aiconverter`
+(aiconverter-app) and `0509` (0509). They are dumped from here because the
+export credential is the Cloudflare D1 token on this repository's production
+environment, D1 permissions are account-scoped, and those four repositories
+hold no such token and no `AGE_RECIPIENT`. Each of them moves to its own
+repository's copy of the job when that setup lands (fleet-ops#10829);
+`test/d1-export.test.mjs` fails while one of the four is out of the matrix,
+because that would end the only backup it has. Their artifacts are named
+after the database, so `d1-backup-0509` and `d1-backup-aiconverter` sit
+beside `d1-backup-waitlist` on the run's summary page.
+
+Three of the four dump clean. `tinystudio_email_signups` does not, and its
+job is red on purpose: the export API answers HTTP 404 for the database id
+its own `wrangler.jsonc` declares, and for the preview id beside it, so that
+database is not in the account this token names (fleet-ops#10830). The row
+stays in the matrix so the fix is one line and the missing backup stays
+visible on the run.
+
 **The drive database has no dump in its artifact, and its job is red on
 purpose.** The stock D1 export API does not take a database that holds
 virtual tables, and the FTS5 index on `file_index` (migration
@@ -126,7 +146,13 @@ Restore from a dump:
    the drive job is red there is no drive dump to download (see above), so a
    drive restore goes through the Time Travel bookmark in the previous
    section.
-2. Decrypt it with the private key, and check the sha256 the run log
+2. The monthly restore drill does exactly this for every database in the
+   matrix, on the fleet host where the private key already lives: it takes the
+   newest artifact, decrypts it into a local SQLite file, counts the rows and
+   writes one report. It is `fleet-d1-restore-drill.service` in the
+   Nishfleet/fleet-ops repository, and `docs/RUNBOOK.md` there has its
+   schedule and how to start it by hand.
+3. Decrypt it with the private key, and check the sha256 the run log
    printed against the decrypted file:
 
    ```sh
@@ -134,7 +160,7 @@ Restore from a dump:
    sha256sum waitlist-<date>.sql
    ```
 
-3. Small dumps, or a table at a time, go back through the CLI:
+4. Small dumps, or a table at a time, go back through the CLI:
 
    ```sh
    npx cf d1 query <database-id> --sql "$(cat dump.sql)"
@@ -143,7 +169,7 @@ Restore from a dump:
    `--sql` carries the statements in the command line, so split a large dump
    into statement-sized files rather than growing one argument past the
    shell's limit.
-4. A whole-database import of a large dump is the D1 import API's
+5. A whole-database import of a large dump is the D1 import API's
    init/upload/ingest protocol; prefer the Time Travel restore for point-in-
    time recovery and keep the dump for reading and surgical repairs.
 

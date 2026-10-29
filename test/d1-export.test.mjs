@@ -33,7 +33,7 @@ test("the backup reads only the deploy credentials, behind the production enviro
   assert.deepEqual([...new Set(secrets)].sort(), ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]);
 });
 
-test("the backup walks exactly the databases the deploy migrates", () => {
+test("the backup walks every database the fleet owns, not only the deploy's", () => {
   const deployIds = [
     ...DEPLOY.matchAll(
       /migrations apply ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g,
@@ -44,8 +44,35 @@ test("the backup walks exactly the databases the deploy migrates", () => {
   const backupIds = [
     ...matrix.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
   ].map((m) => m[0]);
-  assert.deepEqual(backupIds.sort(), deployIds.sort());
+  // drive's own two stay in the matrix whatever else joins it: the deploy
+  // migrates them, so a dump that stopped covering them would be a backup
+  // that silently lost a database.
+  for (const id of deployIds)
+    assert.ok(backupIds.includes(id), `the deploy migrates ${id} and the backup must dump it`);
   assert.ok(deployIds.length >= 2, "both databases are exported");
+  // The fleet's four product databases (fleet-ops#10594), by name and id, so
+  // one cannot drop out of the matrix. They are dumped from here because the
+  // production environment's D1 token is account-scoped and their own
+  // repositories hold no export credential and no AGE_RECIPIENT; when that
+  // setup lands each moves to its own repository (fleet-ops#10829), and this
+  // list moves with it. Until then, a name that leaves this matrix loses the
+  // only backup that database has.
+  const PRODUCT_DATABASES = [
+    ["siterep_payments", "ec176fc4-b4f2-44c0-a925-b36ec067cff5"],
+    ["tinystudio_email_signups", "ff360a55-14fc-468c-895f-893c89e0db79"],
+    ["aiconverter", "376080eb-60f1-4bb8-aabb-06622acabb63"],
+    ["0509", "746c6e3d-782e-443a-82d6-28ca93a16294"],
+  ];
+  const entries = [...matrix.matchAll(/^ {10}- name: (\w+)\n {12}id: ([0-9a-f-]{36})$/gm)];
+  for (const [name, id] of PRODUCT_DATABASES) {
+    const row = entries.find((m) => m[1] === name);
+    assert.ok(row, `${name} is a product database and must be in the weekly backup matrix`);
+    assert.equal(row[2], id, `${name} is exported under id ${id}`);
+  }
+  assert.ok(
+    backupIds.length >= deployIds.length + PRODUCT_DATABASES.length,
+    "the matrix covers drive's own databases and the fleet's product databases",
+  );
 });
 
 test("a database that cannot be dumped fails its own job, and the others still ship", () => {
@@ -59,11 +86,8 @@ test("a database that cannot be dumped fails its own job, and the others still s
     /fail-fast: false/,
     "a database the export API refuses must not cancel the others",
   );
-  assert.match(
-    strategy,
-    /matrix:\n {8}database:\n(?: {10}- name: \w+\n {12}id: [0-9a-f-]{36}\n){2}/,
-    "one job per database, each carrying its own id",
-  );
+  const entries = [...strategy.matchAll(/^ {10}- name: (\w+)\n {12}id: ([0-9a-f-]{36})$/gm)];
+  assert.ok(entries.length >= 2, "one job per database, each carrying its own id");
   // The stock shape, not a hand-rolled loop: nothing collects the failures,
   // nothing steps past one, and no step waits for a failed database before
   // it ships.
