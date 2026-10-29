@@ -15,6 +15,11 @@ const onBlock = (text) => {
   return text.slice(start, start + 1 + end);
 };
 
+/** One row of the backup matrix, as a [name, id] pair.
+ *  @param {string} text */
+const matrixRows = (text) =>
+  [...text.matchAll(/^ {10}- \{ name: (\w+), id: ([0-9a-f-]{36}) \}$/gm)].map((m) => [m[1], m[2]]);
+
 test("the backup runs weekly and can be started by hand for a restore drill", () => {
   const on = onBlock(WF);
   assert.match(on, /^ {2}schedule:\n(?: {4}#[^\n]*\n)* {4}- cron: "\d+ \d+ \* \* \d+"$/m);
@@ -63,11 +68,11 @@ test("the backup walks every database the fleet owns, not only the deploy's", ()
     ["aiconverter", "376080eb-60f1-4bb8-aabb-06622acabb63"],
     ["0509", "746c6e3d-782e-443a-82d6-28ca93a16294"],
   ];
-  const entries = [...matrix.matchAll(/^ {10}- name: (\w+)\n {12}id: ([0-9a-f-]{36})$/gm)];
+  const entries = matrixRows(matrix);
   for (const [name, id] of PRODUCT_DATABASES) {
-    const row = entries.find((m) => m[1] === name);
+    const row = entries.find(([entryName]) => entryName === name);
     assert.ok(row, `${name} is a product database and must be in the weekly backup matrix`);
-    assert.equal(row[2], id, `${name} is exported under id ${id}`);
+    assert.equal(row[1], id, `${name} is exported under id ${id}`);
   }
   assert.ok(
     backupIds.length >= deployIds.length + PRODUCT_DATABASES.length,
@@ -86,7 +91,7 @@ test("a database that cannot be dumped fails its own job, and the others still s
     /fail-fast: false/,
     "a database the export API refuses must not cancel the others",
   );
-  const entries = [...strategy.matchAll(/^ {10}- name: (\w+)\n {12}id: ([0-9a-f-]{36})$/gm)];
+  const entries = matrixRows(strategy);
   assert.ok(entries.length >= 2, "one job per database, each carrying its own id");
   // The stock shape, not a hand-rolled loop: nothing collects the failures,
   // nothing steps past one, and no step waits for a failed database before

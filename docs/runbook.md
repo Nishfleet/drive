@@ -114,7 +114,7 @@ beside `d1-backup-waitlist` on the run's summary page.
 
 Three of the four dump clean. `tinystudio_email_signups` does not, and its
 job is red on purpose: the export API answers HTTP 404 for the database id
-its own `wrangler.jsonc` declares, and for the preview id beside it, so that
+its own deploy config declares, and for the preview id beside it, so that
 database is not in the account this token names (fleet-ops#10830). The row
 stays in the matrix so the fix is one line and the missing backup stays
 visible on the run.

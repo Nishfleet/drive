@@ -40,7 +40,7 @@
 #
 # `tinystudio_email_signups` is the one row in that set whose job is red on
 # purpose, for a reason that is not a Cloudflare limitation: the export API
-# answers HTTP 404 for the database id its own wrangler.jsonc declares, and for
+# answers HTTP 404 for the database id its own deploy config declares, and for
 # the preview id beside it, so that database is not in the account this token
 # names (fleet-ops#10830). The row stays so the fix is one line when the
 # account is sorted out, and so the missing backup stays visible on the run
@@ -86,22 +86,18 @@ jobs:
       fail-fast: false # a database the API refuses costs the others nothing
       matrix:
         database:
-          - name: waitlist
-            id: 93c9f523-159c-4261-8541-d4c059906df3
-          - name: drive
-            id: 0f636b57-4a2e-482a-bf40-8aa315e2403e
+          - { name: waitlist, id: 93c9f523-159c-4261-8541-d4c059906df3 }
+          - { name: drive, id: 0f636b57-4a2e-482a-bf40-8aa315e2403e }
           # The fleet's other product databases (fleet-ops#10594). They are
           # dumped from here because the production environment's D1 token is
           # account-scoped and their own repositories hold no export
-          # credential; the header says why, and the test pins them here.
-          - name: siterep_payments
-            id: ec176fc4-b4f2-44c0-a925-b36ec067cff5
-          - name: tinystudio_email_signups
-            id: ff360a55-14fc-468c-895f-893c89e0db79
-          - name: aiconverter
-            id: 376080eb-60f1-4bb8-aabb-06622acabb63
-          - name: 0509
-            id: 746c6e3d-782e-443a-82d6-28ca93a16294
+          # credential; the header says why, and the test pins them here. One
+          # row per database keeps the fleet's ratchet (net workflow code
+          # lines) at zero while the matrix grows.
+          - { name: siterep_payments, id: ec176fc4-b4f2-44c0-a925-b36ec067cff5 }
+          - { name: tinystudio_email_signups, id: ff360a55-14fc-468c-895f-893c89e0db79 }
+          - { name: aiconverter, id: 376080eb-60f1-4bb8-aabb-06622acabb63 }
+          - { name: 0509, id: 746c6e3d-782e-443a-82d6-28ca93a16294 }
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -126,10 +122,8 @@ jobs:
       - name: Dump and seal ${{ matrix.database.name }}
         run: |
           test -n "$AGE_RECIPIENT" || { echo "::error::the age recipient is unset: set the repo variable AGE_RECIPIENT to the backup key's public key (docs/runbook.md, The weekly backup) — the backup refuses to ship plaintext dumps"; exit 1; }
-          mkdir -p "$RUNNER_TEMP/d1-export"
-          file="$RUNNER_TEMP/d1-export/$DB_NAME-$(date -u +%Y%m%d).sql"
-          headers="$RUNNER_TEMP/d1-headers"
-          trap 'rm -f "$headers"' EXIT
+          mkdir -p "$RUNNER_TEMP/d1-export"; file="$RUNNER_TEMP/d1-export/$DB_NAME-$(date -u +%Y%m%d).sql"
+          headers="$RUNNER_TEMP/d1-headers"; trap 'rm -f "$headers"' EXIT
           (umask 077 && printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
           bookmark="" url=""
           for attempt in $(seq 1 20); do
