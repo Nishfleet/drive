@@ -223,18 +223,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: No agent attribution in the PR's commits or body
-        # pull_request only: GitHub's own squash adds a Co-authored-by line, so
-        # a merge_group run would fail every queue entry (fleet-ops#9826).
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        shell: bash
-        run: |
-          log=$(git log --format=%B "$BASE_SHA..$HEAD_SHA")
-          ! printf '%s\n%s\n' "$log" "$PR_BODY" | grep -iEn '^(co-authored-by|claude-session):|^[^[:alpha:]]*generated with'
+      # No agent-attribution step here: `verify` carries the same gate and runs
+      # whenever this job does, because the `go` paths-filter excludes every
+      # path the `node` filter excludes (fleet-ops#10952, the ratchet offset).
       # goreleaser below runs `check` only and publishes nothing: the Go cache never reaches a release artifact.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0  # zizmor: ignore[cache-poisoning]
         with:

@@ -1,0 +1,14 @@
+# Calls fleet-ops' risky-change gate (fleet-ops#10952). drive's `main gate`
+# ruleset requires it as `coordinator-approval / coordinator-approval`, so the
+# context reports on every pull request and on every merge-queue entry: a
+# required context that reports on no run waits forever (docs/runbook.md).
+#
+# The gate itself is fleet-ops' file at @main, one copy for the fleet, and it
+# reads its rules from fleet-ops main. Keep @main: a SHA pin here drifts from
+# agent.yml@main and queues forever on the fleet's runner group.
+name: coordinator-approval
+on: [pull_request, merge_group]
+jobs:
+  coordinator-approval:
+    permissions: { contents: read, pull-requests: read, statuses: read }
+    uses: Nishfleet/fleet-ops/.github/workflows/coordinator-approval.yml@main
