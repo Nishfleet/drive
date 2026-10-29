@@ -357,11 +357,17 @@ test("the Windows workflow has one copy, and it is the one GitHub runs (drive#50
 
 test("every workflow pins one rclone release, and the stand-in test fetches the same one", () => {
   const ci = read(".github/workflows/ci.yml");
+  // Both Linux jobs install rclone through one composite action, so the
+  // download, its digest check and the version pin are in
+  // .github/actions/rclone/action.yml. A job reads the workflow and the
+  // actions it calls as one thing, so this test does too.
+  const action = read(".github/actions/rclone/action.yml");
+  const installed = `${ci}\n${action}`;
   const ciVersion = ci.match(/RCLONE_VERSION:\s*"?(v[\d.]+)"?/)?.[1];
   assert.ok(ciVersion, "ci.yml pins an rclone release");
   assert.match(ci, /RCLONE_LINUX_AMD64_SHA256:\s*"?[0-9a-f]{64}"?/, "and its digest");
-  assert.match(ci, /sha256sum -c/, "and checks the download against that digest");
-  assert.doesNotMatch(ci, /rclone-current/, "no job downloads whatever rclone is newest");
+  assert.match(installed, /sha256sum -c/, "and checks the download against that digest");
+  assert.doesNotMatch(installed, /rclone-current/, "no job downloads whatever rclone is newest");
   // rclone reads every RCLONE_<FLAG> environment variable as a command-line
   // flag, so a workflow env named RCLONE_VERSION becomes `--version=v1.75.1`
   // and rclone exits with "strconv.ParseBool" (CI run 37261594626).

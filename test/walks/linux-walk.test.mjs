@@ -9,12 +9,13 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
 import { platform, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -54,8 +55,12 @@ const NOTIFICATION_ARN = `arn:minio:sqs::${NOTIFICATION_NAME}:webhook`;
 const CONFIGURED_ENDPOINT = process.env.DRIVE_STANDIN_ENDPOINT ?? null;
 const EVENT_TOKEN = process.env.DRIVE_STANDIN_EVENT_TOKEN ?? randomBytes(24).toString("hex");
 const WEBHOOK_SECRET = process.env.DODO_WEBHOOK_SECRET ?? randomBytes(24).toString("hex");
-const WALK_CLI = process.env.DRIVE_WALK_CLI === "1";
 const IS_CI = process.env.CI === "true";
+const WALK_CLI = process.env.DRIVE_WALK_CLI === "1";
+const WALK_JOB = process.env.GITHUB_JOB === "verify";
+// The mount writes this into the cache directory so backup tools skip the whole
+// thing (`cmd/drive/mount.go`, `writeCacheTag`). It is not a cached file.
+const cacheDirTagName = "CACHEDIR.TAG";
 
 /** A signed-in account, the cookie its browser would carry, and the database. */
 function accountEnv() {
@@ -193,12 +198,8 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
       `DRIVE_STANDIN_SECRET_KEY is ${ROOT_SECRET_KEY.length} characters; MinIO's minimum is 8`,
     );
   }
-  // The dedicated CI `walk` job must set DRIVE_WALK_CLI=1. GitHub names that
-  // job `walk` in GITHUB_JOB, so a forgotten env var fails here instead of
-  // passing as a skip. `verify`'s `npm test` runs as GITHUB_JOB=verify and
-  // skips the CLI half by design, because that job has no promise to keep.
-  if (IS_CI && process.env.GITHUB_JOB === "walk" && !WALK_CLI) {
-    assert.fail("the walk job must set DRIVE_WALK_CLI=1");
+  if (WALK_JOB && !WALK_CLI) {
+    assert.fail("the verify job must set DRIVE_WALK_CLI=1, or its walk proof skips");
   }
 
   const receiver = await startEventReceiver(process.env.DRIVE_STANDIN_WEBHOOK_URL ?? null);
@@ -601,11 +602,6 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
   // ------------------------------------------------------- the CLI half
   await t.test("the CLI mounts, uses and uninstalls with nothing left behind", async (t) => {
     if (!WALK_CLI) {
-      // Not a failure: the dedicated CI `walk` job sets DRIVE_WALK_CLI=1 and
-      // runs this proof. `verify`'s `npm test` discovers this file too but
-      // does not install Go or promise the mount, so it skips here rather
-      // than turning that job red (drive#501's rule is for the job that
-      // promised the proof, which is the walk job).
       t.skip("DRIVE_WALK_CLI=1 is not set, so the CLI mount proof is not running on this host");
       return;
     }
@@ -653,6 +649,7 @@ test("the test-agent walk: sign up, pay, use, uninstall on Linux", async (t) => 
 async function cliWalk(t, { endpoint, bucket, deviceKey }) {
   const go = await run("go", ["version"]);
   if (go.code !== 0) {
+    if (WALK_JOB) assert.fail("the verify job must install Go: the walk builds the CLI here");
     t.skip("no Go toolchain to build the CLI from this commit");
     return;
   }
@@ -672,7 +669,10 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
   // `--foreground` runs rclone in this process because the harness has no
   // systemd user manager to start the unit; the unit file itself is still
   // written, and `drive uninstall` removes it below.
-  const mountDir = join(home, "drive");
+  // The product mounts at <home>/Drive on Linux and macOS. The walk reads the
+  // mount point the CLI itself owns, and `drive status` below proves the
+  // product names the same one.
+  const mountDir = join(home, "Drive");
   const child = spawn(
     bin,
     [
@@ -735,6 +735,12 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
   assert.equal(readFileSync(renamed, "utf8"), "written through the mount\n");
   unlinkSync(renamed);
 
+  // The product's own view of the mount, so the walk cannot pass against a
+  // directory the CLI did not mount.
+  const status = await run(bin, ["status", "--home", home]);
+  const reported = /^drive: mounted at (.+)$/m.exec(status.stdout);
+  assert.equal(reported?.[1], mountDir, `drive status must name the mounted dir: ${status.stdout}`);
+
   // The mount is taken down before uninstall because the harness has no
   // systemd user manager; uninstall's own job here is to remove the login
   // item, and that is what the assertions below prove.
@@ -767,10 +773,31 @@ async function cliWalk(t, { endpoint, bucket, deviceKey }) {
 
   // The cache is emptied with the product's own command: uninstall keeps the
   // cache by design, so the walk clears it and proves nothing is left in it.
-  const cacheDir = join(home, ".cache", "drive", "vfs");
+  // The cache directory tag the mount writes is not a cached file: it marks the
+  // whole directory for backup tools and the clear does not own it
+  // (`cmd/drive/mount.go`, `writeCacheTag`).
+  const cacheRoot = join(home, ".cache", "drive");
+  const mountLogPath = join(home, ".config", "drive", "mount.log");
+  const mountLog = existsSync(mountLogPath) ? readFileSync(mountLogPath, "utf8") : "(no mount.log)";
   const clear = await run(bin, ["cache", "--clear", "--home", home]);
   assert.equal(clear.code, 0, `drive cache --clear must succeed: ${clear.stderr}`);
-  assert.equal(dirFileCount(cacheDir), 0, "the mount cache holds no files after the clear");
+  const leftInCache = cachedFileCount(join(cacheRoot, "vfs"));
+  if (leftInCache !== 0) {
+    // rclone's log is the one place that names every cache file it removed and
+    // every one it kept, which is what a leftover's origin is read from.
+    t.diagnostic(`mount log, last lines:\n${mountLog.trim().split("\n").slice(-40).join("\n")}`);
+    t.diagnostic(`cache left behind:\n${cacheInventory(cacheRoot).join("\n")}`);
+  }
+  assert.equal(
+    leftInCache,
+    0,
+    `the mount cache holds no files after the clear: ${cacheInventory(cacheRoot).join(" | ")}`,
+  );
+  assert.equal(
+    existsSync(join(cacheRoot, "vfs", cacheDirTagName)),
+    true,
+    "the cache directory tag the mount wrote is still there after the clear",
+  );
   t.diagnostic(`CLI mount + uninstall proof ran in ${home}`);
 }
 
@@ -791,21 +818,54 @@ function mountIsLive(dir) {
 }
 
 /**
- * How many files sit under a directory, recursively, without following links.
+ * Every file under a directory, recursively, as paths relative to it, without
+ * following links.
  * @param {string} dir
+ * @returns {string[]}
  */
-function dirFileCount(dir) {
-  if (!existsSync(dir)) return 0;
-  let count = 0;
+function dirFiles(dir) {
+  if (!existsSync(dir)) return [];
+  /** @type {string[]} */
+  const found = [];
   /** @param {string} current */
   const walk = (current) => {
     for (const entry of readdirSync(current, { withFileTypes: true })) {
       if (entry.isDirectory()) walk(join(current, entry.name));
-      else count += 1;
+      else found.push(relative(dir, join(current, entry.name)));
     }
   };
   walk(dir);
-  return count;
+  return found.sort();
+}
+
+/**
+ * How many files the mount's cache holds. The cache directory tag the mount
+ * writes is left out: it is not a cached file, and counting it made the walk
+ * fail on a mount that left nothing behind.
+ * @param {string} vfsDir the data cache root, `vfs` under the cache directory
+ * @returns {number}
+ */
+function cachedFileCount(vfsDir) {
+  return dirFiles(vfsDir).filter((rel) => rel !== cacheDirTagName).length;
+}
+
+/**
+ * One line per file left in the mount's cache, with the metadata beside it when
+ * the file has any, so a failure names the leftover instead of counting it.
+ * @param {string} root
+ * @returns {string[]}
+ */
+function cacheInventory(root) {
+  return dirFiles(root).map((rel) => {
+    let line = `${rel} (${statSync(join(root, rel)).size} bytes)`;
+    if (!rel.startsWith(`vfsMeta${sep}`)) return line;
+    try {
+      line += ` ${readFileSync(join(root, rel), "utf8").trim()}`;
+    } catch {
+      line += " (unreadable)";
+    }
+    return line;
+  });
 }
 
 /**

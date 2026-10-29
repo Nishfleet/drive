@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { test } from "node:test";
 
 const dir = new URL("../.github/workflows/", import.meta.url);
 const workflows = readdirSync(dir)
   .filter((name) => /\.ya?ml$/.test(name))
   .map((name) => ({ name, text: readFileSync(new URL(name, dir), "utf8") }));
+
+// A composite action a workflow calls is part of that workflow: the job runs
+// its steps, so a download it makes is a workflow download. The rclone
+// install lives in .github/actions/rclone, so the gate follows it there.
+const actionsDir = new URL("../.github/actions/", import.meta.url);
+const actions = existsSync(actionsDir)
+  ? readdirSync(actionsDir, { recursive: true, encoding: "utf8" })
+      .filter((name) => statSync(new URL(name, actionsDir)).isFile())
+      .map((name) => ({ name, text: readFileSync(new URL(name, actionsDir), "utf8") }))
+  : [];
+const files = [...workflows, ...actions];
 
 // A line that fetches a remote file to keep or run: wget; curl with -o/-O
 // (any flag cluster that carries one), or curl redirected to a file or piped
@@ -62,7 +73,7 @@ function unpinnedDownloads(text) {
 }
 
 test("every workflow download is checked against a pinned digest in the same step", () => {
-  for (const { name, text } of workflows) {
+  for (const { name, text } of files) {
     assert.deepEqual(unpinnedDownloads(text), [], `${name} downloads without a digest check`);
   }
 });
@@ -122,7 +133,7 @@ test("the gate catches an unpinned download and passes a pinned one", () => {
 });
 
 test("no workflow asks a release API for whatever is newest", () => {
-  for (const { name, text } of workflows) {
+  for (const { name, text } of files) {
     assert.doesNotMatch(
       text,
       /releases\/latest|-current-/,
