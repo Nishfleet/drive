@@ -15,6 +15,11 @@ const onBlock = (text) => {
   return text.slice(start, start + 1 + end);
 };
 
+/** One row of the backup matrix, as a [name, id] pair.
+ *  @param {string} text */
+const matrixRows = (text) =>
+  [...text.matchAll(/^ {10}- \{ name: (\w+), id: ([0-9a-f-]{36}) \}$/gm)].map((m) => [m[1], m[2]]);
+
 test("the backup runs weekly and can be started by hand for a restore drill", () => {
   const on = onBlock(WF);
   assert.match(on, /^ {2}schedule:\n(?: {4}#[^\n]*\n)* {4}- cron: "\d+ \d+ \* \* \d+"$/m);
@@ -33,30 +38,100 @@ test("the backup reads only the deploy credentials, behind the production enviro
   assert.deepEqual([...new Set(secrets)].sort(), ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]);
 });
 
-test("the backup walks exactly the databases the deploy migrates", () => {
+test("the backup walks every database the fleet owns, not only the deploy's", () => {
   const deployIds = [
     ...DEPLOY.matchAll(
       /migrations apply ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g,
     ),
   ].map((m) => m[1]);
-  const pairLine = WF.split("\n").find((line) => line.includes("for pair in"));
-  assert.ok(pairLine, "the export walks the databases in one list");
+  const matrix = WF.slice(WF.indexOf("matrix:"), WF.indexOf("steps:"));
+  assert.ok(matrix.length > 0, "the export walks the databases in one matrix");
   const backupIds = [
-    ...pairLine.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
+    ...matrix.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
   ].map((m) => m[0]);
-  assert.deepEqual(backupIds.sort(), deployIds.sort());
+  // drive's own two stay in the matrix whatever else joins it: the deploy
+  // migrates them, so a dump that stopped covering them would be a backup
+  // that silently lost a database.
+  for (const id of deployIds)
+    assert.ok(backupIds.includes(id), `the deploy migrates ${id} and the backup must dump it`);
   assert.ok(deployIds.length >= 2, "both databases are exported");
+  // The fleet's four product databases (fleet-ops#10594), by name and id, so
+  // one cannot drop out of the matrix. They are dumped from here because the
+  // production environment's D1 token is account-scoped and their own
+  // repositories hold no export credential and no AGE_RECIPIENT; when that
+  // setup lands each moves to its own repository (fleet-ops#10829), and this
+  // list moves with it. Until then, a name that leaves this matrix loses the
+  // only backup that database has.
+  const PRODUCT_DATABASES = [
+    ["siterep_payments", "ec176fc4-b4f2-44c0-a925-b36ec067cff5"],
+    ["tinystudio_email_signups", "ff360a55-14fc-468c-895f-893c89e0db79"],
+    ["aiconverter", "376080eb-60f1-4bb8-aabb-06622acabb63"],
+    ["0509", "746c6e3d-782e-443a-82d6-28ca93a16294"],
+  ];
+  const entries = matrixRows(matrix);
+  for (const [name, id] of PRODUCT_DATABASES) {
+    const row = entries.find(([entryName]) => entryName === name);
+    assert.ok(row, `${name} is a product database and must be in the weekly backup matrix`);
+    assert.equal(row[1], id, `${name} is exported under id ${id}`);
+  }
+  assert.ok(
+    backupIds.length >= deployIds.length + PRODUCT_DATABASES.length,
+    "the matrix covers drive's own databases and the fleet's product databases",
+  );
+});
+
+test("a database that cannot be dumped fails its own job, and the others still ship", () => {
+  // The drive database is in the matrix the export API refuses, so its job is
+  // red on purpose. What must never happen is a green run that carried only
+  // the waitlist dump, which is what shipping a partial backup silently
+  // would look like.
+  const strategy = WF.slice(WF.indexOf("strategy:"), WF.indexOf("steps:"));
+  assert.match(
+    strategy,
+    /fail-fast: false/,
+    "a database the export API refuses must not cancel the others",
+  );
+  const entries = matrixRows(strategy);
+  assert.ok(entries.length >= 2, "one job per database, each carrying its own id");
+  // The stock shape, not a hand-rolled loop: nothing collects the failures,
+  // nothing steps past one, and no step waits for a failed database before
+  // it ships.
+  assert.doesNotMatch(WF, /for pair in/, "the matrix walks the databases, not a shell loop");
+  assert.doesNotMatch(WF, /missing=/, "a database that cannot dump fails its own job");
+  assert.doesNotMatch(WF, /continue/, "nothing steps past a failed database");
+  assert.doesNotMatch(WF, /if: always\(\)/, "no step waits for a failed database to ship");
+  // Each job uploads its own dump, so the dumps that were made still ship.
+  assert.match(
+    WF,
+    /name: d1-backup-\$\{\{ matrix\.database\.name \}\}/,
+    "each database's dump is its own artifact",
+  );
+  assert.match(
+    WF,
+    /if-no-files-found: error/,
+    "a job that produced nothing does not upload an empty artifact",
+  );
 });
 
 test("the export polls the stock D1 export API and fails loud at every exit", () => {
-  assert.match(WF, /d1\/database\/\$db\/export/);
+  assert.match(WF, /d1\/database\/\$DB_ID\/export/);
   assert.match(WF, /output_format/g);
   assert.match(WF, /current_bookmark/g);
   // The signed URL arrives only on status complete; a dump without one, a
-  // failed download, and an API error each fail the step with a named error.
+  // failed download, and an API error each fail the job with a named error.
   assert.match(WF, /no download URL after 20 polls/);
   assert.match(WF, /the dump download failed/);
   assert.match(WF, /the API call failed/);
+  // Every exit is loud and fatal for its own job: the database that failed
+  // is named and the job stops there, so the run's own job list is the
+  // signal. A database that cannot dump never reaches the upload step.
+  const dump = WF.slice(
+    WF.indexOf("- name: Dump and seal"),
+    WF.indexOf("- name: Upload the sealed dump"),
+  );
+  assert.ok(dump.length > 0, "the dump step is gone");
+  const exits = dump.split("\n").filter((line) => /::error::/.test(line) && /exit 1\b/.test(line));
+  assert.ok(exits.length >= 6, "every failure exit names the database and stops the job");
   // A run that produced nothing must not upload an empty artifact.
   assert.match(WF, /if-no-files-found: error/);
 });

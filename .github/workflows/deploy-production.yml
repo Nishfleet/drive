@@ -122,20 +122,24 @@ jobs:
         # before the first paying customer. /api/health reports the same gap
         # as "email":"not-ready", and the close and sign-in routes still
         # report the missing sender by name rather than fail silently.
+        # drive#10727: both Workers that ship in this job are read, because the
+        # api Worker's deploy read nothing at all: its sign-in mail throws on
+        # the empty sender and no device-approval mail goes out (drive#1088).
+        # The same pass covers BETTER_AUTH_URL, the address readyForAuth needs
+        # beside the secret: with it unset authFor returns no instance
+        # (core/auth.js) and every account route answers as signed out instead
+        # of failing loudly. A missing address is a warning for the reason
+        # above, and drive#752 turns both into blocks.
         # A CLI or parse failure is still an error, reported as itself, never
-        # as a missing sender: the name check exits 3 only when the list read
-        # fine.
+        # as a missing setting.
         run: |
-          names=$(npx cf workers secrets list --worker drive-pricing --quiet) ||
-            { echo "::error::could not list the secret names on drive-pricing; the cf error is above"; exit 1; }
-          rc=0
-          printf '%s' "$names" |
-            node -e 'const s=JSON.parse(require("fs").readFileSync(0,"utf8"));process.exit(s.some((x)=>x.name==="MAIL_FROM")?0:3)' || rc=$?
-          case $rc in
-            0) echo "MAIL_FROM is set on drive-pricing" ;;
-            3) echo "::warning title=No sender address::MAIL_FROM is not set on drive-pricing, so every customer email fails (close receipts, reminders, the welcome, sign-in links). Set it per drive#667. This deploy goes on only because drive is pre-launch; drive#752 makes this a block before the first paying customer." ;;
-            *) echo "::error::the secret list from drive-pricing was not the JSON array this check reads"; exit 1 ;;
-          esac
+          for worker in drive-pricing drive-api; do
+            names=$(npx cf workers secrets list --worker "$worker" --quiet) || { echo "::error::could not list the secret names on $worker; the cf error is above"; exit 1; }
+            missing=$(printf '%s' "$names" | node -e 'const s=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(["MAIL_FROM","BETTER_AUTH_URL"].filter((n)=>!s.some((x)=>x.name===n)).join(" "))') || { echo "::error::the secret list from $worker was not the JSON array this check reads"; exit 1; }
+            [[ $missing == *MAIL_FROM* ]] && echo "::warning title=No sender address::MAIL_FROM is not set on $worker, so every customer email fails (close receipts, reminders, the welcome, sign-in links), and on the api Worker the sign-in mail throws on the empty sender (core/email-send.js). Set it per drive#667, or drive#1088 for the api Worker. This deploy goes on only because drive is pre-launch; drive#752 makes this a block before the first paying customer."
+            [[ $missing == *BETTER_AUTH_URL* ]] && echo "::warning title=No sign-in address::BETTER_AUTH_URL is not set on $worker, so authFor returns no instance (core/auth.js) and every account route answers as signed out instead of failing loudly. Set it per drive#873. This deploy goes on only because drive is pre-launch; drive#752 makes this a block before the first paying customer."
+            [ -n "$missing" ] || echo "MAIL_FROM and BETTER_AUTH_URL are set on $worker"
+          done
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

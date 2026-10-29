@@ -52,8 +52,11 @@ waitlist (bookmark): …"). The bookmark is the point a restore returns to.
 writes made since are gone.** It is destructive and it is Nish's call, on a
 fresh export first (see the next section).
 
-1. Download the newest weekly artifact (`d1-backup`) so the pre-restore
-   state is also saved.
+1. Download the newest weekly artifact for the database you are restoring
+   (`d1-backup-waitlist` or `d1-backup-drive`) so the pre-restore state is also
+   saved. The drive database has no dump in its artifact while the weekly run
+   is red on it (see "The weekly backup"), so a drive restore has no copy
+   beyond the bookmark itself.
 2. Preview the restore (harmless):
 
    ```sh
@@ -87,12 +90,47 @@ escapes, cheapest first:
 
 ## The weekly backup
 
-`d1-export.yml` runs Mondays 05:37 UTC (or by hand) and uploads
-`waitlist-<date>.sql.age` and `drive-<date>.sql.age` as the `d1-backup`
-GitHub artifact, kept 90 days — the copy that survives a wrong restore, a
-deleted database or a provider problem. The dumps are sealed with `age`
-before upload: anyone with read access to this private repository can
-download its workflow artifacts, so only the ciphertext leaves the runner.
+`d1-export.yml` runs Mondays 05:37 UTC (or by hand) and uploads each
+database's dump as its own GitHub artifact — `d1-backup-waitlist` and
+`d1-backup-drive` — kept 90 days: the copy that survives a wrong restore, a
+deleted database or a provider problem. The two databases run as two jobs, so
+a database that cannot be dumped fails its own job and costs the other
+nothing. The dumps are sealed with `age` before upload: anyone with read
+access to this public repository can download its workflow artifacts, so only
+the ciphertext leaves the runner.
+
+**The matrix also carries the fleet's four other product databases**
+(fleet-ops#10594): `siterep_payments` (siterep-public),
+`tinystudio_email_signups` (TinyStudio.io-public), `aiconverter`
+(aiconverter-app) and `0509` (0509). They are dumped from here because the
+export credential is the Cloudflare D1 token on this repository's production
+environment, D1 permissions are account-scoped, and those four repositories
+hold no such token and no `AGE_RECIPIENT`. Each of them moves to its own
+repository's copy of the job when that setup lands (fleet-ops#10829);
+`test/d1-export.test.mjs` fails while one of the four is out of the matrix,
+because that would end the only backup it has. Their artifacts are named
+after the database, so `d1-backup-0509` and `d1-backup-aiconverter` sit
+beside `d1-backup-waitlist` on the run's summary page.
+
+Three of the four dump clean. `tinystudio_email_signups` does not, and its
+job is red on purpose: the export API answers HTTP 404 for the database id
+its own deploy config declares, and for the preview id beside it, so that
+database is not in the account this token names (fleet-ops#10830). The row
+stays in the matrix so the fix is one line and the missing backup stays
+visible on the run.
+
+**The drive database has no dump in its artifact, and its job is red on
+purpose.** The stock D1 export API does not take a database that holds
+virtual tables, and the FTS5 index on `file_index` (migration
+`0039_file_index_fts.sql`) is live production schema, so the drive database
+is the dump the export step records and fails on. Every Monday its job names
+it in an `::error::` annotation and exits red, while the waitlist job stays
+green and ships its own dump. The drive database's only recovery point is
+then D1 Time Travel, which keeps 30 days and lives on Cloudflare: for that
+database a restore further back than 30 days, a deleted database, or a loss
+on Cloudflare's side is not recoverable. The gap closes by itself — its job
+goes green and `drive-<date>.sql.age` appears in its artifact — when a
+mechanism lands (fleet-ops#10745); drive#1027 stays open until then.
 
 **One-time setup (Nish):** run `age-keygen -o d1-backup-key.txt` on a
 machine you keep keys on, and put the public key line it prints (`age1…`)
@@ -104,16 +142,25 @@ nothing, is the invisibility drive#520 exists to end.
 
 Restore from a dump:
 
-1. Download the artifact from the run's summary page.
-2. Decrypt it with the private key, and check the sha256 the run log
+1. Download the artifact for that database from the run's summary page. While
+   the drive job is red there is no drive dump to download (see above), so a
+   drive restore goes through the Time Travel bookmark in the previous
+   section.
+2. The monthly restore drill does exactly this for every database in the
+   matrix, on the fleet host where the private key already lives: it takes the
+   newest artifact, decrypts it into a local SQLite file, counts the rows and
+   writes one report. It is `fleet-d1-restore-drill.service` in the
+   Nishfleet/fleet-ops repository, and `docs/RUNBOOK.md` there has its
+   schedule and how to start it by hand.
+3. Decrypt it with the private key, and check the sha256 the run log
    printed against the decrypted file:
 
    ```sh
-   age -d -i d1-backup-key.txt -o drive-<date>.sql drive-<date>.sql.age
-   sha256sum drive-<date>.sql
+   age -d -i d1-backup-key.txt -o waitlist-<date>.sql waitlist-<date>.sql.age
+   sha256sum waitlist-<date>.sql
    ```
 
-3. Small dumps, or a table at a time, go back through the CLI:
+4. Small dumps, or a table at a time, go back through the CLI:
 
    ```sh
    npx cf d1 query <database-id> --sql "$(cat dump.sql)"
@@ -122,7 +169,7 @@ Restore from a dump:
    `--sql` carries the statements in the command line, so split a large dump
    into statement-sized files rather than growing one argument past the
    shell's limit.
-4. A whole-database import of a large dump is the D1 import API's
+5. A whole-database import of a large dump is the D1 import API's
    init/upload/ingest protocol; prefer the Time Travel restore for point-in-
    time recovery and keep the dump for reading and surgical repairs.
 
@@ -195,8 +242,10 @@ not declared in `cloudflare.config.ts` on purpose - a declared
 `bindings.secret()` with no value behind it fails every deploy - so the
 operator steps below run in this order:
 
-1. Set the secret: `npx wrangler secret put STORAGE_EVENTS_WEBHOOK_SECRET --env production`,
+1. Set the secret: `cf workers secrets update STORAGE_EVENTS_WEBHOOK_SECRET --type secret_text --text <value> --worker drive-pricing`,
    with a value of the Standard Webhooks shape (`whsec_<32 random bytes, base64>`).
+   `--type` is required: cf refuses the update without it.
+   The value survives a deploy.
 2. Add one notification rule per bucket in the provider's own console
    (iDrive e2 / MinIO: KeySpace event notifications) pointed at
    `https://storagebun.com/api/storage-events/signed`
