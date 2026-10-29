@@ -8,22 +8,14 @@ const DEPLOY = readFileSync(
   "utf8",
 );
 
-// The two settings a deploy reads and cannot invent, on both Workers that read
-// them: MAIL_FROM is the sender every customer email leaves from, and
-// BETTER_AUTH_URL is the address readyForAuth needs beside the secret, without
-// which authFor returns no instance and every account route answers as signed
-// out (core/auth.js). drive#10727: the api Worker ships in the same deploy, and
-// before it only the pricing Worker's settings were read.
 const GATE = "- name: Warn when there is no sender (drive#522)";
 const WORKERS = ["drive-pricing", "drive-api"];
 const SENDER_ISSUES = ["drive#667", "drive#1088"];
 const SIGN_IN = "drive#873";
-// The issue that turns both warnings into blocks before the first paying
-// customer (drive#667 and drive#668 block it until then).
 const BLOCK_LATER = "drive#752";
 const SETTINGS = ["MAIL_FROM", "BETTER_AUTH_URL"];
 
-/** The text of one step, from its `- name:` to the next. @param {string} name */
+/** @param {string} name */
 const step = (name) => {
   const start = DEPLOY.indexOf(name);
   assert.ok(start !== -1, `step missing from the deploy: ${name}`);
@@ -31,30 +23,20 @@ const step = (name) => {
   return DEPLOY.slice(start, next === -1 ? undefined : next);
 };
 
-/**
- * The node program the step pipes the CLI output through. It writes the names
- * from SETTINGS the list does not hold, space-separated, and nothing when the
- * Worker has both.
- */
 const nameCheck = () => {
   const found = step(GATE).match(/node -e '([^']+)'/);
   assert.ok(found, "the name check is missing from the deploy gate");
   return found[1];
 };
 
-/**
- * That program, run on the shape the CLI prints: a JSON array of name/type
- * objects. Exit 0 and empty output means both settings are set; a non-zero
- * status means the output was not that list at all.
- * @param {string[]} names - the names the Worker has
- */
+/** @param {string[]} names */
 const missing = (names) =>
   spawnSync(process.execPath, ["-e", nameCheck()], {
     input: JSON.stringify(names.map((secret) => ({ name: secret, type: "secret_text" }))),
     encoding: "utf8",
   });
 
-/** The line that reports one missing setting, by name. @param {string} setting */
+/** @param {string} setting */
 const report = (setting) => {
   const line = step(GATE)
     .split("\n")
@@ -63,8 +45,6 @@ const report = (setting) => {
   return line;
 };
 
-// A smoke test over the file this looks at: a reader that silently found no
-// step, and so asserted nothing, would pass every test below.
 test("the deploy workflow is the one with the post-deploy health check", () => {
   assert.match(DEPLOY, /^name: Deploy production$/m);
   assert.match(DEPLOY, /Check the live Worker version and health/);
@@ -95,8 +75,6 @@ test("the check reads secret names, never values, and asks for both settings", (
   assert.match(body, /cf workers secrets list --worker "\$worker" --quiet/);
   assert.match(body, /\[\s*"MAIL_FROM",\s*"BETTER_AUTH_URL"\s*\]/);
   assert.doesNotMatch(body, /secrets? (get|put|update|bulk|delete)/);
-  // The token and account reach the CLI as environment, like every other cf
-  // step here, never as an argument any process can read.
   assert.match(body, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
   assert.match(body, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/);
 });
@@ -105,10 +83,15 @@ test("the name check tells a setting that is set from one that is not", () => {
   const both = missing(["BETTER_AUTH_SECRET", "MAIL_FROM", "BETTER_AUTH_URL"]);
   assert.equal(both.status, 0);
   assert.equal(both.stdout, "");
-  assert.equal(missing(["BETTER_AUTH_SECRET", "BETTER_AUTH_URL"]).stdout, "MAIL_FROM");
-  assert.equal(missing(["BETTER_AUTH_SECRET", "MAIL_FROM"]).stdout, "BETTER_AUTH_URL");
-  assert.equal(missing(["BETTER_AUTH_SECRET"]).stdout, `${SETTINGS.join(" ")}`);
-  // A longer name that merely starts with one is not that setting.
+  const noSender = missing(["BETTER_AUTH_SECRET", "BETTER_AUTH_URL"]);
+  assert.equal(noSender.status, 0, "a missing setting is not a failure");
+  assert.equal(noSender.stdout, "MAIL_FROM");
+  const noSignIn = missing(["BETTER_AUTH_SECRET", "MAIL_FROM"]);
+  assert.equal(noSignIn.status, 0, "a missing setting is not a failure");
+  assert.equal(noSignIn.stdout, "BETTER_AUTH_URL");
+  const neither = missing(["BETTER_AUTH_SECRET"]);
+  assert.equal(neither.status, 0, "a missing setting is not a failure");
+  assert.equal(neither.stdout, SETTINGS.join(" "));
   assert.equal(missing(["MAIL_FROM_BACKUP", "BETTER_AUTH_URL_BACKUP"]).stdout, SETTINGS.join(" "));
 });
 
@@ -172,4 +155,13 @@ test("a CLI or parse failure still stops the deploy, reported as itself", () => 
     /\|\| \{ echo "::error::the secret list from \$worker was not the JSON array[^}]*exit 1; \}/,
     "unreadable output fails the run instead of reading as a missing setting",
   );
+});
+
+test("the deploy smoke warns, never rolls back, when health reports email not-ready", () => {
+  const smoke = step("- name: Check the live Worker version and health");
+  const at = smoke.indexOf('email==="not-ready"');
+  assert.ok(at !== -1, "the smoke reads the email part of /api/health");
+  const tail = smoke.slice(at, smoke.indexOf("fi", at));
+  assert.match(tail, /::warning/);
+  assert.doesNotMatch(tail, /exit 1/);
 });
