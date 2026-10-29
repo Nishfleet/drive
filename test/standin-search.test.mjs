@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -12,6 +12,7 @@ import { createS3Store } from "../core/files-s3.js";
 import { scopeStore } from "../core/files-scope.js";
 import { reconcileIndex, searchDrive, withIndex } from "../src/search.js";
 import { sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
+import { killTracked, spawnTracked } from "./minio-standin.mjs";
 
 const ACCOUNT = { id: "1", name: "Your drive" };
 const FOLDERS = 20;
@@ -388,7 +389,7 @@ async function startStorage(t) {
   // No --auth-key: the stand-in answers the unsigned requests the store sends
   // when no credential is configured, and the signed store (the same code, with
   // a region and a credential) is what answers a real endpoint.
-  const server = spawn(
+  const server = spawnTracked(
     rclone,
     ["serve", "s3", dir, "--config", configPath, "--addr", `127.0.0.1:${port}`],
     {
@@ -396,10 +397,10 @@ async function startStorage(t) {
     },
   );
   let stderr = "";
-  server.stderr.on("data", (chunk) => {
+  server.stderr?.on("data", (chunk) => {
     stderr += chunk;
   });
-  t.after(() => server.kill("SIGTERM"));
+  t.after(() => killTracked(server));
   const deadline = Date.now() + 20_000;
   for (;;) {
     if (server.exitCode !== null)

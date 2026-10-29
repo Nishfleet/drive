@@ -42,7 +42,10 @@ test("ci.yml runs on merge_group so the main merge queue gets verify and go", ()
 // drive#799: the two-device conflict proof is a named step of the go job,
 // so a merge-group run cannot drop it (the paths filter skips `changes`,
 // and the job then runs every step). The step has no continue-on-error.
-test("the go job still runs the two-device conflict proof", () => {
+// drive#868: the fixture-leftover gate rides on that step, so the go host is
+// checked too and the workflow stays the same size (the ratchet allows no net
+// added lines).
+test("the go job still runs the two-device conflict proof, then the gate", () => {
   const start = CI.search(/^ {2}go:\n/m);
   assert.notEqual(start, -1, "ci.yml has a go job");
   const rest = CI.slice(start);
@@ -50,7 +53,7 @@ test("the go job still runs the two-device conflict proof", () => {
   const body = next ? rest.slice(0, 1 + next.index) : rest;
   assert.match(
     body,
-    /- name: Two-device conflict proof\n {8}run: go test \.\/cmd\/drive\/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s\n/,
+    /- name: Two-device conflict proof, then no fixture outlives its run\n {8}run: go test \.\/cmd\/drive\/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s && node --test test\/leftover-fixtures\.test\.mjs\n/,
   );
   const step = body.slice(body.indexOf("- name: Two-device conflict proof"));
   const stepEnd = step.search(/\n {6}- /);

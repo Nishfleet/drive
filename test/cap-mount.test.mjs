@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, spawn, spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -18,7 +18,7 @@ import { monthStart } from "../core/meter-usage.js";
 import { createS3Client, provisionBucket } from "../core/s3.js";
 import { createS3KeyProvider } from "../core/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
-import { startMinioStandin } from "./minio-standin.mjs";
+import { killTracked, spawnTracked, startMinioStandin } from "./minio-standin.mjs";
 import { reportSkip } from "./proof-skip.mjs";
 
 const run = promisify(execFile);
@@ -110,7 +110,7 @@ async function startMount(rcloneBin, workDir, cred) {
   const cacheDir = path.join(workDir, "cache");
   const logPath = path.join(workDir, "rclone.log");
   await run("mkdir", ["-p", mountDir, cacheDir]);
-  const child = spawn(
+  const child = spawnTracked(
     rcloneBin,
     [
       "mount",
@@ -130,7 +130,7 @@ async function startMount(rcloneBin, workDir, cred) {
     { stdio: ["ignore", "ignore", "pipe"] },
   );
   let stderr = "";
-  child.stderr.on("data", (chunk) => {
+  child.stderr?.on("data", (chunk) => {
     stderr += chunk;
   });
   const deadline = Date.now() + 30_000;
@@ -165,7 +165,7 @@ async function stopMount(m) {
   m.child.kill("SIGTERM");
   const exited = new Promise((resolve) => m.child.once("exit", resolve));
   await Promise.race([exited, sleep(10_000)]);
-  if (m.child.exitCode === null) m.child.kill("SIGKILL");
+  if (m.child.exitCode === null) killTracked(m.child, "SIGKILL");
   await run("fusermount3", ["-uz", m.mountDir]).catch(() => {});
   await run("fusermount", ["-uz", m.mountDir]).catch(() => {});
 }

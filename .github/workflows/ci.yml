@@ -299,8 +299,11 @@ jobs:
       # the same checksum, against a local `rclone serve s3` stand-in.
       - name: Stand-in mount proof
         run: go test ./cmd/drive/ -run TestStandinMountProof -v -timeout 300s
-      - name: Two-device conflict proof
-        run: go test ./cmd/drive/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s
+      # The gate runs after every proof above, on the host that ran them: a
+      # fixture that outlives its test is a leak the next run inherits, and a
+      # green suite never says so (drive#868).
+      - name: Two-device conflict proof, then no fixture outlives its run
+        run: go test ./cmd/drive/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s && node --test test/leftover-fixtures.test.mjs
 
   private-detail-scan:
     name: Private detail scan
