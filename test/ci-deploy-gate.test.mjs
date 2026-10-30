@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -240,35 +248,138 @@ test("ci.yml skips by job-level if, fails open, and pins paths-filter by SHA", (
 });
 
 // drive#867: the skip filters must keep covering the classes that cannot
-// affect a step, and every heavy step must carry its skip condition, or the
-// suite runs in full on every change again. A test that reads a file from an
-// excluded area (docs/api.md, cmd/drive/main.go) may skip on the pull
-// request: the merge queue's fail-open full run is the backstop.
-test("ci.yml skips the heavy steps a pull request's files cannot affect", () => {
-  const every = /^ {10}filters: \|\n((?: {12}[^\n]*\n)+)/m.exec(CI)?.[1] ?? "";
-  /** One `every` filter's negated patterns. @param {string} name */
+// affect a job, and skipping stays at job level: inside a running job, a
+// repeated step `if:` is dead code. The merge queue's fail-open full run is
+// the backstop for a mis-filed path.
+test("ci.yml skips by whole job, and every pull request still runs verify or go", () => {
+  const filters = [...CI.matchAll(/^ {10}filters: \|\n((?: {12}[^\n]*\n)+)/gm)]
+    .map((m) => m[1])
+    .join("");
+  /** One filter's patterns, quoted or bare. @param {string} name */
   const patterns = (name) =>
-    [...every.matchAll(/^ {12}(\w+):\n((?: {14}[^\n]*\n)*)/gm)]
+    [...filters.matchAll(/^ {12}(\w+):\n((?: {14}- [^\n]*\n)*)/gm)]
       .find((m) => m[1] === name)?.[2]
-      ?.match(/- '.+'/g)
-      ?.map((line) => line.slice(3, -1)) ?? [];
-  for (const excluded of ["!docs/**", "!{cmd,internal}/**", "!.github/**", "!{go.mod,go.sum}"]) {
-    assert.ok(patterns("node").includes(excluded), `node filter excludes ${excluded}`);
-  }
-  assert.ok(
-    patterns("site").includes("!{internal,.github}/**"),
-    "site filter excludes internal and .github",
+      ?.match(/- .+/g)
+      ?.map((line) => line.slice(2).trim().replace(/^'|'$/g, "")) ?? [];
+  /**
+   * Whether one `every` negation excludes a path. Handles the shapes this
+   * file uses — a directory wildcard (braces allowed), a bare file name and
+   * the markdown wildcard — and refuses any other, so a new shape cannot
+   * silently dodge this test.
+   * @param {string} pattern @param {string} file
+   */
+  const excludes = (pattern, file) => {
+    assert.ok(pattern.startsWith("!"), `every pattern is a negation: ${pattern}`);
+    const body = pattern.slice(1);
+    if (body === "**/*.md") return file.endsWith(".md");
+    const brace = /^([^{}]*?)\{([\w.]+(?:,[\w.]+)*)\}(.*)$/.exec(body);
+    for (const head of brace ? brace[2].split(",").map((a) => brace[1] + a + brace[3]) : [body]) {
+      if (head.endsWith("/**")) {
+        if (file.startsWith(`${head.slice(0, -3)}/`)) return true;
+      } else if (!head.includes("*")) {
+        if (file === head) return true;
+      } else {
+        assert.fail(`unhandled filter shape: ${pattern}`);
+      }
+    }
+    return false;
+  };
+  /**
+   * Does a job run for these changed files? `every`: no negation excludes
+   * any file. `some`: one listed path is enough on its own.
+   * @param {string[]} negations @param {string[]} extras @param {string[]} files
+   */
+  const runs = (negations, extras, files) =>
+    files.every((f) => !negations.some((p) => excludes(p, f))) ||
+    files.some((f) => extras.includes(f));
+  const node = patterns("node");
+  const nodeExtra = patterns("node_extra");
+  const verifyRuns = (files) => runs(node, nodeExtra, files);
+  const goRuns = (files) => runs(patterns("go"), patterns("go_extra"), files);
+  const siteRuns = (files) => runs(patterns("site"), patterns("site_extra"), files);
+
+  // The node filter excludes exactly the Go side. Docs and .github files
+  // stay in: the Node tests read them, and for a docs-only or workflow-only
+  // pull request `verify` is the one job that sees it.
+  assert.deepEqual(node, [
+    "!docs/design/**",
+    "!docs/research/**",
+    "!{cmd,internal}/**",
+    "!{go.mod,go.sum}",
+  ]);
+
+  // One file per class the filters claim to cover, against the real jobs.
+  assert.equal(verifyRuns(["cmd/drive/doctor.go"]), false, "a Go-only PR skips verify");
+  assert.equal(goRuns(["cmd/drive/doctor.go"]), true, "a Go-only PR runs go");
+  assert.equal(goRuns([".github/workflows/ci.yml"]), false, "a workflow-only PR skips go");
+  assert.equal(
+    verifyRuns([".github/workflows/ci.yml"]),
+    true,
+    "a workflow-only PR runs verify: its attribution step and this test must see it",
   );
-  assert.ok(patterns("go").includes("!.github/**"), "go filter excludes .github/**");
+  assert.equal(verifyRuns(["docs/api.md"]), true, "a docs PR runs verify, as on main");
+  assert.equal(verifyRuns(["cmd/drive/main.go"]), true, "main.go is read by the Node tests");
+  assert.equal(siteRuns(["cmd/drive/main.go"]), true, "main.go is rendered into the pages");
+  assert.equal(verifyRuns(["src/index.js"]), true, "a Worker PR runs verify");
+  assert.equal(goRuns(["src/index.js"]), false, "a Worker PR skips go");
+
+  // The attribution invariant: both jobs carry the attribution step, so no
+  // changed file may leave a pull request with neither job running. The one
+  // hole is the one main already has: a design or research note outside the
+  // _extra lists (prose nobody executes) runs neither job.
+  for (const file of [
+    "src/index.js",
+    "public/a.css",
+    "workers/api/src/index.js",
+    "core/files.js",
+    "cmd/drive/main.go",
+    "cmd/drive/doctor.go",
+    "internal/api/api.go",
+    "go.mod",
+    "go.sum",
+    "docs/api.md",
+    "docs/build-spec.md",
+    "docs/design/pricing-brief.md",
+    "docs/research/folder-moves.md",
+    ".github/workflows/ci.yml",
+    "docs-site/x.md",
+    "README.md",
+    "migrations/drive/0001.sql",
+    "evals/agents/promptfooconfig.yaml",
+  ]) {
+    const hole =
+      (file.startsWith("docs/design/") || file.startsWith("docs/research/")) &&
+      ![...nodeExtra, ...patterns("go_extra"), ...patterns("site_extra")].includes(file);
+    assert.equal(
+      verifyRuns([file]) || goRuns([file]),
+      !hole,
+      `${file}: outside the design/research hole, a pull request must keep one of the two jobs`,
+    );
+  }
 
   const verify = CI.slice(CI.indexOf("\n  verify:\n"), CI.indexOf("\n  go:\n"));
   const steps = verify.split("\n      - ").slice(1);
   /** One flattened step block, or undefined. @param {string} needle */
   const stepFor = (needle) => steps.find((s) => s.includes(needle));
-  const nodeGate =
-    "if: needs.changes.result != 'success' || " +
-    "needs.changes.outputs.node == 'true' || " +
-    "needs.changes.outputs.node_extra == 'true'";
+  const jobGate = verify.slice(0, verify.indexOf("runs-on")).replace(/\s+/g, " ");
+  assert.match(
+    jobGate,
+    /needs\.changes\.result != 'success'/,
+    "verify fails open when the filter job did not run",
+  );
+  assert.match(
+    jobGate,
+    /needs\.changes\.outputs\.node == 'true'/,
+    "verify runs when the Node suite is affected",
+  );
+  assert.match(
+    jobGate,
+    /needs\.changes\.outputs\.node_extra == 'true'/,
+    "verify runs for the files the Node tests read",
+  );
+
+  // Skipping is the job's `if:` alone. A step gate would repeat it and skip
+  // nothing: the job only runs when the condition already holds.
   for (const [needle, label] of [
     ["run: npm ci", "npm ci"],
     ["Cache the rclone release", "the rclone cache"],
@@ -278,28 +389,76 @@ test("ci.yml skips the heavy steps a pull request's files cannot affect", () => 
   ]) {
     const step = stepFor(needle);
     assert.ok(step, `step found: ${label}`);
-    const cond = step.replace(/\s+/g, " ");
-    assert.match(cond, /needs\.changes\.result != 'success'/, `${label} fails open`);
-    assert.ok(cond.includes(nodeGate), `${label} skips unless the Node suite is affected`);
+    assert.doesNotMatch(step, /if: needs\.changes/, `${label} carries no gate of its own`);
   }
   for (const name of ["Build the site", "Lighthouse CI"]) {
     const step = stepFor(`name: ${name}`);
     assert.ok(step, `step found: ${name}`);
     const cond = step.replace(/\s+/g, " ");
-    assert.match(
-      cond,
-      /needs\.changes\.outputs\.node == 'true'/,
-      `${name} skips when the Node suite is unaffected`,
-    );
+    assert.match(cond, /needs\.changes\.result != 'success'/, `${name} fails open`);
     assert.match(
       cond,
       /needs\.changes\.outputs\.site == 'true'/,
-      `${name} skips when the shipped pages are unaffected`,
+      `${name} runs when the pages' inputs change`,
     );
+    assert.match(
+      cond,
+      /needs\.changes\.outputs\.site_extra == 'true'/,
+      `${name} runs for the files rendered into the pages`,
+    );
+    assert.doesNotMatch(cond, /outputs\.node/, `${name} reads only the site filters`);
   }
   const scan = stepFor("name: Secret scan");
   assert.ok(scan, "step found: the secret scan");
-  assert.doesNotMatch(scan, /^\s+if:/m, "the secret scan runs on every pull request");
+  assert.doesNotMatch(
+    scan,
+    /if:/,
+    "the secret scan carries no gate of its own: it runs whenever verify runs",
+  );
+
+  // The go job carries the attribution step too, so the Go-only pull
+  // requests that skip verify still get theirs checked.
+  const goJob = CI.slice(CI.indexOf("\n  go:\n"), CI.indexOf("\n  private-detail-scan:\n"));
+  assert.match(
+    goJob.replace(/\s+/g, " "),
+    /needs\.changes\.outputs\.go == 'true'/,
+    "go runs by its own filter",
+  );
+  assert.ok(
+    goJob.includes("name: No agent attribution"),
+    "the go job checks attribution for the pull requests only it sees",
+  );
+
+  // Detector: a path the Node tests read may not sit in an area the node
+  // filter excludes without a node_extra line, or its tests would skip on
+  // the pull request and only the merge queue would catch the break. This
+  // file's own fixtures are pinned above instead of scanned.
+  const self = import.meta.url;
+  const reads = new Set();
+  for (const entry of readdirSync(new URL("./", import.meta.url))) {
+    if (!entry.endsWith(".mjs") || new URL(entry, import.meta.url).href === self) continue;
+    for (const m of readFileSync(new URL(entry, import.meta.url), "utf8").matchAll(
+      /[`'"]((?:cmd\/drive|docs|\.github)\/[\w./-]+)[`'"]/g,
+    )) {
+      reads.add(m[1]);
+    }
+  }
+  for (const file of [
+    "cmd/drive/e2e_test.go",
+    "cmd/drive/logout_test.go",
+    ".github/workflows/ci.yml",
+  ]) {
+    assert.ok(
+      !node.some((p) => excludes(p, file)) || nodeExtra.includes(file),
+      `${file}, which this test reads, must not be silently excluded`,
+    );
+  }
+  for (const file of reads) {
+    assert.ok(
+      !node.some((p) => excludes(p, file)) || nodeExtra.includes(file),
+      `${file} is read by the tests but the node filter excludes it and node_extra does not list it`,
+    );
+  }
 });
 
 // drive#759: `npm run check` (tsc --noEmit through the generated Workers
@@ -340,15 +499,13 @@ test("ci.yml runs npm run check as its own step, and never fixes the diff", () =
   for (const name of ["check", "precheck", "typecheck", "pretypecheck", "lint"]) {
     assert.doesNotMatch(scripts[name] ?? "", /--(write|fix)\b/, `npm run ${name} never fixes`);
   }
-  // Same gate as `npm test`: the step carries the paths filter at step level,
-  // so a pull request whose files cannot affect the Node suite skips both
-  // (drive#867), and the fail-open clause runs them in the merge queue.
+  // Same gate as `npm test`: the step carries no `if:`, so it runs whenever
+  // the job runs, and the job-level `if:` is the paths filter above it.
   for (const gated of [step, suite]) {
-    const cond = gated.replace(/\s+/g, " ");
-    assert.match(
-      cond,
-      /if: needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.node == 'true' \|\| needs\.changes\.outputs\.node_extra == 'true' run:/,
-      "the Node steps carry the node paths gate",
+    assert.doesNotMatch(
+      gated,
+      /if: needs\.changes/,
+      "the check and test steps carry no gate of their own",
     );
   }
 });
