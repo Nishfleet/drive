@@ -84,6 +84,7 @@ jobs:
               - '!{cmd,test,workers}/**'
               - '!{docs,docs-site}/**'
               - '!{evals,migrations,installer,bench}/**'
+              # workflow files cannot change the built pages
               - '!{internal,.github}/**'
               - '!{go.mod,go.sum}'
               - '!**/*.md'

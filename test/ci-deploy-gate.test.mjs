@@ -291,6 +291,11 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
     true,
     "a pattern that names the dot segment matches it in both matchers",
   );
+  assert.equal(
+    matchesGlob("cmd/update.go", "{cmd,internal}/**/*.go"),
+    true,
+    "the `**` inside a brace matches zero path segments, in both matchers",
+  );
   /**
    * Does a job run for these changed files? `every`: no negation excludes
    * any file. `some`: one listed path is enough on its own.
@@ -346,7 +351,7 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
   );
   // A filter emptied by an indentation drift in patterns() would make every
   // assertion here vacuously true, so pin each one non-empty as a floor.
-  for (const name of ["go", "site", "node_extra", "site_extra", "go_extra"]) {
+  for (const name of ["node", "go", "site", "node_extra", "site_extra", "go_extra"]) {
     assert.ok(patterns(name).length > 0, `${name} is a non-empty filter`);
   }
 
@@ -492,7 +497,7 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
       if (entry.isDirectory()) walk(path);
       else if (entry.name.endsWith(".mjs") && path.href !== self) {
         for (const m of readFileSync(path, "utf8").matchAll(
-          /[`'"]((?:cmd|internal|docs|\.github)\/[\w./-]+)[`'"]/g,
+          /[`'"]((?:cmd|internal|docs|\.github)\/[\w./@+-]+)[`'"]/g,
         )) {
           reads.add(m[1]);
         }
