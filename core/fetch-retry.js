@@ -66,7 +66,7 @@ const CONNECTION_LOST = new Set([
  * deletes. It is shared with the control plane, which imports it, so both
  * planes carry one answer to "may this be sent again".
  */
-export const REPEATABLE_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
+const REPEATABLE_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
 
 /**
  * The methods a precondition changes the effect of, so a repeat's answer no
@@ -91,7 +91,7 @@ const WORKERD_CONNECTION_LOST = "Network connection lost";
  * @param {unknown} error
  * @returns {boolean}
  */
-export function connectionLost(error) {
+function connectionLost(error) {
   if (!(error instanceof Error)) {
     return false;
   }
@@ -122,6 +122,32 @@ function preconditional(headers) {
 }
 
 /**
+ * Whether a precondition rides on a write, where a repeat's answer would speak
+ * for the caller's own attempt.
+ * @param {string} method
+ * @param {HeadersInit | undefined} headers
+ * @returns {boolean}
+ */
+function preconditionalWrite(method, headers) {
+  return WRITING_METHODS.has(method) && preconditional(headers);
+}
+
+/**
+ * Whether a lost connection may be sent again: a method a repeat cannot spoil,
+ * and no precondition whose answer a repeat would change. The control plane
+ * calls this too, so both planes answer "may this be sent again" one way.
+ * @param {string} method
+ * @param {HeadersInit | undefined} headers
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function repeatable(method, headers, error) {
+  return (
+    REPEATABLE_METHODS.has(method) && !preconditionalWrite(method, headers) && connectionLost(error)
+  );
+}
+
+/**
  * Fetch with a hard timeout and one retry: a deadline that passed while the
  * connection was healthy, a 5xx, or a connection that died before an answer on
  * a method a repeat cannot spoil. A write that carries a precondition gets no
@@ -148,7 +174,8 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
   const sent = input instanceof Request ? input : null;
   const body = init.body ?? sent?.body;
   const method = (init.method ?? sent?.method ?? "GET").toUpperCase();
-  const conditional = WRITING_METHODS.has(method) && preconditional(init.headers ?? sent?.headers);
+  const headers = init.headers ?? sent?.headers;
+  const conditional = preconditionalWrite(method, headers);
   /**
    * Whether a rejected attempt is worth one more. A write that carries a
    * precondition is sent once, because the answer a repeat gets no longer names
@@ -160,9 +187,7 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
    * @param {unknown} error
    */
   const retryable = (error) =>
-    !conditional &&
-    (error instanceof DataPlaneTimeout ||
-      (REPEATABLE_METHODS.has(method) && connectionLost(error)));
+    !conditional && (error instanceof DataPlaneTimeout || repeatable(method, headers, error));
   /** One try: the signal is per-attempt, so the retry gets its own full window.
    * @param {number} number
    * @returns {Promise<Response>}

@@ -1,5 +1,5 @@
 import { AwsClient } from "aws4fetch";
-import { connectionLost, REPEATABLE_METHODS } from "./fetch-retry.js";
+import { repeatable } from "./fetch-retry.js";
 import { decodeEntities, parseVersionRows, tagValue as scanTagValue } from "./s3-listing.js";
 
 /**
@@ -85,13 +85,13 @@ export function ok(operation, response) {
  * promised one.
  *
  * A request whose connection is lost before it is answered is signed again and
- * sent once more (`connectionLost`, `REPEATABLE_METHODS` from
- * core/fetch-retry.js, the same pair the data plane uses), whichever runtime
- * reported it. The retry is exactly one, so an endpoint that is really down
- * answers the caller with its own error instead of a pause. Signing is inside
- * the attempt (as in core/files-s3.js) because the first attempt's signed
- * Request has a body stream already consumed, and replaying it is a
- * signed-request error, not a retry.
+ * sent once more when `repeatable` says the attempt may be repeated, which is
+ * the rule the data plane uses too, whichever runtime reported the loss. The
+ * retry is exactly one, so an endpoint that is really down answers the caller
+ * with its own error instead of a pause. Signing is inside the attempt (as in
+ * core/files-s3.js) because the first attempt's signed Request has a body
+ * stream already consumed, and replaying it is a signed-request error, not a
+ * retry.
  * @param {S3ClientConfig} config
  */
 export function createS3Client(config) {
@@ -145,7 +145,7 @@ export function createS3Client(config) {
       try {
         response = await attempt();
       } catch (error) {
-        if (!REPEATABLE_METHODS.has(verb) || !connectionLost(error)) {
+        if (!repeatable(verb, target.headers, error)) {
           throw error;
         }
         response = await attempt();

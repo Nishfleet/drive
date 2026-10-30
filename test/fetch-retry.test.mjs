@@ -146,7 +146,7 @@ test("a stream body gets the timeout but no retry: a spent stream cannot replay"
     fetchWithTimeoutAndRetry(
       countingStall,
       "https://storage.test/one",
-      {
+      /** @type {RequestInit} */ ({
         method: "PUT",
         duplex: "half",
         body: new ReadableStream({
@@ -154,7 +154,7 @@ test("a stream body gets the timeout but no retry: a spent stream cannot replay"
             controller.close();
           },
         }),
-      },
+      }),
       { timeoutMs: 25, label: "storage request", delay: () => Promise.resolve() },
     ),
     (error) => error instanceof DataPlaneTimeout,
@@ -405,15 +405,18 @@ test("a write with headers but no precondition still gets its retry", async () =
 test("a stream body a Request carries is spent on the first attempt, so a lost connection is not retried", async () => {
   const failure = socketFailure("ECONNRESET");
   const { fetchImpl, calls } = flaky(1, failure);
-  const request = new Request("https://storage.test/one", {
-    method: "PUT",
-    duplex: "half",
-    body: new ReadableStream({
-      start(controller) {
-        controller.close();
-      },
+  const request = new Request(
+    "https://storage.test/one",
+    /** @type {RequestInit} */ ({
+      method: "PUT",
+      duplex: "half",
+      body: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
     }),
-  });
+  );
   await assert.rejects(
     fetchWithTimeoutAndRetry(fetchImpl, request, {}, { delay: () => Promise.resolve() }),
     (error) => error === failure,
