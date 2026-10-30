@@ -266,7 +266,8 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
    * file uses — a directory wildcard (braces allowed), a bare file name and
    * the markdown wildcard — and refuses any other, so a new shape cannot
    * silently dodge this test.
-   * @param {string} pattern @param {string} file
+   * @param {string} pattern
+   * @param {string} file
    */
   const excludes = (pattern, file) => {
     assert.ok(pattern.startsWith("!"), `every pattern is a negation: ${pattern}`);
@@ -291,15 +292,20 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
   /**
    * Does a job run for these changed files? `every`: no negation excludes
    * any file. `some`: one listed path is enough on its own.
-   * @param {string[]} negations @param {string[]} extras @param {string[]} files
+   * @param {string[]} negations
+   * @param {string[]} extras
+   * @param {string[]} files
    */
   const runs = (negations, extras, files) =>
     files.every((f) => !negations.some((p) => excludes(p, f))) ||
     files.some((f) => extras.includes(f));
   const node = patterns("node");
   const nodeExtra = patterns("node_extra");
+  /** @param {string[]} files */
   const verifyRuns = (files) => runs(node, nodeExtra, files);
+  /** @param {string[]} files */
   const goRuns = (files) => runs(patterns("go"), patterns("go_extra"), files);
+  /** @param {string[]} files */
   const siteRuns = (files) => runs(patterns("site"), patterns("site_extra"), files);
 
   // The node filter excludes exactly the Go side. Docs and .github files
