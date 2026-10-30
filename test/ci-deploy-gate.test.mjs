@@ -491,6 +491,7 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
   // still needs a node_extra line added by hand.
   const self = import.meta.url;
   const reads = new Set();
+  /** One queue element: a directory URL to scan. @param {URL} dir */
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, dir);
