@@ -189,21 +189,38 @@ test("a Request that carries a body gets one attempt: a Request body is a stream
   assert.equal(calls(), 1, "the second attempt would mask the failure with 'body already used'");
 });
 
-test("a conditional write that gets a 5xx is sent once too: no answer says whether it landed", async () => {
-  let calls = 0;
-  /** @type {typeof fetch} */
-  const busy = async () => {
-    calls += 1;
-    return new Response("busy", { status: calls === 1 ? 503 : 200 });
-  };
+test("a conditional server-side copy is sent once too: its repeat would answer 412", async () => {
+  const failure = socketFailure("ECONNRESET");
+  const { fetchImpl, calls } = flaky(1, failure);
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(
+      fetchImpl,
+      "https://storage.test/u/acct-1/b.txt",
+      {
+        method: "PUT",
+        headers: {
+          "x-amz-copy-source": "/drive/u/acct-1/a.txt",
+          "x-amz-copy-source-if-match": '"etag-1"',
+        },
+      },
+      { delay: () => Promise.resolve() },
+    ),
+    (error) => error === failure,
+  );
+  assert.equal(calls(), 1, "the copy would look like it landed twice");
+});
+
+test("a Request with no body still retries: nothing is spent on the first attempt", async () => {
+  const failure = socketFailure("ECONNRESET");
+  const { fetchImpl, calls } = flaky(1, failure);
   const response = await fetchWithTimeoutAndRetry(
-    busy,
-    "https://storage.test/u/acct-1/notes.txt",
-    { method: "PUT", headers: { "if-none-match": "*" }, body: "notes" },
+    fetchImpl,
+    new Request("https://storage.test/u/acct-1/notes.txt"),
+    {},
     { delay: () => Promise.resolve() },
   );
-  assert.equal(response.status, 503);
-  assert.equal(calls, 1, "the retry would look like 'the file is already there'");
+  assert.equal(response.status, 200);
+  assert.equal(calls(), 2, "one retry, no more");
 });
 
 test("a null init body keeps a Request's body, so the retry is refused", async () => {

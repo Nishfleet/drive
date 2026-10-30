@@ -106,8 +106,9 @@ function connectionLost(error) {
 
 /**
  * Whether a write carries a precondition, whose answer changes once a first
- * attempt has taken effect: a create-only write (`if-none-match`) and a
- * conditional delete (`if-match`) both answer 412 on a repeat, so a retry would
+ * attempt has taken effect: a create-only write (`if-none-match`), a
+ * conditional delete (`if-match`) and a conditional server-side copy (the
+ * `x-amz-copy-source-if-*` pair) all answer 412 on a repeat, so a retry would
  * turn a lost socket into a failed save that in fact saved. A conditional read
  * is not one of these: its repeat answers 304 for the version the caller
  * already holds.
@@ -118,7 +119,12 @@ function preconditional(headers) {
     return false;
   }
   const held = new Headers(headers);
-  return held.has("if-match") || held.has("if-none-match");
+  return (
+    held.has("if-match") ||
+    held.has("if-none-match") ||
+    held.has("x-amz-copy-source-if-match") ||
+    held.has("x-amz-copy-source-if-none-match")
+  );
 }
 
 /**
@@ -142,8 +148,9 @@ function preconditionalWrite(method, headers) {
  * @returns {boolean}
  */
 export function repeatable(method, headers, error) {
+  const verb = method.toUpperCase();
   return (
-    REPEATABLE_METHODS.has(method) && !preconditionalWrite(method, headers) && connectionLost(error)
+    REPEATABLE_METHODS.has(verb) && !preconditionalWrite(verb, headers) && connectionLost(error)
   );
 }
 
@@ -181,9 +188,9 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
    * precondition is sent once, because the answer a repeat gets no longer names
    * the caller's own attempt. Otherwise a timeout is retried, on any method a
    * replayable body allows, and a lost connection is retried on a method a
-   * repeat cannot spoil. Everything else is the caller's answer, including a
-   * 5xx answer to a conditional write: no test proves whether S3 committed
-   * before it answered, so the one attempt's answer is the one reported.
+   * repeat cannot spoil. Everything else is the caller's answer. A received 5xx
+   * keeps its retry, on a conditional write too: an answer arrived, and the
+   * 503 S3 documents for a throttled write is a request it did not apply.
    * @param {unknown} error
    */
   const retryable = (error) =>
@@ -216,7 +223,7 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
     await pause(RETRY_DELAY_MS + Math.floor(Math.random() * RETRY_DELAY_MS));
     return attempt(2);
   }
-  if (first.status < 500 || conditional) {
+  if (first.status < 500) {
     return first;
   }
   await pause(RETRY_DELAY_MS + Math.floor(Math.random() * RETRY_DELAY_MS));
