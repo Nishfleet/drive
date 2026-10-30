@@ -64,16 +64,17 @@ jobs:
           predicate-quantifier: every
           filters: |
             # verify: the inputs of `npm test` and `npm run check`. Only the
-            # Go side (cmd, internal, the Go module files) cannot affect
-            # them, so a Go-only pull request skips the job — its attribution
-            # step still runs in the `go` job. Docs and .github files stay
-            # in: the Node tests read them (test/ci-deploy-gate.test.mjs
-            # reads this file), and for a docs-only or workflow-only pull
-            # request `verify` is the one job that sees it (drive#867).
+            # Go sources (under cmd and internal) and the Go module files
+            # cannot affect them, so a Go-only pull request skips the job —
+            # its attribution step still runs in the `go` job. Docs, .github
+            # and any non-Go file under cmd stay in: the Node tests read
+            # some of them (test/ci-deploy-gate.test.mjs reads this file),
+            # and for a docs-only or workflow-only pull request `verify` is
+            # the one job that sees it (drive#867).
             node:
               - '!docs/design/**'
               - '!docs/research/**'
-              - '!{cmd,internal}/**'
+              - '!{cmd,internal}/**/*.go'
               - '!{go.mod,go.sum}'
             # npm run build + Lighthouse: the shipped static pages.
             site:

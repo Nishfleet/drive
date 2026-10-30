@@ -276,6 +276,10 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
     for (const head of brace ? brace[2].split(",").map((a) => brace[1] + a + brace[3]) : [body]) {
       if (head.endsWith("/**")) {
         if (file.startsWith(`${head.slice(0, -3)}/`)) return true;
+      } else if (/^[\w./-]+\/\*\*\/\*\.\w+$/.test(head)) {
+        const dir = head.slice(0, head.indexOf("/**"));
+        const ext = head.slice(head.lastIndexOf(".") + 1);
+        if (file.startsWith(`${dir}/`) && file.endsWith(`.${ext}`)) return true;
       } else if (!head.includes("*")) {
         if (file === head) return true;
       } else {
@@ -304,7 +308,7 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
   assert.deepEqual(node, [
     "!docs/design/**",
     "!docs/research/**",
-    "!{cmd,internal}/**",
+    "!{cmd,internal}/**/*.go",
     "!{go.mod,go.sum}",
   ]);
 
@@ -322,6 +326,11 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
   assert.equal(siteRuns(["cmd/drive/main.go"]), true, "main.go is rendered into the pages");
   assert.equal(verifyRuns(["src/index.js"]), true, "a Worker PR runs verify");
   assert.equal(goRuns(["src/index.js"]), false, "a Worker PR skips go");
+  assert.equal(
+    verifyRuns(["cmd/README.md"]),
+    true,
+    "a markdown file under cmd runs verify: go skips *.md, so verify is the only job that sees it",
+  );
 
   // The attribution invariant: both jobs carry the attribution step, so no
   // changed file may leave a pull request with neither job running. The one
@@ -341,6 +350,8 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
     "docs/build-spec.md",
     "docs/design/pricing-brief.md",
     "docs/research/folder-moves.md",
+    "cmd/README.md",
+    "internal/api/README.md",
     ".github/workflows/ci.yml",
     "docs-site/x.md",
     "README.md",
