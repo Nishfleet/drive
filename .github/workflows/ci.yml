@@ -40,9 +40,12 @@ jobs:
   # the files inside those areas that the job still reads. A job skipped here
   # still gets a full run in the merge queue, so a mis-filed path costs a
   # queue bounce, never unchecked code on main (drive#867). Skipping is
-  # job-level only: inside a running job, a repeated step `if:` is dead code.
-  # Both jobs carry the attribution step, so the filters must never leave a
-  # pull request with neither `verify` nor `go` running (drive#867).
+  # job-level `if:` only: inside a running job, a repeated step `if:` is dead
+  # code. Both jobs carry the attribution step, so every pull request keeps
+  # one of them — except prose under docs/design and docs/research that no
+  # test executes, the one hole main already has, pinned in
+  # test/ci-deploy-gate.test.mjs (drive#867).
+
   changes:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -100,8 +103,9 @@ jobs:
           predicate-quantifier: some
           filters: |
             # Files the Node tests read inside the areas the node filter
-            # excludes (test/site-styles, test/meter, and the tests that
-            # read the CLI's own files). test/ci-deploy-gate.test.mjs fails
+            # excludes (test/site-styles, test/meter, test/version-1-claims,
+            # and the tests that read the CLI's own files).
+            # test/ci-deploy-gate.test.mjs fails
             # when a test reads a file this list does not cover.
             node_extra:
               - docs/design/pricing-brief.md
@@ -115,6 +119,7 @@ jobs:
               - cmd/drive/messages.go
               - cmd/drive/site.json
               - cmd/drive/update.go
+              - internal/login/config.go
             # Rendered into the pages by src/docs.js and src/render-docs.js.
             site_extra:
               - docs/scoreboard.md

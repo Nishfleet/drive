@@ -278,6 +278,19 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
     assert.ok(pattern.startsWith("!"), `every pattern is a negation: ${pattern}`);
     return matchesGlob(file, pattern.slice(1));
   };
+  // The one divergence between the built-in and the action's picomatch
+  // (`dot: true`), pinned so a Node change cannot silently move where the
+  // simulation and the action disagree.
+  assert.equal(
+    matchesGlob("q/.draft.md", "**/*.md"),
+    false,
+    "the built-in does not match a dot-named segment under a plain wildcard; the action's picomatch does",
+  );
+  assert.equal(
+    matchesGlob(".github/workflows/a.yml", ".github/**"),
+    true,
+    "a pattern that names the dot segment matches it in both matchers",
+  );
   /**
    * Does a job run for these changed files? `every`: no negation excludes
    * any file. `some`: one listed path is enough on its own.
@@ -312,7 +325,7 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
   assert.equal(
     verifyRuns(["cmd/update.go"]),
     false,
-    "`{a,b}/**` matches zero directories, like the action's picomatch",
+    "the `**` in `{a,b}/**` matches zero path segments, so `cmd/update.go` is excluded, like the action's picomatch rules",
   );
   assert.equal(goRuns(["cmd/drive/doctor.go"]), true, "a Go-only PR runs go");
   assert.equal(goRuns([".github/workflows/ci.yml"]), false, "a workflow-only PR skips go");
@@ -331,6 +344,11 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
     true,
     "a markdown file under cmd runs verify: go skips *.md, so verify is the only job that sees it",
   );
+  // A filter emptied by an indentation drift in patterns() would make every
+  // assertion here vacuously true, so pin each one non-empty as a floor.
+  for (const name of ["go", "site", "node_extra", "site_extra", "go_extra"]) {
+    assert.ok(patterns(name).length > 0, `${name} is a non-empty filter`);
+  }
 
   // The attribution invariant: both jobs carry the attribution step, so no
   // changed file may leave a pull request with neither job running. The one
@@ -388,6 +406,11 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
     /needs\.changes\.outputs\.node_extra == 'true'/,
     "verify runs for the files the Node tests read",
   );
+  assert.equal(
+    /if: >- (.*)$/.exec(jobGate)?.[1]?.trim() ?? "",
+    "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.node == 'true' || needs.changes.outputs.node_extra == 'true')",
+    "the gate is exactly this: fail open, then the output clauses OR, like the runs() helper below",
+  );
 
   // Skipping is the job's `if:` alone. A step gate would repeat it and skip
   // nothing: the job only runs when the condition already holds.
@@ -418,6 +441,11 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
       `${name} runs for the files rendered into the pages`,
     );
     assert.doesNotMatch(cond, /outputs\.node/, `${name} reads only the site filters`);
+    assert.equal(
+      /if: >- (.*?)(?= run:)/.exec(cond)?.[1]?.trim() ?? "",
+      "needs.changes.result != 'success' || needs.changes.outputs.site == 'true' || needs.changes.outputs.site_extra == 'true'",
+      "the site step's clauses OR, like the runs() helper; only the first assert pins site's own outputs",
+    );
   }
   const scan = stepFor("name: Secret scan");
   assert.ok(scan, "step found: the secret scan");
@@ -443,17 +471,28 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
   // Detector: a path the Node tests read may not sit in an area the node
   // filter excludes without a node_extra line, or its tests would skip on
   // the pull request and only the merge queue would catch the break. This
-  // file's own fixtures are pinned above instead of scanned.
+  // file's own fixtures are pinned above instead of scanned. The scan sees
+  // every test tree and the areas the node filter excludes (test/integration
+  // requires the walk; the review at
+  // github.com/Nishfleet/drive/pull/1109#issuecomment-6517012244 named the
+  // internal/ hole, and it was real); a path the tests compose with join()
+  // still needs a node_extra line added by hand.
   const self = import.meta.url;
   const reads = new Set();
-  for (const entry of readdirSync(new URL("./", import.meta.url))) {
-    if (!entry.endsWith(".mjs") || new URL(entry, import.meta.url).href === self) continue;
-    for (const m of readFileSync(new URL(entry, import.meta.url), "utf8").matchAll(
-      /[`'"]((?:cmd\/drive|docs|\.github)\/[\w./-]+)[`'"]/g,
-    )) {
-      reads.add(m[1]);
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, dir);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.endsWith(".mjs") && path.href !== self) {
+        for (const m of readFileSync(path, "utf8").matchAll(
+          /[`'"]((?:cmd|internal|docs|\.github)\/[\w./-]+)[`'"]/g,
+        )) {
+          reads.add(m[1]);
+        }
+      }
     }
-  }
+  };
+  walk(new URL("./", import.meta.url));
   for (const file of [
     "cmd/drive/e2e_test.go",
     "cmd/drive/logout_test.go",
