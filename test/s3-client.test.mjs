@@ -84,6 +84,21 @@ test("a reset on the retry is the caller's error, so a dead endpoint is not hidd
   assert.equal(calls, 2, "one retry, no more");
 });
 
+test("a create-only write through the control plane is sent once: its repeat would answer 412", async () => {
+  const { sent, fetchImpl } = flakyFetch(1, socketFailure("ECONNRESET"));
+
+  await assert.rejects(
+    clientFor(fetchImpl).send("PUT", {
+      bucket: "drv-acct-one",
+      key: "u/acct-one/notes.txt",
+      headers: { "if-none-match": "*" },
+      body: BODY,
+    }),
+    (error) => error instanceof TypeError,
+  );
+  assert.equal(sent.length, 1, "the retry would look like 'the file is already there'");
+});
+
 test("every code a socket dies with is retried once, on both runtimes' shapes", async () => {
   const failures = [
     ...["ECONNRESET", "ECONNABORTED", "EPIPE", "ECONNREFUSED", "UND_ERR_SOCKET"].map((code) =>
