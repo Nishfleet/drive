@@ -32,7 +32,9 @@ function isTimeout(error) {
  * other body kind replays — a string, URLSearchParams, ArrayBuffer,
  * typed array, Blob and FormData all extract a fresh stream per fetch
  * (verified under Node 24: both re-send their bytes on a second call),
- * so they keep the retry this function promises.
+ * so they keep the retry this function promises. A `Request` input's body is
+ * always a stream, so a Request that carries a body gets one attempt, and one
+ * with `body === null` still retries.
  * @param {BodyInit | null | undefined} body
  */
 function replayable(body) {
@@ -62,7 +64,9 @@ const CONNECTION_LOST = new Set([
  * identical content, which the hidden-version rule expires. A POST is never
  * one: CreateMultipartUpload is a POST, and its repeat leaves parts nobody
  * deletes. It is shared with the control plane, which imports it, so both
- * planes carry one answer to "may this be sent again".
+ * planes carry one answer to "may this be sent again". The timeout branch
+ * below keeps its retry on a POST: the Dodo ingest sends one and counts on the
+ * second attempt, which this module shipped with.
  */
 export const REPEATABLE_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
 
@@ -151,7 +155,9 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
    * precondition is sent once, because the answer a repeat gets no longer names
    * the caller's own attempt. Otherwise a timeout is retried, on any method a
    * replayable body allows, and a lost connection is retried on a method a
-   * repeat cannot spoil. Everything else is the caller's answer.
+   * repeat cannot spoil. Everything else is the caller's answer. A 5xx keeps
+   * its retry below for a conditional write too: a 5xx answer says the write
+   * did not commit, so the repeat reports on the caller's attempt.
    * @param {unknown} error
    */
   const retryable = (error) =>

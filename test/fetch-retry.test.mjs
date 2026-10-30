@@ -41,6 +41,20 @@ function flaky(failures, error) {
   return { fetchImpl, calls: () => calls };
 }
 
+/**
+ * A fetch that stalls on its first call and answers on the second.
+ * @param {string} answer
+ */
+function stallOnce(answer) {
+  let calls = 0;
+  /** @type {typeof fetch} */
+  const fetchImpl = (url, init) => {
+    calls += 1;
+    return calls === 1 ? stall(url, init) : Promise.resolve(new Response(answer, { status: 200 }));
+  };
+  return { fetchImpl, calls: () => calls };
+}
+
 test("a stalled fetch is aborted with a named error, and retried once before giving up", async () => {
   let calls = 0;
   /** @type {typeof fetch} */
@@ -145,6 +159,33 @@ test("a stream body gets the timeout but no retry: a spent stream cannot replay"
     (error) => error instanceof DataPlaneTimeout,
   );
   assert.equal(calls, 1, "the second attempt would mask the failure with 'body already used'");
+});
+
+test("a POST that times out keeps its retry: the Dodo ingest counts on the second attempt", async () => {
+  const { fetchImpl, calls } = stallOnce("accepted");
+  const response = await fetchWithTimeoutAndRetry(
+    fetchImpl,
+    "https://dodo.test/ingest",
+    { method: "POST", body: "{}" },
+    { timeoutMs: 25, delay: () => Promise.resolve() },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(calls(), 2, "one retry, no more");
+});
+
+test("a Request that carries a body gets one attempt: a Request body is a stream", async () => {
+  const { fetchImpl, calls } = stallOnce("kept");
+  const request = new Request("https://storage.test/one", { method: "PUT", body: "notes" });
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(
+      fetchImpl,
+      request,
+      {},
+      { timeoutMs: 25, delay: () => Promise.resolve() },
+    ),
+    (error) => error instanceof DataPlaneTimeout,
+  );
+  assert.equal(calls(), 1, "the second attempt would mask the failure with 'body already used'");
 });
 
 test("a connection lost before an answer is retried once, and the retry's answer is the one returned", async () => {
@@ -290,7 +331,7 @@ test("a conditional delete is sent once, whether the precondition is in init or 
   );
   assert.equal(init.calls(), 1, "the retry would look like the file changed under us");
 
-  const carried = await flaky(1, failure);
+  const carried = flaky(1, failure);
   const request = new Request("https://storage.test/u/acct-1/notes.txt", {
     method: "DELETE",
     headers: { "if-match": '"etag-1"' },
