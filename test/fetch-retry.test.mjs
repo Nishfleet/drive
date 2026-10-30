@@ -148,6 +148,7 @@ test("a stream body gets the timeout but no retry: a spent stream cannot replay"
       "https://storage.test/one",
       {
         method: "PUT",
+        duplex: "half",
         body: new ReadableStream({
           start(controller) {
             controller.close();
@@ -186,6 +187,38 @@ test("a Request that carries a body gets one attempt: a Request body is a stream
     (error) => error instanceof DataPlaneTimeout,
   );
   assert.equal(calls(), 1, "the second attempt would mask the failure with 'body already used'");
+});
+
+test("a conditional write that gets a 5xx is sent once too: no answer says whether it landed", async () => {
+  let calls = 0;
+  /** @type {typeof fetch} */
+  const busy = async () => {
+    calls += 1;
+    return new Response("busy", { status: calls === 1 ? 503 : 200 });
+  };
+  const response = await fetchWithTimeoutAndRetry(
+    busy,
+    "https://storage.test/u/acct-1/notes.txt",
+    { method: "PUT", headers: { "if-none-match": "*" }, body: "notes" },
+    { delay: () => Promise.resolve() },
+  );
+  assert.equal(response.status, 503);
+  assert.equal(calls, 1, "the retry would look like 'the file is already there'");
+});
+
+test("a null init body keeps a Request's body, so the retry is refused", async () => {
+  const { fetchImpl, calls } = stallOnce("kept");
+  const request = new Request("https://storage.test/one", { method: "PUT", body: "notes" });
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(
+      fetchImpl,
+      request,
+      { body: null },
+      { timeoutMs: 25, delay: () => Promise.resolve() },
+    ),
+    (error) => error instanceof DataPlaneTimeout,
+  );
+  assert.equal(calls(), 1, "the retry would fail with 'body already used' instead");
 });
 
 test("a connection lost before an answer is retried once, and the retry's answer is the one returned", async () => {

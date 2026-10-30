@@ -64,9 +64,7 @@ const CONNECTION_LOST = new Set([
  * identical content, which the hidden-version rule expires. A POST is never
  * one: CreateMultipartUpload is a POST, and its repeat leaves parts nobody
  * deletes. It is shared with the control plane, which imports it, so both
- * planes carry one answer to "may this be sent again". The timeout branch
- * below keeps its retry on a POST: the Dodo ingest sends one and counts on the
- * second attempt, which this module shipped with.
+ * planes carry one answer to "may this be sent again".
  */
 export const REPEATABLE_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
 
@@ -74,7 +72,7 @@ export const REPEATABLE_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
  * The methods a precondition changes the effect of, so a repeat's answer no
  * longer names the caller's own attempt.
  */
-const WRITING_METHODS = new Set(["PUT", "POST", "DELETE"]);
+const WRITING_METHODS = new Set(["PUT", "POST", "PATCH", "DELETE"]);
 
 /**
  * The message workerd throws when a socket closed under a request it never
@@ -127,15 +125,16 @@ function preconditional(headers) {
  * Fetch with a hard timeout and one retry: a deadline that passed while the
  * connection was healthy, a 5xx, or a connection that died before an answer on
  * a method a repeat cannot spoil. A write that carries a precondition gets no
- * second attempt on a timeout or a lost connection, because a repeat answers
- * 412 once the first attempt took effect, and that answer hides the write.
+ * second attempt at all, because a repeat answers 412 once the first attempt
+ * took effect, and that answer hides the write.
  *
  * @param {typeof fetch} fetchImpl
  * @param {string | URL | Request} input
  * @param {RequestInit} [init]   A `Request` input's own method and body are
  *   the ones its fetch carries, so they stand in when `init` does not name
  *   them: a POST there is still a POST, and a stream body there still spends
- *   itself on the first attempt.
+ *   itself on the first attempt. `init.body: null` does not clear that body,
+ *   because `fetch` ignores a null body and keeps the `Request`'s own.
  * @param {{timeoutMs?: number, label?: string, delay?: (ms: number) => Promise<void>}} [options]
  *   `label` names the call in the timeout error ("storage request", "Dodo
  *   test-mode ingest"); `timeoutMs` and `delay` exist so a test can prove the
@@ -147,7 +146,7 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
   const label = options.label ?? "remote request";
   const pause = options.delay ?? sleep;
   const sent = input instanceof Request ? input : null;
-  const body = init.body === undefined ? sent?.body : init.body;
+  const body = init.body ?? sent?.body;
   const method = (init.method ?? sent?.method ?? "GET").toUpperCase();
   const conditional = WRITING_METHODS.has(method) && preconditional(init.headers ?? sent?.headers);
   /**
@@ -155,9 +154,9 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
    * precondition is sent once, because the answer a repeat gets no longer names
    * the caller's own attempt. Otherwise a timeout is retried, on any method a
    * replayable body allows, and a lost connection is retried on a method a
-   * repeat cannot spoil. Everything else is the caller's answer. A 5xx keeps
-   * its retry below for a conditional write too: a 5xx answer says the write
-   * did not commit, so the repeat reports on the caller's attempt.
+   * repeat cannot spoil. Everything else is the caller's answer, including a
+   * 5xx answer to a conditional write: no test proves whether S3 committed
+   * before it answered, so the one attempt's answer is the one reported.
    * @param {unknown} error
    */
   const retryable = (error) =>
@@ -192,7 +191,7 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
     await pause(RETRY_DELAY_MS + Math.floor(Math.random() * RETRY_DELAY_MS));
     return attempt(2);
   }
-  if (first.status < 500) {
+  if (first.status < 500 || conditional) {
     return first;
   }
   await pause(RETRY_DELAY_MS + Math.floor(Math.random() * RETRY_DELAY_MS));
