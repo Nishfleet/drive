@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, matchesGlob } from "node:path";
 import { test } from "node:test";
 import { HEALTH_PATH } from "../src/health.js";
 
@@ -262,32 +262,21 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
       ?.match(/- .+/g)
       ?.map((line) => line.slice(2).trim().replace(/^'|'$/g, "")) ?? [];
   /**
-   * Whether one `every` negation excludes a path. Handles the shapes this
-   * file uses — a directory wildcard (braces allowed), a bare file name and
-   * the markdown wildcard — and refuses any other, so a new shape cannot
-   * silently dodge this test.
+   * Whether one `every` negation excludes a path, decided by Node's own
+   * glob matcher (stable from Node 22.5, and CI runs Node 24), replacing
+   * the hand-rolled one the review at
+   * github.com/Nishfleet/drive/pull/1109#issuecomment-6517012244 blocked.
+   * One divergence from the action remains, outside our control: paths-filter's
+   * picomatch (`dot: true`) also matches dot-named path segments under a
+   * plain `*` or `**`, and the built-in does not. Every dot-affected pattern in this filter
+   * names its dot segment (`!.github/**`, `!{go.mod,go.sum}`), where the
+   * two agree, so the corner is only reachable behind a new shape.
    * @param {string} pattern
    * @param {string} file
    */
   const excludes = (pattern, file) => {
     assert.ok(pattern.startsWith("!"), `every pattern is a negation: ${pattern}`);
-    const body = pattern.slice(1);
-    if (body === "**/*.md") return file.endsWith(".md");
-    const brace = /^([^{}]*?)\{([\w.]+(?:,[\w.]+)*)\}(.*)$/.exec(body);
-    for (const head of brace ? brace[2].split(",").map((a) => brace[1] + a + brace[3]) : [body]) {
-      if (head.endsWith("/**")) {
-        if (file.startsWith(`${head.slice(0, -3)}/`)) return true;
-      } else if (/^[\w./-]+\/\*\*\/\*\.\w+$/.test(head)) {
-        const dir = head.slice(0, head.indexOf("/**"));
-        const ext = head.slice(head.lastIndexOf(".") + 1);
-        if (file.startsWith(`${dir}/`) && file.endsWith(`.${ext}`)) return true;
-      } else if (!head.includes("*")) {
-        if (file === head) return true;
-      } else {
-        assert.fail(`unhandled filter shape: ${pattern}`);
-      }
-    }
-    return false;
+    return matchesGlob(file, pattern.slice(1));
   };
   /**
    * Does a job run for these changed files? `every`: no negation excludes
@@ -320,6 +309,11 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
 
   // One file per class the filters claim to cover, against the real jobs.
   assert.equal(verifyRuns(["cmd/drive/doctor.go"]), false, "a Go-only PR skips verify");
+  assert.equal(
+    verifyRuns(["cmd/update.go"]),
+    false,
+    "`{a,b}/**` matches zero directories, like the action's picomatch",
+  );
   assert.equal(goRuns(["cmd/drive/doctor.go"]), true, "a Go-only PR runs go");
   assert.equal(goRuns([".github/workflows/ci.yml"]), false, "a workflow-only PR skips go");
   assert.equal(
