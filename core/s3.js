@@ -77,11 +77,47 @@ export function ok(operation, response) {
  */
 
 /**
+ * The codes a socket reports when it died under a request nobody answered yet:
+ * a reset, an aborted connection, a broken pipe, a refusal from a listener that
+ * is not up, and a connect timeout. An HTTP refusal is not one of these: it
+ * arrives as a response, so `send` returns it and never retries it.
+ */
+const CONNECTION_LOST = new Set([
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EPIPE",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+]);
+
+/**
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function connectionLost(error) {
+  if (!(error instanceof TypeError)) {
+    return false;
+  }
+  const cause = /** @type {{cause?: {code?: unknown}}} */ (error).cause;
+  return typeof cause?.code === "string" && CONNECTION_LOST.has(cause.code);
+}
+
+/**
  * A signed S3 client. Signing is `aws4fetch` (`AwsClient`), the stock
  * Worker-side SigV4 library; this file only builds the path-style URL, sends
  * the signed request, and reads the XML. `send` returns every answer, refusals
  * included; `ok` above turns a refusal into an error for the callers that
  * promised one.
+ *
+ * A request whose connection is lost before it is answered is signed again and
+ * sent once more (`connectionLost`): every call this client makes is idempotent
+ * — the writes are PUT and DELETE, and the only POST is STS AssumeRole, which
+ * mints a session and leaves nothing behind — so a second attempt cannot repeat
+ * a write. One retry, no more, so an endpoint that is really down answers the
+ * caller with its error instead of a pause. The signing is inside the attempt
+ * (as in core/files-s3.js) because the first attempt's signed Request has a body
+ * stream already consumed, and replaying it is a signed-request error, not a
+ * retry.
  * @param {S3ClientConfig} config
  */
 export function createS3Client(config) {
@@ -123,12 +159,22 @@ export function createS3Client(config) {
         body = new Uint8Array(target.body.byteLength);
         body.set(target.body);
       }
-      const signed = await aws.sign(url.toString(), {
+      const init = /** @type {RequestInit} */ ({
         method: method.toUpperCase(),
         headers: target.headers ?? {},
         body,
       });
-      const response = await fetchImpl(signed);
+      /** @type {() => Promise<Response>} */
+      const attempt = async () => fetchImpl(await aws.sign(url.toString(), init));
+      let response;
+      try {
+        response = await attempt();
+      } catch (error) {
+        if (!connectionLost(error)) {
+          throw error;
+        }
+        response = await attempt();
+      }
       return { status: response.status, headers: response.headers, text: await response.text() };
     },
   };
