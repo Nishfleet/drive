@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,6 +9,7 @@ import { FILES_ENDPOINT } from "../core/files.js";
 import { handleFilesRequest } from "../core/files-handlers.js";
 import { createS3Store } from "../core/files-s3.js";
 import { scopeStore } from "../core/files-scope.js";
+import { killTracked, spawnTracked } from "./minio-standin.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
 // The two ways in, so the skip and the startup read the same values: real
@@ -52,7 +53,7 @@ async function startLocalRclone(t, dir) {
   const configPath = path.join(configDir, "rclone.conf");
   await writeFile(configPath, "");
   t.after(() => rm(configDir, { recursive: true, force: true }));
-  const server = spawn(
+  const server = spawnTracked(
     LOCAL_RCLONE,
     ["serve", "s3", dir, "--config", configPath, "--addr", "127.0.0.1:0"],
     {
@@ -60,10 +61,10 @@ async function startLocalRclone(t, dir) {
     },
   );
   let stderr = "";
-  server.stderr.on("data", (chunk) => {
+  server.stderr?.on("data", (chunk) => {
     stderr += chunk;
   });
-  t.after(() => server.kill("SIGTERM"));
+  t.after(() => killTracked(server));
   const deadline = Date.now() + 20_000;
   for (;;) {
     if (server.exitCode !== null) {

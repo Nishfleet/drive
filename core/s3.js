@@ -1,4 +1,5 @@
 import { AwsClient } from "aws4fetch";
+import { repeatable } from "./fetch-retry.js";
 import { decodeEntities, parseVersionRows, tagValue as scanTagValue } from "./s3-listing.js";
 
 /**
@@ -82,6 +83,15 @@ export function ok(operation, response) {
  * the signed request, and reads the XML. `send` returns every answer, refusals
  * included; `ok` above turns a refusal into an error for the callers that
  * promised one.
+ *
+ * A request whose connection is lost before it is answered is signed again and
+ * sent once more when `repeatable` says the attempt may be repeated, which is
+ * the rule the data plane uses too, whichever runtime reported the loss. The
+ * retry is exactly one, so an endpoint that is really down answers the caller
+ * with its own error instead of a pause. Signing is inside the attempt (as in
+ * core/files-s3.js) because the first attempt's signed Request has a body
+ * stream already consumed, and replaying it is a signed-request error, not a
+ * retry.
  * @param {S3ClientConfig} config
  */
 export function createS3Client(config) {
@@ -123,12 +133,23 @@ export function createS3Client(config) {
         body = new Uint8Array(target.body.byteLength);
         body.set(target.body);
       }
-      const signed = await aws.sign(url.toString(), {
-        method: method.toUpperCase(),
+      const verb = method.toUpperCase();
+      const init = /** @type {RequestInit} */ ({
+        method: verb,
         headers: target.headers ?? {},
         body,
       });
-      const response = await fetchImpl(signed);
+      /** @type {() => Promise<Response>} */
+      const attempt = async () => fetchImpl(await aws.sign(url.toString(), init));
+      let response;
+      try {
+        response = await attempt();
+      } catch (error) {
+        if (!repeatable(verb, target.headers, error)) {
+          throw error;
+        }
+        response = await attempt();
+      }
       return { status: response.status, headers: response.headers, text: await response.text() };
     },
   };
