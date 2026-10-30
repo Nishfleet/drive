@@ -67,49 +67,26 @@ jobs:
             # in the merge queue (drive#867).
             node:
               - '!docs/**'
-              - '!cmd/**'
-              - '!internal/**'
+              - '!{cmd,internal}/**'
               - '!.github/**'
-              - '!go.mod'
-              - '!go.sum'
+              - '!{go.mod,go.sum}'
             # npm run build + Lighthouse: the shipped static pages.
             site:
-              - '!cmd/**'
-              - '!test/**'
-              - '!workers/**'
-              - '!docs/**'
-              - '!docs-site/**'
-              - '!evals/**'
-              - '!migrations/**'
-              - '!installer/**'
-              - '!bench/**'
-              - '!internal/**'
-              - '!.github/**'
-              - '!go.mod'
-              - '!go.sum'
+              - '!{cmd,test,workers}/**'
+              - '!{docs,docs-site}/**'
+              - '!{evals,migrations,installer,bench}/**'
+              - '!{internal,.github}/**'
+              - '!{go.mod,go.sum}'
               - '!**/*.md'
             # go: everything except the Node side.
             go:
-              - '!src/**'
-              - '!public/**'
-              - '!workers/**'
-              - '!test/**'
-              - '!docs/**'
-              - '!docs-site/**'
-              - '!evals/**'
-              - '!migrations/**'
-              - '!installer/**'
+              - '!{src,public,workers,test}/**'
+              - '!{docs,docs-site}/**'
+              - '!{evals,migrations,installer}/**'
               - '!.github/**'
-              - '!package.json'
-              - '!package-lock.json'
-              - '!biome.json'
-              - '!tsconfig.json'
-              - '!vite.config.ts'
-              - '!cloudflare.config.ts'
-              - '!lighthouserc.json'
-              - '!get-started.html'
-              - '!.npmrc'
-              - '!.nvmrc'
+              - '!{package.json,package-lock.json,biome.json,tsconfig.json}'
+              - '!{vite.config.ts,cloudflare.config.ts,lighthouserc.json}'
+              - '!{get-started.html,.npmrc,.nvmrc}'
               - '!**/*.md'
       - id: some
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -164,28 +141,19 @@ jobs:
           cache: npm
       - name: No helper scripts
         run: test -z "$(git ls-files scripts bin tools ops '*.sh')"
-      - if: >-
-          needs.changes.result != 'success' ||
-          needs.changes.outputs.node == 'true' ||
-          needs.changes.outputs.node_extra == 'true'
+      - if: needs.changes.result != 'success' || needs.changes.outputs.node == 'true' || needs.changes.outputs.node_extra == 'true'
         run: npm ci
       # standin-search.test.mjs (100,000 real files, a sub-second search) skips
       # itself without rclone; installing it beside the Node steps keeps that
       # proof on every pull request that runs them.
       - name: Cache the rclone release
-        if: >-
-          needs.changes.result != 'success' ||
-          needs.changes.outputs.node == 'true' ||
-          needs.changes.outputs.node_extra == 'true'
+        if: needs.changes.result != 'success' || needs.changes.outputs.node == 'true' || needs.changes.outputs.node_extra == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/rclone-dl
           key: rclone-${{ env.PINNED_RCLONE_VERSION }}-linux-amd64-${{ env.PINNED_RCLONE_LINUX_AMD64_SHA256 }}
       - name: Install rclone (the stock tool the S3 stand-in serves)
-        if: >-
-          needs.changes.result != 'success' ||
-          needs.changes.outputs.node == 'true' ||
-          needs.changes.outputs.node_extra == 'true'
+        if: needs.changes.result != 'success' || needs.changes.outputs.node == 'true' || needs.changes.outputs.node_extra == 'true'
         run: |
           zip="rclone-$PINNED_RCLONE_VERSION-linux-amd64.zip"
           mkdir -p "$RUNNER_TEMP/rclone-dl"
@@ -205,20 +173,10 @@ jobs:
       # Pinned container, not node_modules: @lhci/cli 0.15.1's dependency
       # chain carries high npm advisories with no fix (drive#581).
       - name: Build the site
-        if: >-
-          needs.changes.result != 'success' ||
-          ((needs.changes.outputs.node == 'true' ||
-            needs.changes.outputs.node_extra == 'true') &&
-           (needs.changes.outputs.site == 'true' ||
-            needs.changes.outputs.site_extra == 'true'))
+        if: needs.changes.result != 'success' || (needs.changes.outputs.node == 'true' || needs.changes.outputs.node_extra == 'true') && (needs.changes.outputs.site == 'true' || needs.changes.outputs.site_extra == 'true')
         run: npm run build
       - name: Lighthouse CI (in a throwaway container)
-        if: >-
-          needs.changes.result != 'success' ||
-          ((needs.changes.outputs.node == 'true' ||
-            needs.changes.outputs.node_extra == 'true') &&
-           (needs.changes.outputs.site == 'true' ||
-            needs.changes.outputs.site_extra == 'true'))
+        if: needs.changes.result != 'success' || (needs.changes.outputs.node == 'true' || needs.changes.outputs.node_extra == 'true') && (needs.changes.outputs.site == 'true' || needs.changes.outputs.site_extra == 'true')
         run: >-
           docker run --rm --shm-size=1g --user "$(id -u):$(id -g)" -e HOME=/tmp
           -v "$PWD:/w" -w /w
@@ -231,15 +189,9 @@ jobs:
       # job-level gate as `npm test`. No --write and no --fix, ever: the job
       # fails on the diff it was given rather than fixing and pushing on.
       - name: Typecheck and Biome
-        if: >-
-          needs.changes.result != 'success' ||
-          needs.changes.outputs.node == 'true' ||
-          needs.changes.outputs.node_extra == 'true'
+        if: needs.changes.result != 'success' || needs.changes.outputs.node == 'true' || needs.changes.outputs.node_extra == 'true'
         run: npm run check
-      - if: >-
-          needs.changes.result != 'success' ||
-          needs.changes.outputs.node == 'true' ||
-          needs.changes.outputs.node_extra == 'true'
+      - if: needs.changes.result != 'success' || needs.changes.outputs.node == 'true' || needs.changes.outputs.node_extra == 'true'
         run: npm test
       - name: Secret scan
         uses: docker://ghcr.io/gitleaks/gitleaks:v8.29.0@sha256:71d3ee5990f2176f763b438298453fc37e87b119122045e176ca9d44ff00b08b

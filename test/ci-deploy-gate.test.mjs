@@ -252,19 +252,13 @@ test("ci.yml skips the heavy steps a pull request's files cannot affect", () => 
       .find((m) => m[1] === name)?.[2]
       ?.match(/- '.+'/g)
       ?.map((line) => line.slice(3, -1)) ?? [];
-  for (const excluded of [
-    "!docs/**",
-    "!cmd/**",
-    "!internal/**",
-    "!.github/**",
-    "!go.mod",
-    "!go.sum",
-  ]) {
+  for (const excluded of ["!docs/**", "!{cmd,internal}/**", "!.github/**", "!{go.mod,go.sum}"]) {
     assert.ok(patterns("node").includes(excluded), `node filter excludes ${excluded}`);
   }
-  for (const excluded of ["!internal/**", "!.github/**"]) {
-    assert.ok(patterns("site").includes(excluded), `site filter excludes ${excluded}`);
-  }
+  assert.ok(
+    patterns("site").includes("!{internal,.github}/**"),
+    "site filter excludes internal and .github",
+  );
   assert.ok(patterns("go").includes("!.github/**"), "go filter excludes .github/**");
 
   const verify = CI.slice(CI.indexOf("\n  verify:\n"), CI.indexOf("\n  go:\n"));
@@ -272,7 +266,7 @@ test("ci.yml skips the heavy steps a pull request's files cannot affect", () => 
   /** One flattened step block, or undefined. @param {string} needle */
   const stepFor = (needle) => steps.find((s) => s.includes(needle));
   const nodeGate =
-    "if: >- needs.changes.result != 'success' || " +
+    "if: needs.changes.result != 'success' || " +
     "needs.changes.outputs.node == 'true' || " +
     "needs.changes.outputs.node_extra == 'true'";
   for (const [needle, label] of [
@@ -353,7 +347,7 @@ test("ci.yml runs npm run check as its own step, and never fixes the diff", () =
     const cond = gated.replace(/\s+/g, " ");
     assert.match(
       cond,
-      /if: >- needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.node == 'true' \|\| needs\.changes\.outputs\.node_extra == 'true' run:/,
+      /if: needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.node == 'true' \|\| needs\.changes\.outputs\.node_extra == 'true' run:/,
       "the Node steps carry the node paths gate",
     );
   }
