@@ -239,6 +239,75 @@ test("ci.yml skips by job-level if, fails open, and pins paths-filter by SHA", (
   for (const ref of uses) assert.match(ref, /^[0-9a-f]{40}$/, "pinned by commit SHA");
 });
 
+// drive#867: the skip filters must keep covering the classes that cannot
+// affect a step, and every heavy step must carry its skip condition, or the
+// suite runs in full on every change again. A test that reads a file from an
+// excluded area (docs/api.md, cmd/drive/main.go) may skip on the pull
+// request: the merge queue's fail-open full run is the backstop.
+test("ci.yml skips the heavy steps a pull request's files cannot affect", () => {
+  const every = /^ {10}filters: \|\n((?: {12}[^\n]*\n)+)/m.exec(CI)?.[1] ?? "";
+  /** One `every` filter's negated patterns. @param {string} name */
+  const patterns = (name) =>
+    [...every.matchAll(/^ {12}(\w+):\n((?: {14}[^\n]*\n)*)/gm)]
+      .find((m) => m[1] === name)?.[2]
+      ?.match(/- '.+'/g)
+      ?.map((line) => line.slice(3, -1)) ?? [];
+  for (const excluded of [
+    "!docs/**",
+    "!cmd/**",
+    "!internal/**",
+    "!.github/**",
+    "!go.mod",
+    "!go.sum",
+  ]) {
+    assert.ok(patterns("node").includes(excluded), `node filter excludes ${excluded}`);
+  }
+  for (const excluded of ["!internal/**", "!.github/**"]) {
+    assert.ok(patterns("site").includes(excluded), `site filter excludes ${excluded}`);
+  }
+  assert.ok(patterns("go").includes("!.github/**"), "go filter excludes .github/**");
+
+  const verify = CI.slice(CI.indexOf("\n  verify:\n"), CI.indexOf("\n  go:\n"));
+  const steps = verify.split("\n      - ").slice(1);
+  /** One flattened step block, or undefined. @param {string} needle */
+  const stepFor = (needle) => steps.find((s) => s.includes(needle));
+  const nodeGate =
+    "if: >- needs.changes.result != 'success' || " +
+    "needs.changes.outputs.node == 'true' || " +
+    "needs.changes.outputs.node_extra == 'true'";
+  for (const [needle, label] of [
+    ["run: npm ci", "npm ci"],
+    ["Cache the rclone release", "the rclone cache"],
+    ["Install rclone", "the rclone install"],
+    ["Typecheck and Biome", "npm run check"],
+    ["run: npm test", "npm test"],
+  ]) {
+    const step = stepFor(needle);
+    assert.ok(step, `step found: ${label}`);
+    const cond = step.replace(/\s+/g, " ");
+    assert.match(cond, /needs\.changes\.result != 'success'/, `${label} fails open`);
+    assert.ok(cond.includes(nodeGate), `${label} skips unless the Node suite is affected`);
+  }
+  for (const name of ["Build the site", "Lighthouse CI"]) {
+    const step = stepFor(`name: ${name}`);
+    assert.ok(step, `step found: ${name}`);
+    const cond = step.replace(/\s+/g, " ");
+    assert.match(
+      cond,
+      /needs\.changes\.outputs\.node == 'true'/,
+      `${name} skips when the Node suite is unaffected`,
+    );
+    assert.match(
+      cond,
+      /needs\.changes\.outputs\.site == 'true'/,
+      `${name} skips when the shipped pages are unaffected`,
+    );
+  }
+  const scan = stepFor("name: Secret scan");
+  assert.ok(scan, "step found: the secret scan");
+  assert.doesNotMatch(scan, /^\s+if:/m, "the secret scan runs on every pull request");
+});
+
 // drive#759: `npm run check` (tsc --noEmit through the generated Workers
 // types, then `biome check`) is a named step of its own in the verify job, so a
 // red run says which tool turned it red instead of burying it in pretest's
@@ -251,9 +320,13 @@ test("ci.yml runs npm run check as its own step, and never fixes the diff", () =
   const rest = CI.slice(start);
   const next = /^ {2}[\w-]+:/m.exec(rest.slice(1));
   const body = next ? rest.slice(0, 1 + next.index) : rest;
-  const step = /- name: Typecheck and Biome\n {8}run: npm run check\n/.exec(body)?.[0];
+  const steps = body.split("\n      - ").slice(1);
+  /** One step block. @param {string} run @returns {string | undefined} */
+  const stepFor = (run) => steps.find((s) => s.includes(`run: ${run}`));
+  const step = stepFor("npm run check");
   assert.ok(step, "the verify job runs npm run check as a named step");
-  const suite = /- run: [^\n]*npm test[^\n]*/.exec(body)?.[0];
+  assert.match(step, /name: Typecheck and Biome/, "check is a named step");
+  const suite = stepFor("npm test");
   assert.ok(suite, "the verify job runs npm test as a step of its own");
   assert.ok(
     body.indexOf("- name: Typecheck and Biome") < body.indexOf(suite),
@@ -273,9 +346,17 @@ test("ci.yml runs npm run check as its own step, and never fixes the diff", () =
   for (const name of ["check", "precheck", "typecheck", "pretypecheck", "lint"]) {
     assert.doesNotMatch(scripts[name] ?? "", /--(write|fix)\b/, `npm run ${name} never fixes`);
   }
-  // Same gate as `npm test`: the step carries no `if:`, so it runs whenever
-  // the job runs, and the job-level `if:` is the paths filter above it.
-  assert.doesNotMatch(step, /if:/, "the check step has no gate of its own");
+  // Same gate as `npm test`: the step carries the paths filter at step level,
+  // so a pull request whose files cannot affect the Node suite skips both
+  // (drive#867), and the fail-open clause runs them in the merge queue.
+  for (const gated of [step, suite]) {
+    const cond = gated.replace(/\s+/g, " ");
+    assert.match(
+      cond,
+      /if: >- needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.node == 'true' \|\| needs\.changes\.outputs\.node_extra == 'true' run:/,
+      "the Node steps carry the node paths gate",
+    );
+  }
 });
 
 // drive#520: a migration is one-way (D1 has no down-migrations and the
