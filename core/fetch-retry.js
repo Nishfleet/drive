@@ -107,11 +107,12 @@ function connectionLost(error) {
 /**
  * Whether a write carries a precondition, whose answer changes once a first
  * attempt has taken effect: a create-only write (`if-none-match`), a
- * conditional delete (`if-match`) and a conditional server-side copy (the
- * `x-amz-copy-source-if-*` pair) all answer 412 on a repeat, so a retry would
- * turn a lost socket into a failed save that in fact saved. A conditional read
- * is not one of these: its repeat answers 304 for the version the caller
- * already holds.
+ * conditional delete (`if-match`) and a conditional server-side copy
+ * (`x-amz-copy-source-if-*`) all answer 412 on a repeat, so a retry would turn
+ * a lost socket into a failed save that in fact saved. S3 spells a precondition
+ * as an `if-…` header or an `x-amz-copy-source-if-…` one, so the prefix is the
+ * rule and no list of names can go stale. A conditional read is not one of
+ * these: its repeat answers 304 for the version the caller already holds.
  * @param {HeadersInit | undefined} headers
  */
 function preconditional(headers) {
@@ -119,12 +120,12 @@ function preconditional(headers) {
     return false;
   }
   const held = new Headers(headers);
-  return (
-    held.has("if-match") ||
-    held.has("if-none-match") ||
-    held.has("x-amz-copy-source-if-match") ||
-    held.has("x-amz-copy-source-if-none-match")
-  );
+  for (const name of held.keys()) {
+    if (name.startsWith("if-") || name.startsWith("x-amz-copy-source-if-")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -158,8 +159,10 @@ export function repeatable(method, headers, error) {
  * Fetch with a hard timeout and one retry: a deadline that passed while the
  * connection was healthy, a 5xx, or a connection that died before an answer on
  * a method a repeat cannot spoil. A write that carries a precondition gets no
- * second attempt at all, because a repeat answers 412 once the first attempt
- * took effect, and that answer hides the write.
+ * second attempt on a timeout or a lost connection, because a repeat answers
+ * 412 once the first attempt took effect, and that answer hides the write. A
+ * received 5xx keeps its retry on every method, conditional writes included:
+ * S3 documents the throttling 503 as a request it did not apply.
  *
  * @param {typeof fetch} fetchImpl
  * @param {string | URL | Request} input

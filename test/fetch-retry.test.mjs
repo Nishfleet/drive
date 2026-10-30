@@ -200,7 +200,7 @@ test("a conditional server-side copy is sent once too: its repeat would answer 4
         method: "PUT",
         headers: {
           "x-amz-copy-source": "/drive/u/acct-1/a.txt",
-          "x-amz-copy-source-if-match": '"etag-1"',
+          "x-amz-copy-source-if-unmodified-since": "Wed, 21 Oct 2015 07:28:00 GMT",
         },
       },
       { delay: () => Promise.resolve() },
