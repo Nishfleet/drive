@@ -19,7 +19,7 @@ const stall =
  * @param {string} code
  */
 function socketFailure(code) {
-  const cause = Object.assign(new Error(`read ${code}`), { code, errno: -104, syscall: "read" });
+  const cause = Object.assign(new Error(`read ${code}`), { code });
   return new TypeError("fetch failed", { cause });
 }
 
@@ -228,6 +228,37 @@ test("a POST is not retried even when the connection is lost: a repeat leaves pa
     (error) => error === failure,
   );
   assert.equal(calls(), 1, "CreateMultipartUpload is sent once");
+});
+
+test("a POST a Request input carries is the same POST, so it is sent once too", async () => {
+  const failure = socketFailure("ECONNRESET");
+  const { fetchImpl, calls } = flaky(1, failure);
+  const request = new Request("https://storage.test/bucket/key?uploads", { method: "POST" });
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(fetchImpl, request, {}, { delay: () => Promise.resolve() }),
+    (error) => error === failure,
+  );
+  assert.equal(calls(), 1, "the method is read from the request, not assumed to be GET");
+});
+
+test("a stream body on the retry path is spent on the first attempt, so a lost connection is not retried", async () => {
+  const failure = socketFailure("ECONNRESET");
+  const { fetchImpl, calls } = flaky(1, failure);
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.close();
+    },
+  });
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(
+      fetchImpl,
+      "https://storage.test/one",
+      { method: "PUT", body: stream },
+      { delay: () => Promise.resolve() },
+    ),
+    (error) => error === failure,
+  );
+  assert.equal(calls(), 1, "a retry would mask the socket's error with 'body already used'");
 });
 
 test("a 4xx is not retried: the caller's answer is final", async () => {

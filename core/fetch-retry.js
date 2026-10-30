@@ -33,10 +33,10 @@ function isTimeout(error) {
  * typed array, Blob and FormData all extract a fresh stream per fetch
  * (verified under Node 24: both re-send their bytes on a second call),
  * so they keep the retry this function promises.
- * @param {RequestInit} init
+ * @param {BodyInit | null | undefined} body
  */
-function replayable(init) {
-  return !(init.body instanceof ReadableStream);
+function replayable(body) {
+  return !(body instanceof ReadableStream);
 }
 
 /**
@@ -64,10 +64,17 @@ const CONNECTION_LOST = new Set([
 const REPEATABLE_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
 
 /**
+ * The message workerd throws when a socket closed under a request it never
+ * answered. It carries no code, so the text is the only shape to match, and
+ * core/s3.js matches the same one on the control plane.
+ */
+const WORKERD_CONNECTION_LOST = "Network connection lost";
+
+/**
  * Two runtime shapes for the same event. Node's undici wraps a socket failure
  * in `TypeError: fetch failed` and puts the code on `cause`; workerd, where the
- * Workers run this path, throws a plain error with the message "Network
- * connection lost." and no code. A raw socket error carries the code on itself.
+ * Workers run this path, throws a plain error with the message below and no
+ * code. A raw socket error carries the code on itself.
  * @param {unknown} error
  * @returns {boolean}
  */
@@ -81,7 +88,7 @@ function connectionLost(error) {
       return true;
     }
   }
-  return error.message.startsWith("Network connection lost");
+  return error.message.startsWith(WORKERD_CONNECTION_LOST);
 }
 
 /**
@@ -91,7 +98,10 @@ function connectionLost(error) {
  *
  * @param {typeof fetch} fetchImpl
  * @param {string | URL | Request} input
- * @param {RequestInit} [init]
+ * @param {RequestInit} [init]   A `Request` input's own method and body are
+ *   the ones its fetch carries, so they stand in when `init` does not name
+ *   them: a POST there is still a POST, and a stream body there still spends
+ *   itself on the first attempt.
  * @param {{timeoutMs?: number, label?: string, delay?: (ms: number) => Promise<void>}} [options]
  *   `label` names the call in the timeout error ("storage request", "Dodo
  *   test-mode ingest"); `timeoutMs` and `delay` exist so a test can prove the
@@ -102,7 +112,9 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
   const timeoutMs = options.timeoutMs ?? FETCH_TIMEOUT_MS;
   const label = options.label ?? "remote request";
   const pause = options.delay ?? sleep;
-  const method = (init.method ?? "GET").toUpperCase();
+  const sent = input instanceof Request ? input : null;
+  const body = init.body === undefined ? sent?.body : init.body;
+  const method = (init.method ?? sent?.method ?? "GET").toUpperCase();
   /**
    * Whether a rejected attempt is worth one more. A timeout is, on any method a
    * replayable body allows. A lost connection is, on a method a repeat cannot
@@ -126,7 +138,7 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
       throw new DataPlaneTimeout(label, timeoutMs, number);
     }
   };
-  if (!replayable(init)) {
+  if (!replayable(body)) {
     return attempt(1);
   }
   let first;
