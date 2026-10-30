@@ -112,7 +112,9 @@ function preconditional(headers) {
 /**
  * Fetch with a hard timeout and one retry: a deadline that passed while the
  * connection was healthy, a 5xx, or a connection that died before an answer on
- * a method a repeat cannot spoil and a request that carries no precondition.
+ * a method a repeat cannot spoil. A request that carries a precondition gets no
+ * second attempt on a timeout or a lost connection, because a repeat answers
+ * 412 once the first attempt took effect, and that answer hides the write.
  *
  * @param {typeof fetch} fetchImpl
  * @param {string | URL | Request} input
@@ -135,15 +137,17 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
   const method = (init.method ?? sent?.method ?? "GET").toUpperCase();
   const conditional = preconditional(init.headers ?? sent?.headers);
   /**
-   * Whether a rejected attempt is worth one more. A timeout is, on any method a
-   * replayable body allows. A lost connection is, on a method a repeat cannot
-   * spoil and a request whose answer a repeat cannot change. Everything else is
-   * the caller's answer.
+   * Whether a rejected attempt is worth one more. A request that carries a
+   * precondition is sent once, because the answer a repeat gets no longer names
+   * the caller's own write. Otherwise a timeout is retried, on any method a
+   * replayable body allows, and a lost connection is retried on a method a
+   * repeat cannot spoil. Everything else is the caller's answer.
    * @param {unknown} error
    */
   const retryable = (error) =>
-    error instanceof DataPlaneTimeout ||
-    (REPEATABLE_METHODS.has(method) && !conditional && connectionLost(error));
+    !conditional &&
+    (error instanceof DataPlaneTimeout ||
+      (REPEATABLE_METHODS.has(method) && connectionLost(error)));
   /** One try: the signal is per-attempt, so the retry gets its own full window.
    * @param {number} number
    * @returns {Promise<Response>}

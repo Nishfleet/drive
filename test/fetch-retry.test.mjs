@@ -278,7 +278,7 @@ test("a create-only write is sent once: a repeat answers 412 for a write that al
 
 test("a conditional delete is sent once, whether the precondition is in init or the Request", async () => {
   const failure = socketFailure("ECONNRESET");
-  const init = await flaky(1, failure);
+  const init = flaky(1, failure);
   await assert.rejects(
     fetchWithTimeoutAndRetry(
       init.fetchImpl,
@@ -313,6 +313,44 @@ test("a write with headers but no precondition still gets its retry", async () =
   );
   assert.equal(response.status, 200);
   assert.equal(calls(), 2, "one retry, no more");
+});
+
+test("a stream body a Request carries is spent on the first attempt, so a lost connection is not retried", async () => {
+  const failure = socketFailure("ECONNRESET");
+  const { fetchImpl, calls } = flaky(1, failure);
+  const request = new Request("https://storage.test/one", {
+    method: "PUT",
+    duplex: "half",
+    body: new ReadableStream({
+      start(controller) {
+        controller.close();
+      },
+    }),
+  });
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(fetchImpl, request, {}, { delay: () => Promise.resolve() }),
+    (error) => error === failure,
+  );
+  assert.equal(calls(), 1, "a retry would mask the socket's error with 'body already used'");
+});
+
+test("a conditional write that times out is sent once too: its repeat would answer 412", async () => {
+  let calls = 0;
+  /** @type {typeof fetch} */
+  const countingStall = (url, init) => {
+    calls += 1;
+    return stall(url, init);
+  };
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(
+      countingStall,
+      "https://storage.test/u/acct-1/notes.txt",
+      { method: "PUT", headers: { "if-none-match": "*" }, body: "notes" },
+      { timeoutMs: 25, label: "storage request", delay: () => Promise.resolve() },
+    ),
+    (error) => error instanceof DataPlaneTimeout,
+  );
+  assert.equal(calls, 1, "the retry would look like 'the file is already there'");
 });
 
 test("a 4xx is not retried: the caller's answer is final", async () => {
