@@ -57,12 +57,20 @@ const CONNECTION_LOST = new Set([
 
 /**
  * The methods a lost connection may be sent again under: S3 answers each of
- * them with the same object state whatever the attempt count. A POST is never
+ * them with the same object state whatever the attempt count. A lost PUT leaves
+ * the same bytes in the object, on a versioned bucket as one more version of
+ * identical content, which the hidden-version rule expires. A POST is never
  * one: CreateMultipartUpload is a POST, and its repeat leaves parts nobody
  * deletes. It is shared with the control plane, which imports it, so both
  * planes carry one answer to "may this be sent again".
  */
 export const REPEATABLE_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
+
+/**
+ * The methods a precondition changes the effect of, so a repeat's answer no
+ * longer names the caller's own attempt.
+ */
+const WRITING_METHODS = new Set(["PUT", "POST", "DELETE"]);
 
 /**
  * The message workerd throws when a socket closed under a request it never
@@ -95,10 +103,12 @@ export function connectionLost(error) {
 }
 
 /**
- * Whether a request carries a precondition, whose answer changes once a first
+ * Whether a write carries a precondition, whose answer changes once a first
  * attempt has taken effect: a create-only write (`if-none-match`) and a
  * conditional delete (`if-match`) both answer 412 on a repeat, so a retry would
- * turn a lost socket into a failed save that in fact saved.
+ * turn a lost socket into a failed save that in fact saved. A conditional read
+ * is not one of these: its repeat answers 304 for the version the caller
+ * already holds.
  * @param {HeadersInit | undefined} headers
  */
 function preconditional(headers) {
@@ -112,7 +122,7 @@ function preconditional(headers) {
 /**
  * Fetch with a hard timeout and one retry: a deadline that passed while the
  * connection was healthy, a 5xx, or a connection that died before an answer on
- * a method a repeat cannot spoil. A request that carries a precondition gets no
+ * a method a repeat cannot spoil. A write that carries a precondition gets no
  * second attempt on a timeout or a lost connection, because a repeat answers
  * 412 once the first attempt took effect, and that answer hides the write.
  *
@@ -135,11 +145,11 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
   const sent = input instanceof Request ? input : null;
   const body = init.body === undefined ? sent?.body : init.body;
   const method = (init.method ?? sent?.method ?? "GET").toUpperCase();
-  const conditional = preconditional(init.headers ?? sent?.headers);
+  const conditional = WRITING_METHODS.has(method) && preconditional(init.headers ?? sent?.headers);
   /**
-   * Whether a rejected attempt is worth one more. A request that carries a
+   * Whether a rejected attempt is worth one more. A write that carries a
    * precondition is sent once, because the answer a repeat gets no longer names
-   * the caller's own write. Otherwise a timeout is retried, on any method a
+   * the caller's own attempt. Otherwise a timeout is retried, on any method a
    * replayable body allows, and a lost connection is retried on a method a
    * repeat cannot spoil. Everything else is the caller's answer.
    * @param {unknown} error

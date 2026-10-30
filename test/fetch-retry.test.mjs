@@ -302,6 +302,19 @@ test("a conditional delete is sent once, whether the precondition is in init or 
   assert.equal(carried.calls(), 1, "a Request's own precondition counts too");
 });
 
+test("a conditional read still gets its retry: a repeat answers 304 for the version the caller holds", async () => {
+  const failure = socketFailure("ECONNRESET");
+  const { fetchImpl, calls } = flaky(1, failure);
+  const response = await fetchWithTimeoutAndRetry(
+    fetchImpl,
+    "https://storage.test/u/acct-1/notes.txt",
+    { headers: { "if-none-match": '"etag-1"' } },
+    { delay: () => Promise.resolve() },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(calls(), 2, "one retry, no more");
+});
+
 test("a write with headers but no precondition still gets its retry", async () => {
   const failure = socketFailure("ECONNRESET");
   const { fetchImpl, calls } = flaky(1, failure);
