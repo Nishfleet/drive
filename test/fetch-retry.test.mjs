@@ -261,6 +261,60 @@ test("a stream body on the retry path is spent on the first attempt, so a lost c
   assert.equal(calls(), 1, "a retry would mask the socket's error with 'body already used'");
 });
 
+test("a create-only write is sent once: a repeat answers 412 for a write that already happened", async () => {
+  const failure = socketFailure("ECONNRESET");
+  const { fetchImpl, calls } = flaky(1, failure);
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(
+      fetchImpl,
+      "https://storage.test/u/acct-1/notes.txt",
+      { method: "PUT", headers: { "if-none-match": "*" }, body: "notes" },
+      { delay: () => Promise.resolve() },
+    ),
+    (error) => error === failure,
+  );
+  assert.equal(calls(), 1, "the retry would look like 'the file is already there'");
+});
+
+test("a conditional delete is sent once, whether the precondition is in init or the Request", async () => {
+  const failure = socketFailure("ECONNRESET");
+  const init = await flaky(1, failure);
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(
+      init.fetchImpl,
+      "https://storage.test/u/acct-1/notes.txt",
+      { method: "DELETE", headers: { "if-match": '"etag-1"' } },
+      { delay: () => Promise.resolve() },
+    ),
+    (error) => error === failure,
+  );
+  assert.equal(init.calls(), 1, "the retry would look like the file changed under us");
+
+  const carried = await flaky(1, failure);
+  const request = new Request("https://storage.test/u/acct-1/notes.txt", {
+    method: "DELETE",
+    headers: { "if-match": '"etag-1"' },
+  });
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(carried.fetchImpl, request, {}, { delay: () => Promise.resolve() }),
+    (error) => error === failure,
+  );
+  assert.equal(carried.calls(), 1, "a Request's own precondition counts too");
+});
+
+test("a write with headers but no precondition still gets its retry", async () => {
+  const failure = socketFailure("ECONNRESET");
+  const { fetchImpl, calls } = flaky(1, failure);
+  const response = await fetchWithTimeoutAndRetry(
+    fetchImpl,
+    "https://storage.test/u/acct-1/notes.txt",
+    { method: "PUT", headers: { "content-type": "text/plain" }, body: "notes" },
+    { delay: () => Promise.resolve() },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(calls(), 2, "one retry, no more");
+});
+
 test("a 4xx is not retried: the caller's answer is final", async () => {
   let calls = 0;
   /** @type {typeof fetch} */

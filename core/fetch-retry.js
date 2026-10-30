@@ -59,14 +59,16 @@ const CONNECTION_LOST = new Set([
  * The methods a lost connection may be sent again under: S3 answers each of
  * them with the same object state whatever the attempt count. A POST is never
  * one: CreateMultipartUpload is a POST, and its repeat leaves parts nobody
- * deletes.
+ * deletes. It is shared with the control plane, which imports it, so both
+ * planes carry one answer to "may this be sent again".
  */
-const REPEATABLE_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
+export const REPEATABLE_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
 
 /**
  * The message workerd throws when a socket closed under a request it never
  * answered. It carries no code, so the text is the only shape to match, and
- * core/s3.js matches the same one on the control plane.
+ * undici reports the same event as `TypeError: fetch failed` with the code on
+ * its cause.
  */
 const WORKERD_CONNECTION_LOST = "Network connection lost";
 
@@ -74,11 +76,12 @@ const WORKERD_CONNECTION_LOST = "Network connection lost";
  * Two runtime shapes for the same event. Node's undici wraps a socket failure
  * in `TypeError: fetch failed` and puts the code on `cause`; workerd, where the
  * Workers run this path, throws a plain error with the message below and no
- * code. A raw socket error carries the code on itself.
+ * code. A raw socket error carries the code on itself. The control plane
+ * imports this too, so both planes match both shapes one way.
  * @param {unknown} error
  * @returns {boolean}
  */
-function connectionLost(error) {
+export function connectionLost(error) {
   if (!(error instanceof Error)) {
     return false;
   }
@@ -92,9 +95,24 @@ function connectionLost(error) {
 }
 
 /**
+ * Whether a request carries a precondition, whose answer changes once a first
+ * attempt has taken effect: a create-only write (`if-none-match`) and a
+ * conditional delete (`if-match`) both answer 412 on a repeat, so a retry would
+ * turn a lost socket into a failed save that in fact saved.
+ * @param {HeadersInit | undefined} headers
+ */
+function preconditional(headers) {
+  if (headers === undefined) {
+    return false;
+  }
+  const held = new Headers(headers);
+  return held.has("if-match") || held.has("if-none-match");
+}
+
+/**
  * Fetch with a hard timeout and one retry: a deadline that passed while the
  * connection was healthy, a 5xx, or a connection that died before an answer on
- * a method a repeat cannot spoil.
+ * a method a repeat cannot spoil and a request that carries no precondition.
  *
  * @param {typeof fetch} fetchImpl
  * @param {string | URL | Request} input
@@ -115,14 +133,17 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
   const sent = input instanceof Request ? input : null;
   const body = init.body === undefined ? sent?.body : init.body;
   const method = (init.method ?? sent?.method ?? "GET").toUpperCase();
+  const conditional = preconditional(init.headers ?? sent?.headers);
   /**
    * Whether a rejected attempt is worth one more. A timeout is, on any method a
    * replayable body allows. A lost connection is, on a method a repeat cannot
-   * spoil. Everything else is the caller's answer.
+   * spoil and a request whose answer a repeat cannot change. Everything else is
+   * the caller's answer.
    * @param {unknown} error
    */
   const retryable = (error) =>
-    error instanceof DataPlaneTimeout || (REPEATABLE_METHODS.has(method) && connectionLost(error));
+    error instanceof DataPlaneTimeout ||
+    (REPEATABLE_METHODS.has(method) && !conditional && connectionLost(error));
   /** One try: the signal is per-attempt, so the retry gets its own full window.
    * @param {number} number
    * @returns {Promise<Response>}
