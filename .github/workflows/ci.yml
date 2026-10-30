@@ -37,7 +37,15 @@ jobs:
   #
   # The `every` filters are negations: a file counts unless it is in a listed
   # area, so a path nobody classified runs the job. The `_extra` filters list
-  # the files inside those areas that the job still reads.
+  # the files inside those areas that the job still reads. A job skipped here
+  # still gets a full run in the merge queue, so a mis-filed path costs a
+  # queue bounce, never unchecked code on main (drive#867). Skipping is
+  # job-level `if:` only: inside a running job, a repeated step `if:` is dead
+  # code. Both jobs carry the attribution step, so every pull request keeps
+  # one of them — except files under docs/design and docs/research that no
+  # test executes, the one hole main already has, pinned in
+  # test/ci-deploy-gate.test.mjs (drive#867).
+
   changes:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -58,55 +66,61 @@ jobs:
         with:
           predicate-quantifier: every
           filters: |
-            # verify: everything except design and research notes.
+            # verify: the inputs of `npm test` and `npm run check`. Only the
+            # Go sources (under cmd and internal) and the Go module files
+            # cannot affect them, so a Go-only pull request skips the job —
+            # its attribution step still runs in the `go` job. Docs, .github
+            # and any non-Go file under cmd stay in: the Node tests read
+            # some of them (test/ci-deploy-gate.test.mjs reads this file),
+            # and for a docs-only or workflow-only pull request `verify` is
+            # the one job that sees it (drive#867).
             node:
               - '!docs/design/**'
               - '!docs/research/**'
+              - '!{cmd,internal}/**/*.go'
+              - '!{go.mod,go.sum}'
             # npm run build + Lighthouse: the shipped static pages.
             site:
-              - '!cmd/**'
-              - '!test/**'
-              - '!workers/**'
-              - '!docs/**'
-              - '!docs-site/**'
-              - '!evals/**'
-              - '!migrations/**'
-              - '!installer/**'
-              - '!bench/**'
-              - '!go.mod'
-              - '!go.sum'
+              - '!{cmd,test,workers}/**'
+              - '!{docs,docs-site}/**'
+              - '!{evals,migrations,installer,bench}/**'
+              # workflow files cannot change the built pages
+              - '!{internal,.github}/**'
+              - '!{go.mod,go.sum}'
               - '!**/*.md'
             # go: everything except the Node side.
             go:
-              - '!src/**'
-              - '!public/**'
-              - '!workers/**'
-              - '!test/**'
-              - '!docs/**'
-              - '!docs-site/**'
-              - '!evals/**'
-              - '!migrations/**'
-              - '!installer/**'
-              - '!package.json'
-              - '!package-lock.json'
-              - '!biome.json'
-              - '!tsconfig.json'
-              - '!vite.config.ts'
-              - '!cloudflare.config.ts'
-              - '!lighthouserc.json'
-              - '!get-started.html'
-              - '!.npmrc'
-              - '!.nvmrc'
+              - '!{src,public,workers,test}/**'
+              - '!{docs,docs-site}/**'
+              - '!{evals,migrations,installer}/**'
+              - '!.github/**'
+              - '!{package.json,package-lock.json,biome.json,tsconfig.json}'
+              - '!{vite.config.ts,cloudflare.config.ts,lighthouserc.json}'
+              - '!{get-started.html,.npmrc,.nvmrc}'
               - '!**/*.md'
       - id: some
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           predicate-quantifier: some
           filters: |
-            # Read by test/site-styles and test/meter.
+            # Files the Node tests read inside the areas the node filter
+            # excludes (test/site-styles, test/meter, test/version-1-claims,
+            # and the tests that read the CLI's own files).
+            # test/ci-deploy-gate.test.mjs fails on a literal quoted path a
+            # test reads that this list does not cover; a path the tests
+            # compose with join() needs a line added by hand.
             node_extra:
               - docs/design/pricing-brief.md
               - docs/research/folder-moves.md
+              - cmd/drive/bench_test.go
+              - cmd/drive/config.go
+              - cmd/drive/e2e_test.go
+              - cmd/drive/login.go
+              - cmd/drive/logout_test.go
+              - cmd/drive/main.go
+              - cmd/drive/messages.go
+              - cmd/drive/update.go
+              - internal/login/config.go
             # Rendered into the pages by src/docs.js and src/render-docs.js.
             site_extra:
               - docs/scoreboard.md

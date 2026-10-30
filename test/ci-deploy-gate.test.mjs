@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, matchesGlob } from "node:path";
 import { test } from "node:test";
 import { HEALTH_PATH } from "../src/health.js";
 
@@ -239,6 +247,283 @@ test("ci.yml skips by job-level if, fails open, and pins paths-filter by SHA", (
   for (const ref of uses) assert.match(ref, /^[0-9a-f]{40}$/, "pinned by commit SHA");
 });
 
+// drive#867: the skip filters must keep covering the classes that cannot
+// affect a job, and skipping stays at job level: inside a running job, a
+// repeated step `if:` is dead code. The merge queue's fail-open full run is
+// the backstop for a mis-filed path.
+test("ci.yml skips by whole job, and every pull request still runs verify or go", () => {
+  const filters = [...CI.matchAll(/^ {10}filters: \|\n((?: {12}[^\n]*\n)+)/gm)]
+    .map((m) => m[1])
+    .join("");
+  /** One filter's patterns, quoted or bare. @param {string} name */
+  const patterns = (name) =>
+    [...filters.matchAll(/^ {12}(\w+):\n((?: {14}- [^\n]*\n)*)/gm)]
+      .find((m) => m[1] === name)?.[2]
+      ?.match(/- .+/g)
+      ?.map((line) => line.slice(2).trim().replace(/^'|'$/g, "")) ?? [];
+  /**
+   * Whether one `every` negation excludes a path, decided by Node's own
+   * glob matcher (stable from Node 22.5, and CI runs Node 24), replacing
+   * the hand-rolled one the review at
+   * github.com/Nishfleet/drive/pull/1109#issuecomment-6517012244 blocked.
+   * One divergence from the action remains, outside our control: paths-filter's
+   * picomatch (`dot: true`) also matches dot-named path segments under a
+   * plain `*` or `**`, and the built-in does not. Every dot-affected pattern in this filter
+   * names its dot segment (`!.github/**`, `!{go.mod,go.sum}`), where the
+   * two agree, so the corner is only reachable behind a new shape.
+   * @param {string} pattern
+   * @param {string} file
+   */
+  const excludes = (pattern, file) => {
+    assert.ok(pattern.startsWith("!"), `every pattern is a negation: ${pattern}`);
+    return matchesGlob(file, pattern.slice(1));
+  };
+  // The one divergence between the built-in and the action's picomatch
+  // (`dot: true`), pinned so a Node change cannot silently move where the
+  // simulation and the action disagree.
+  assert.equal(
+    matchesGlob("q/.draft.md", "**/*.md"),
+    false,
+    "the built-in does not match a dot-named segment under a plain wildcard; the action's picomatch does",
+  );
+  assert.equal(
+    matchesGlob(".github/workflows/a.yml", ".github/**"),
+    true,
+    "a pattern that names the dot segment matches it in both matchers",
+  );
+  assert.equal(
+    matchesGlob("cmd/update.go", "{cmd,internal}/**/*.go"),
+    true,
+    "the `**` inside a brace matches zero path segments, in both matchers",
+  );
+  /**
+   * Does a job run for these changed files? `every`: no negation excludes
+   * any file. `some`: one listed path is enough on its own.
+   * @param {string[]} negations
+   * @param {string[]} extras
+   * @param {string[]} files
+   */
+  const runs = (negations, extras, files) =>
+    files.every((f) => !negations.some((p) => excludes(p, f))) ||
+    files.some((f) => extras.includes(f));
+  const node = patterns("node");
+  const nodeExtra = patterns("node_extra");
+  /** @param {string[]} files */
+  const verifyRuns = (files) => runs(node, nodeExtra, files);
+  /** @param {string[]} files */
+  const goRuns = (files) => runs(patterns("go"), patterns("go_extra"), files);
+  /** @param {string[]} files */
+  const siteRuns = (files) => runs(patterns("site"), patterns("site_extra"), files);
+
+  // The node filter excludes exactly the Go side. Docs and .github files
+  // stay in: the Node tests read them, and for a docs-only or workflow-only
+  // pull request `verify` is the one job that sees it.
+  assert.deepEqual(node, [
+    "!docs/design/**",
+    "!docs/research/**",
+    "!{cmd,internal}/**/*.go",
+    "!{go.mod,go.sum}",
+  ]);
+
+  // One file per class the filters claim to cover, against the real jobs.
+  assert.equal(verifyRuns(["cmd/drive/doctor.go"]), false, "a Go-only PR skips verify");
+  assert.equal(
+    verifyRuns(["cmd/update.go"]),
+    false,
+    "the `**` in `{a,b}/**` matches zero path segments, so `cmd/update.go` is excluded, like the action's picomatch rules",
+  );
+  assert.equal(goRuns(["cmd/drive/doctor.go"]), true, "a Go-only PR runs go");
+  assert.equal(goRuns([".github/workflows/ci.yml"]), false, "a workflow-only PR skips go");
+  assert.equal(
+    verifyRuns([".github/workflows/ci.yml"]),
+    true,
+    "a workflow-only PR runs verify: its attribution step and this test must see it",
+  );
+  assert.equal(verifyRuns(["docs/api.md"]), true, "a docs PR runs verify, as on main");
+  assert.equal(verifyRuns(["cmd/drive/main.go"]), true, "main.go is read by the Node tests");
+  assert.equal(siteRuns(["cmd/drive/main.go"]), true, "main.go is rendered into the pages");
+  assert.equal(verifyRuns(["src/index.js"]), true, "a Worker PR runs verify");
+  assert.equal(goRuns(["src/index.js"]), false, "a Worker PR skips go");
+  assert.equal(
+    verifyRuns(["cmd/README.md"]),
+    true,
+    "a markdown file under cmd runs verify: go skips *.md, so verify is the only job that sees it",
+  );
+  // A filter emptied by an indentation drift in patterns() would make every
+  // assertion here vacuously true, so pin each one non-empty as a floor.
+  for (const name of ["node", "go", "site", "node_extra", "site_extra", "go_extra"]) {
+    assert.ok(patterns(name).length > 0, `${name} is a non-empty filter`);
+  }
+
+  // The attribution invariant: both jobs carry the attribution step, so no
+  // changed file may leave a pull request with neither job running. The one
+  // hole is the one main already has: a file under docs/design or
+  // docs/research outside the _extra lists runs neither job.
+  for (const file of [
+    "src/index.js",
+    "public/a.css",
+    "workers/api/src/index.js",
+    "core/files.js",
+    "cmd/drive/main.go",
+    "cmd/drive/doctor.go",
+    "internal/api/api.go",
+    "go.mod",
+    "go.sum",
+    "docs/api.md",
+    "docs/build-spec.md",
+    "docs/design/pricing-brief.md",
+    "docs/research/folder-moves.md",
+    "cmd/README.md",
+    "internal/api/README.md",
+    ".github/workflows/ci.yml",
+    "docs-site/x.md",
+    "README.md",
+    "migrations/drive/0001.sql",
+    "evals/agents/promptfooconfig.yaml",
+  ]) {
+    const hole =
+      (file.startsWith("docs/design/") || file.startsWith("docs/research/")) &&
+      ![...nodeExtra, ...patterns("go_extra"), ...patterns("site_extra")].includes(file);
+    assert.equal(
+      verifyRuns([file]) || goRuns([file]),
+      !hole,
+      `${file}: outside the design/research hole, a pull request must keep one of the two jobs`,
+    );
+  }
+
+  const verify = CI.slice(CI.indexOf("\n  verify:\n"), CI.indexOf("\n  go:\n"));
+  const steps = verify.split("\n      - ").slice(1);
+  /** One flattened step block, or undefined. @param {string} needle */
+  const stepFor = (needle) => steps.find((s) => s.includes(needle));
+  const jobGate = verify.slice(0, verify.indexOf("runs-on")).replace(/\s+/g, " ");
+  assert.match(
+    jobGate,
+    /needs\.changes\.result != 'success'/,
+    "verify fails open when the filter job did not run",
+  );
+  assert.match(
+    jobGate,
+    /needs\.changes\.outputs\.node == 'true'/,
+    "verify runs when the Node suite is affected",
+  );
+  assert.match(
+    jobGate,
+    /needs\.changes\.outputs\.node_extra == 'true'/,
+    "verify runs for the files the Node tests read",
+  );
+  assert.equal(
+    /if: >- (.*)$/.exec(jobGate)?.[1]?.trim() ?? "",
+    "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.node == 'true' || needs.changes.outputs.node_extra == 'true')",
+    "the gate is exactly this: fail open, then the output clauses OR, like the runs() helper below",
+  );
+
+  // Skipping is the job's `if:` alone. A step gate would repeat it and skip
+  // nothing: the job only runs when the condition already holds.
+  for (const [needle, label] of [
+    ["run: npm ci", "npm ci"],
+    ["Cache the rclone release", "the rclone cache"],
+    ["Install rclone", "the rclone install"],
+    ["Typecheck and Biome", "npm run check"],
+    ["run: npm test", "npm test"],
+  ]) {
+    const step = stepFor(needle);
+    assert.ok(step, `step found: ${label}`);
+    assert.doesNotMatch(step, /if: needs\.changes/, `${label} carries no gate of its own`);
+  }
+  for (const name of ["Build the site", "Lighthouse CI"]) {
+    const step = stepFor(`name: ${name}`);
+    assert.ok(step, `step found: ${name}`);
+    const cond = step.replace(/\s+/g, " ");
+    assert.match(cond, /needs\.changes\.result != 'success'/, `${name} fails open`);
+    assert.match(
+      cond,
+      /needs\.changes\.outputs\.site == 'true'/,
+      `${name} runs when the pages' inputs change`,
+    );
+    assert.match(
+      cond,
+      /needs\.changes\.outputs\.site_extra == 'true'/,
+      `${name} runs for the files rendered into the pages`,
+    );
+    assert.doesNotMatch(cond, /outputs\.node/, `${name} reads only the site filters`);
+    assert.equal(
+      /if: >- (.*?)(?= run:)/.exec(cond)?.[1]?.trim() ?? "",
+      "needs.changes.result != 'success' || needs.changes.outputs.site == 'true' || needs.changes.outputs.site_extra == 'true'",
+      "the site step's clauses OR, like the runs() helper; only the first assert pins site's own outputs",
+    );
+  }
+  const scan = stepFor("name: Secret scan");
+  assert.ok(scan, "step found: the secret scan");
+  assert.doesNotMatch(
+    scan,
+    /if:/,
+    "the secret scan carries no gate of its own: it runs whenever verify runs",
+  );
+
+  // The go job carries the attribution step too, so the Go-only pull
+  // requests that skip verify still get theirs checked.
+  const goJob = CI.slice(CI.indexOf("\n  go:\n"), CI.indexOf("\n  private-detail-scan:\n"));
+  assert.match(
+    goJob.replace(/\s+/g, " "),
+    /needs\.changes\.outputs\.go == 'true'/,
+    "go runs by its own filter",
+  );
+  assert.ok(
+    goJob.includes("name: No agent attribution"),
+    "the go job checks attribution for the pull requests only it sees",
+  );
+  // Symmetric: verify is the job a workflow-only or docs-only pull request
+  // runs, so its own attribution step gets the same pin.
+  const verifyJob = CI.slice(CI.indexOf("\n  verify:\n"), CI.indexOf("\n  go:\n"));
+  assert.ok(
+    verifyJob.includes("name: No agent attribution"),
+    "the verify job checks attribution for the pull requests only it sees",
+  );
+
+  // Detector: a path the Node tests read may not sit in an area the node
+  // filter excludes without a node_extra line, or its tests would skip on
+  // the pull request and only the merge queue would catch the break. This
+  // file's own fixtures are pinned above instead of scanned. The scan sees
+  // every test tree and the areas the node filter excludes (test/integration
+  // requires the walk; the review at
+  // github.com/Nishfleet/drive/pull/1109#issuecomment-6517012244 named the
+  // internal/ hole, and it was real); a path the tests compose with join()
+  // still needs a node_extra line added by hand.
+  const self = import.meta.url;
+  const reads = new Set();
+  /** One queue element: a directory URL to scan. @param {URL} dir */
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, dir);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.endsWith(".mjs") && path.href !== self) {
+        for (const m of readFileSync(path, "utf8").matchAll(
+          /[`'"]((?:cmd|internal|docs|\.github)\/[\w./@+-]+)[`'"]/g,
+        )) {
+          reads.add(m[1]);
+        }
+      }
+    }
+  };
+  walk(new URL("./", import.meta.url));
+  for (const file of [
+    "cmd/drive/e2e_test.go",
+    "cmd/drive/logout_test.go",
+    ".github/workflows/ci.yml",
+  ]) {
+    assert.ok(
+      !node.some((p) => excludes(p, file)) || nodeExtra.includes(file),
+      `${file}, which this test reads, must not be silently excluded`,
+    );
+  }
+  for (const file of reads) {
+    assert.ok(
+      !node.some((p) => excludes(p, file)) || nodeExtra.includes(file),
+      `${file} is read by the tests but the node filter excludes it and node_extra does not list it`,
+    );
+  }
+});
+
 // drive#759: `npm run check` (tsc --noEmit through the generated Workers
 // types, then `biome check`) is a named step of its own in the verify job, so a
 // red run says which tool turned it red instead of burying it in pretest's
@@ -251,9 +536,13 @@ test("ci.yml runs npm run check as its own step, and never fixes the diff", () =
   const rest = CI.slice(start);
   const next = /^ {2}[\w-]+:/m.exec(rest.slice(1));
   const body = next ? rest.slice(0, 1 + next.index) : rest;
-  const step = /- name: Typecheck and Biome\n {8}run: npm run check\n/.exec(body)?.[0];
+  const steps = body.split("\n      - ").slice(1);
+  /** One step block. @param {string} run @returns {string | undefined} */
+  const stepFor = (run) => steps.find((s) => s.includes(`run: ${run}`));
+  const step = stepFor("npm run check");
   assert.ok(step, "the verify job runs npm run check as a named step");
-  const suite = /- run: [^\n]*npm test[^\n]*/.exec(body)?.[0];
+  assert.match(step, /name: Typecheck and Biome/, "check is a named step");
+  const suite = stepFor("npm test");
   assert.ok(suite, "the verify job runs npm test as a step of its own");
   assert.ok(
     body.indexOf("- name: Typecheck and Biome") < body.indexOf(suite),
@@ -275,7 +564,13 @@ test("ci.yml runs npm run check as its own step, and never fixes the diff", () =
   }
   // Same gate as `npm test`: the step carries no `if:`, so it runs whenever
   // the job runs, and the job-level `if:` is the paths filter above it.
-  assert.doesNotMatch(step, /if:/, "the check step has no gate of its own");
+  for (const gated of [step, suite]) {
+    assert.doesNotMatch(
+      gated,
+      /if: needs\.changes/,
+      "the check and test steps carry no gate of their own",
+    );
+  }
 });
 
 // drive#520: a migration is one-way (D1 has no down-migrations and the
