@@ -77,11 +77,66 @@ export function ok(operation, response) {
  */
 
 /**
+ * The codes a socket reports when it died under a request nobody answered yet:
+ * a reset, an aborted connection, a broken pipe, a refusal from a listener that
+ * is not up, and the peer closing a kept-alive socket (`UND_ERR_SOCKET`, what
+ * undici calls "other side closed"). An HTTP refusal is not one of these: it
+ * arrives as a response, so `send` returns it and never retries it. A connect
+ * timeout is not one either: retrying one only spends the request's whole
+ * budget twice.
+ */
+const CONNECTION_LOST = new Set([
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EPIPE",
+  "ECONNREFUSED",
+  "UND_ERR_SOCKET",
+]);
+
+/**
+ * The methods a retry may repeat: S3 answers each of them with the same object
+ * state whatever the attempt count, and a lost PUT leaves the same bytes in the
+ * object (on a versioned bucket as one more version of identical content, which
+ * the hidden-version rule expires). A POST is never retried: CreateMultipartUpload
+ * is a POST, and a repeat would leave parts nobody deletes.
+ */
+const REPEATABLE_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
+
+/**
+ * Two runtime shapes for the same event. Node's undici wraps a socket failure
+ * in `TypeError: fetch failed` and puts the code on `cause`; workerd, where the
+ * Workers run this client, throws a plain error with the message "Network
+ * connection lost." and no code. A raw socket error carries the code on itself.
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function connectionLost(error) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const held = /** @type {{code?: unknown, cause?: {code?: unknown}}} */ (error);
+  for (const code of [held.code, held.cause?.code]) {
+    if (typeof code === "string" && CONNECTION_LOST.has(code)) {
+      return true;
+    }
+  }
+  return error.message.startsWith("Network connection lost");
+}
+
+/**
  * A signed S3 client. Signing is `aws4fetch` (`AwsClient`), the stock
  * Worker-side SigV4 library; this file only builds the path-style URL, sends
  * the signed request, and reads the XML. `send` returns every answer, refusals
  * included; `ok` above turns a refusal into an error for the callers that
  * promised one.
+ *
+ * A request whose connection is lost before it is answered is signed again and
+ * sent once more (`connectionLost`, `REPEATABLE_METHODS`), whichever runtime
+ * reported it. The retry is exactly one, so an endpoint that is really down
+ * answers the caller with its own error instead of a pause. Signing is inside
+ * the attempt (as in core/files-s3.js) because the first attempt's signed
+ * Request has a body stream already consumed, and replaying it is a
+ * signed-request error, not a retry.
  * @param {S3ClientConfig} config
  */
 export function createS3Client(config) {
@@ -123,12 +178,23 @@ export function createS3Client(config) {
         body = new Uint8Array(target.body.byteLength);
         body.set(target.body);
       }
-      const signed = await aws.sign(url.toString(), {
-        method: method.toUpperCase(),
+      const verb = method.toUpperCase();
+      const init = /** @type {RequestInit} */ ({
+        method: verb,
         headers: target.headers ?? {},
         body,
       });
-      const response = await fetchImpl(signed);
+      /** @type {() => Promise<Response>} */
+      const attempt = async () => fetchImpl(await aws.sign(url.toString(), init));
+      let response;
+      try {
+        response = await attempt();
+      } catch (error) {
+        if (!REPEATABLE_METHODS.has(verb) || !connectionLost(error)) {
+          throw error;
+        }
+        response = await attempt();
+      }
       return { status: response.status, headers: response.headers, text: await response.text() };
     },
   };
