@@ -42,7 +42,7 @@ jobs:
   # queue bounce, never unchecked code on main (drive#867). Skipping is
   # job-level `if:` only: inside a running job, a repeated step `if:` is dead
   # code. Both jobs carry the attribution step, so every pull request keeps
-  # one of them — except prose under docs/design and docs/research that no
+  # one of them — except files under docs/design and docs/research that no
   # test executes, the one hole main already has, pinned in
   # test/ci-deploy-gate.test.mjs (drive#867).
 
@@ -105,8 +105,9 @@ jobs:
             # Files the Node tests read inside the areas the node filter
             # excludes (test/site-styles, test/meter, test/version-1-claims,
             # and the tests that read the CLI's own files).
-            # test/ci-deploy-gate.test.mjs fails
-            # when a test reads a file this list does not cover.
+            # test/ci-deploy-gate.test.mjs fails on a literal quoted path a
+            # test reads that this list does not cover; a path the tests
+            # compose with join() needs a line added by hand.
             node_extra:
               - docs/design/pricing-brief.md
               - docs/research/folder-moves.md
@@ -117,7 +118,6 @@ jobs:
               - cmd/drive/logout_test.go
               - cmd/drive/main.go
               - cmd/drive/messages.go
-              - cmd/drive/site.json
               - cmd/drive/update.go
               - internal/login/config.go
             # Rendered into the pages by src/docs.js and src/render-docs.js.

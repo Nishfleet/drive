@@ -352,8 +352,8 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
 
   // The attribution invariant: both jobs carry the attribution step, so no
   // changed file may leave a pull request with neither job running. The one
-  // hole is the one main already has: a design or research note outside the
-  // _extra lists (prose nobody executes) runs neither job.
+  // hole is the one main already has: a file under docs/design or
+  // docs/research outside the _extra lists runs neither job.
   for (const file of [
     "src/index.js",
     "public/a.css",
@@ -466,6 +466,13 @@ test("ci.yml skips by whole job, and every pull request still runs verify or go"
   assert.ok(
     goJob.includes("name: No agent attribution"),
     "the go job checks attribution for the pull requests only it sees",
+  );
+  // Symmetric: verify is the job a workflow-only or docs-only pull request
+  // runs, so its own attribution step gets the same pin.
+  const verifyJob = CI.slice(CI.indexOf("\n  verify:\n"), CI.indexOf("\n  go:\n"));
+  assert.ok(
+    verifyJob.includes("name: No agent attribution"),
+    "the verify job checks attribution for the pull requests only it sees",
   );
 
   // Detector: a path the Node tests read may not sit in an area the node
