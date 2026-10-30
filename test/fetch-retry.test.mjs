@@ -13,6 +13,34 @@ const stall =
       })
   );
 
+/**
+ * The shape undici hands a caller when the socket under a request fails: the
+ * rejection is a `TypeError`, and the socket's code is on the cause.
+ * @param {string} code
+ */
+function socketFailure(code) {
+  const cause = Object.assign(new Error(`read ${code}`), { code, errno: -104, syscall: "read" });
+  return new TypeError("fetch failed", { cause });
+}
+
+/**
+ * A fetch that rejects `failures` times with `error`, then answers.
+ * @param {number} failures
+ * @param {Error} error
+ */
+function flaky(failures, error) {
+  let calls = 0;
+  /** @type {typeof fetch} */
+  const fetchImpl = async () => {
+    calls += 1;
+    if (calls <= failures) {
+      throw error;
+    }
+    return new Response("kept", { status: 200 });
+  };
+  return { fetchImpl, calls: () => calls };
+}
+
 test("a stalled fetch is aborted with a named error, and retried once before giving up", async () => {
   let calls = 0;
   /** @type {typeof fetch} */
@@ -117,6 +145,89 @@ test("a stream body gets the timeout but no retry: a spent stream cannot replay"
     (error) => error instanceof DataPlaneTimeout,
   );
   assert.equal(calls, 1, "the second attempt would mask the failure with 'body already used'");
+});
+
+test("a connection lost before an answer is retried once, and the retry's answer is the one returned", async () => {
+  const { fetchImpl, calls } = flaky(1, new Error("Network connection lost."));
+  const response = await fetchWithTimeoutAndRetry(
+    fetchImpl,
+    "https://storage.test/one",
+    {},
+    {
+      delay: () => Promise.resolve(),
+    },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "kept");
+  assert.equal(calls(), 2, "one retry, no more");
+});
+
+test("undici's shape of the same event is retried too, code on the cause or on the error itself", async () => {
+  const failures = [
+    socketFailure("ECONNRESET"),
+    socketFailure("UND_ERR_SOCKET"),
+    Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+  ];
+  for (const failure of failures) {
+    const { fetchImpl, calls } = flaky(1, failure);
+    const response = await fetchWithTimeoutAndRetry(
+      fetchImpl,
+      "https://storage.test/one",
+      { method: "put", body: "notes" },
+      { delay: () => Promise.resolve() },
+    );
+    assert.equal(response.status, 200, `the retry answered for ${failure.message}`);
+    assert.equal(calls(), 2, "one retry, no more");
+  }
+});
+
+test("a connection lost on the retry is the caller's error, so a dead socket is not hidden", async () => {
+  const failure = socketFailure("ECONNRESET");
+  const { fetchImpl, calls } = flaky(2, failure);
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(
+      fetchImpl,
+      "https://storage.test/one",
+      {},
+      {
+        delay: () => Promise.resolve(),
+      },
+    ),
+    (error) => error === failure,
+  );
+  assert.equal(calls(), 2, "one retry, no more");
+});
+
+test("a rejection that is not a lost connection is not retried", async () => {
+  const failure = socketFailure("ENOTFOUND");
+  const { fetchImpl, calls } = flaky(1, failure);
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(
+      fetchImpl,
+      "https://storage.test/one",
+      {},
+      {
+        delay: () => Promise.resolve(),
+      },
+    ),
+    (error) => error === failure,
+  );
+  assert.equal(calls(), 1, "a name that does not resolve stays unresolved");
+});
+
+test("a POST is not retried even when the connection is lost: a repeat leaves parts nobody deletes", async () => {
+  const failure = new Error("Network connection lost.");
+  const { fetchImpl, calls } = flaky(1, failure);
+  await assert.rejects(
+    fetchWithTimeoutAndRetry(
+      fetchImpl,
+      "https://storage.test/bucket/key?uploads",
+      { method: "POST" },
+      { delay: () => Promise.resolve() },
+    ),
+    (error) => error === failure,
+  );
+  assert.equal(calls(), 1, "CreateMultipartUpload is sent once");
 });
 
 test("a 4xx is not retried: the caller's answer is final", async () => {

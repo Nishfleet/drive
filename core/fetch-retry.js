@@ -40,7 +40,54 @@ function replayable(init) {
 }
 
 /**
- * Fetch with a hard timeout and one retry.
+ * The codes a socket reports when it died under a request nobody answered yet:
+ * a reset, an aborted connection, a broken pipe, a refusal from a listener that
+ * is not up, and the peer closing a kept-alive socket (`UND_ERR_SOCKET`, what
+ * undici calls "other side closed"). An HTTP refusal is not one of these: it
+ * arrives as a response, so it is never retried. A connect timeout is not one
+ * either: retrying one only spends the request's whole budget twice.
+ */
+const CONNECTION_LOST = new Set([
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EPIPE",
+  "ECONNREFUSED",
+  "UND_ERR_SOCKET",
+]);
+
+/**
+ * The methods a lost connection may be sent again under: S3 answers each of
+ * them with the same object state whatever the attempt count. A POST is never
+ * one: CreateMultipartUpload is a POST, and its repeat leaves parts nobody
+ * deletes.
+ */
+const REPEATABLE_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE"]);
+
+/**
+ * Two runtime shapes for the same event. Node's undici wraps a socket failure
+ * in `TypeError: fetch failed` and puts the code on `cause`; workerd, where the
+ * Workers run this path, throws a plain error with the message "Network
+ * connection lost." and no code. A raw socket error carries the code on itself.
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function connectionLost(error) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const held = /** @type {{code?: unknown, cause?: {code?: unknown}}} */ (error);
+  for (const code of [held.code, held.cause?.code]) {
+    if (typeof code === "string" && CONNECTION_LOST.has(code)) {
+      return true;
+    }
+  }
+  return error.message.startsWith("Network connection lost");
+}
+
+/**
+ * Fetch with a hard timeout and one retry: a deadline that passed while the
+ * connection was healthy, a 5xx, or a connection that died before an answer on
+ * a method a repeat cannot spoil.
  *
  * @param {typeof fetch} fetchImpl
  * @param {string | URL | Request} input
@@ -55,6 +102,15 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
   const timeoutMs = options.timeoutMs ?? FETCH_TIMEOUT_MS;
   const label = options.label ?? "remote request";
   const pause = options.delay ?? sleep;
+  const method = (init.method ?? "GET").toUpperCase();
+  /**
+   * Whether a rejected attempt is worth one more. A timeout is, on any method a
+   * replayable body allows. A lost connection is, on a method a repeat cannot
+   * spoil. Everything else is the caller's answer.
+   * @param {unknown} error
+   */
+  const retryable = (error) =>
+    error instanceof DataPlaneTimeout || (REPEATABLE_METHODS.has(method) && connectionLost(error));
   /** One try: the signal is per-attempt, so the retry gets its own full window.
    * @param {number} number
    * @returns {Promise<Response>}
@@ -77,7 +133,7 @@ export async function fetchWithTimeoutAndRetry(fetchImpl, input, init = {}, opti
   try {
     first = await attempt(1);
   } catch (error) {
-    if (!(error instanceof DataPlaneTimeout)) {
+    if (!retryable(error)) {
       throw error;
     }
     await pause(RETRY_DELAY_MS + Math.floor(Math.random() * RETRY_DELAY_MS));
