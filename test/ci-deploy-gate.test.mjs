@@ -53,7 +53,7 @@ test("the go job still runs the two-device conflict proof, then the gate", () =>
   const body = next ? rest.slice(0, 1 + next.index) : rest;
   assert.match(
     body,
-    /- name: Two-device conflict proof, then no fixture outlives its run\n {8}run: go test \.\/cmd\/drive\/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s && node --test test\/leftover-fixtures\.test\.mjs\n/,
+    /- name: Two-device conflict proof, then no fixture outlives its run\n {8}run: go test \.\/cmd\/drive\/ -run TestTwoDevicesKeepBothSaves -v -timeout 420s && node --test test\/leftover-fixtures\.test\.mjs\n/,
   );
   const step = body.slice(body.indexOf("- name: Two-device conflict proof"));
   const stepEnd = step.search(/\n {6}- /);

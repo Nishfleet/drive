@@ -302,8 +302,14 @@ jobs:
       # The gate runs after every proof above, on the host that ran them: a
       # fixture that outlives its test is a leak the next run inherits, and a
       # green suite never says so (drive#868).
+      # The timeout is above the waits the proof itself makes: two 30s mounts,
+      # then a 90s storage wait and a 20s mount wait on each of two devices, for
+      # two save windows, is 320s. A shorter timeout kills the proof mid-wait
+      # ("Test killed with quit: ran too long", run 40849567702 on PR #1096) and
+      # the run goes red for a reason the pull request did not cause.
+      # test/proof-timeout-budget.test.mjs fails if this drops under that budget.
       - name: Two-device conflict proof, then no fixture outlives its run
-        run: go test ./cmd/drive/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s && node --test test/leftover-fixtures.test.mjs
+        run: go test ./cmd/drive/ -run TestTwoDevicesKeepBothSaves -v -timeout 420s && node --test test/leftover-fixtures.test.mjs
 
   private-detail-scan:
     name: Private detail scan
