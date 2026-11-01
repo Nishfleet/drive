@@ -42,11 +42,12 @@ Nothing here runs on its own except the workflows named in each section.
   `CF_ACCESS_CLIENT_SECRET` are set on the `production` environment the
   health half is skipped with a warning on the run.
 
-## Restore a database to the deploy's bookmark
+## Restore a database to the moment before a deploy
 
-Before any migration, the deploy captures each database's Time Travel
-bookmark, prints it in the run log and the step summary ("restore point for
-waitlist (bookmark): …"). The bookmark is the point a restore returns to.
+D1 Time Travel restores a database to any minute inside its retention window.
+The restore point is the start time of the deploy run whose migration went
+wrong: copy it from the run page as an ISO 8601 UTC time, for example
+`2026-11-01T14:17:00Z`.
 
 **Warning: a restore rewrites the live database back to that moment, and
 writes made since are gone.** It is destructive and it is Nish's call, on a
@@ -56,22 +57,21 @@ fresh export first (see the next section).
    (`d1-backup-waitlist` or `d1-backup-drive`) so the pre-restore state is also
    saved. The drive database has no dump in its artifact while the weekly run
    is red on it (see "The weekly backup"), so a drive restore has no copy
-   beyond the bookmark itself.
+   beyond Time Travel itself.
 2. Preview the restore (harmless):
 
    ```sh
-   npx cf d1 time-travel restore <database-id> --bookmark <bookmark> --dry-run
+   npx cf d1 time-travel restore <database-id> --timestamp <deploy-start-time> --dry-run
    ```
 
 3. Run it for real:
 
    ```sh
-   npx cf d1 time-travel restore <database-id> --bookmark <bookmark> --force
+   npx cf d1 time-travel restore <database-id> --timestamp <deploy-start-time> --force
    ```
 
 Database ids: waitlist `93c9f523-159c-4261-8541-d4c059906df3`, drive
-`0f636b57-4a2e-482a-bf40-8aa315e2403e` — the same ids the deploy bookmarks
-and migrates.
+`0f636b57-4a2e-482a-bf40-8aa315e2403e` — the same ids the deploy migrates.
 
 ## Undo a migration
 
@@ -81,8 +81,8 @@ escapes, cheapest first:
 1. **A forward-fix migration.** If the migration landed but the code that
    reads it did not, or the shape is wrong in a small way, write a new
    migration that corrects the shape and let it apply on the next deploy.
-2. **The bookmark restore** above, when the data itself is wrong and no
-   forward fix is clean. A restore to the pre-migration bookmark undoes the
+2. **The Time Travel restore** above, when the data itself is wrong and no
+   forward fix is clean. A restore to the pre-deploy time undoes the
    migration's writes and everything after them, so it also undoes the
    deploy — restore the database, then redeploy the previous good commit.
 3. Never edit an applied migration file in place: D1's migrations table has
@@ -144,7 +144,7 @@ Restore from a dump:
 
 1. Download the artifact for that database from the run's summary page. While
    the drive job is red there is no drive dump to download (see above), so a
-   drive restore goes through the Time Travel bookmark in the previous
+   drive restore goes through the Time Travel restore in the previous
    section.
 2. The monthly restore drill does exactly this for every database in the
    matrix, on the fleet host where the private key already lives: it takes the

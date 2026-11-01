@@ -23,11 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - &node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           cache: npm
@@ -54,9 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+      - *checkout
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0  # zizmor: ignore[cache-poisoning]
         with:
           go-version: "1.24"
@@ -89,10 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
+      - *checkout
       - name: Scan the commits this pull request adds
         env:
           GITLEAKS_VERSION: 8.30.1
@@ -102,3 +99,24 @@ jobs:
           curl -fsSL -o gl.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "$GITLEAKS_SHA256  gl.tgz" | sha256sum -c - && tar -xzf gl.tgz gitleaks && rm gl.tgz
           ./gitleaks git . --config .github/gitleaks-private-detail.toml --log-opts "$RANGE" --redact --exit-code 2 --no-banner
+
+  # The owner's last gate: a preview link on every PR (fleet-ops#10935), Cloudflare's own preview command.
+  preview:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+    steps:
+      - *checkout
+      - *node
+      - run: npm ci
+      - run: npm run docs:build
+      - name: Deploy the preview, and fail when Cloudflare gives no link
+        run: |
+          npx cf previews deploy "pr-$PR" | tee "$RUNNER_TEMP/preview.out"
+          grep -m1 -oE 'https://pr-[0-9]+-[a-z0-9.-]+' "$RUNNER_TEMP/preview.out" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
