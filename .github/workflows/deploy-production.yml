@@ -6,7 +6,6 @@ on: # zizmor: ignore[dangerous-triggers] only CI on a main push reaches the job,
     workflows: [CI]
     types: [completed]
     branches: [main]
-  workflow_dispatch: {}
 
 concurrency:
   group: deploy-production
@@ -18,9 +17,7 @@ permissions:
 jobs:
   deploy:
     name: deploy
-    if: >-
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     environment:
       name: production
@@ -28,7 +25,7 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,7 +45,9 @@ jobs:
           DRIVE_CF_BEACON_TOKEN: ${{ vars.DRIVE_CF_BEACON_TOKEN }}
       - name: Remember the live Worker version (the rollback target)
         id: live
-        run: echo "version_id=$(npx cf workers deployments list --worker drive-pricing --per-page 1 --quiet | jq -er '.deployments[0].versions[] | select(.percentage == 100) | .version_id')" >> "$GITHUB_OUTPUT"
+        run: |
+          vid=$(npx cf workers deployments list --worker drive-pricing --per-page 1 --quiet | jq -er '.deployments[0].versions[] | select(.percentage == 100) | .version_id')
+          echo "version_id=$vid" | tee -a "$GITHUB_OUTPUT"
       - name: Apply D1 migrations (drive#170; Time Travel restores a bad one, docs/runbook.md)
         run: |
           npx cf d1 migrations apply 93c9f523-159c-4261-8541-d4c059906df3 --dir migrations/waitlist
@@ -67,6 +66,12 @@ jobs:
             code=$(curl -s -o /dev/null -w '%{http_code}' "$u")
             [[ $code != 200 && $code != 302 ]]
           done
+      - name: The new site Worker version is the one serving (drive#520)
+        run: |
+          vid=$(npx cf workers deployments list --worker drive-pricing --per-page 1 --quiet | jq -er '.deployments[0].versions[] | select(.percentage == 100) | .version_id')
+          test "$vid" != "$OLD"
+        env:
+          OLD: ${{ steps.live.outputs.version_id }}
       - name: Roll back the site Worker (drive#520)
         if: failure() && steps.live.outputs.version_id != ''
         run: |
