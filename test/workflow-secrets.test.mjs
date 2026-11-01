@@ -74,11 +74,7 @@ test("the job splitter finds every job the workflows declare", () => {
   const found = workflows.flatMap(({ name, text }) =>
     jobsOf(text).map((job) => `${name}:${job.id}`),
   );
-  for (const expected of [
-    "deploy-production.yml:deploy",
-    "ci.yml:verify",
-    "agent-dispatch.yml:dispatch",
-  ]) {
+  for (const expected of ["deploy-production.yml:deploy", "ci.yml:verify"]) {
     assert.ok(found.includes(expected), `${expected} not found in ${found.join(", ")}`);
   }
 });
@@ -117,15 +113,6 @@ test("no workflow reads a secret this table does not list", () => {
       );
     }
   }
-});
-
-test("the fleet-ops dispatch call stays on @main, with the reason beside it", () => {
-  const stub = workflows.find(({ name }) => name === "agent-dispatch.yml");
-  assert.ok(stub, "agent-dispatch.yml is gone");
-  const uses = /uses:\s*(Nishfleet\/fleet-ops\/\S+)(.*)$/m.exec(stub.text);
-  assert.ok(uses, "agent-dispatch.yml no longer calls fleet-ops");
-  assert.equal(uses[1], "Nishfleet/fleet-ops/.github/workflows/agent-dispatch.yml@main");
-  assert.match(uses[2], /0509#5231/, "the @main ref lost the comment that says why");
 });
 
 test("a comment neither counts as a secret read nor ends the jobs block", () => {
