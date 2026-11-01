@@ -1,18 +1,7 @@
-# The agent eval on a clock (drive#526).
-#
-# Until this file the eval never ran in CI: a run needs the held-out split
-# and the fleet proxy, both of which live on the own VPS runners, and it
-# spends the fleet's eval budget. This job runs the full `npm run
-# eval:agents` against the held-out split, records the held-out score per
-# provider in the run summary, and fails when a provider's score is under
-# the pass bar. deploy-production.yml reads the newest completed run on
-# main: a red score blocks the next release. Run it by hand
-# (workflow_dispatch) for a release that cannot wait for the Monday run.
 name: Agent eval
 
 on:
   schedule:
-    # Mondays 03:20 UTC. Off the hour: the runner's own crons bunch at :00.
     - cron: "20 3 * * 1"
   workflow_dispatch: {} # a release that cannot wait for the Monday run
 
@@ -24,6 +13,7 @@ concurrency:
   cancel-in-progress: false # a run records the score the release gate reads
 
 jobs:
+  # Weekly agent eval; deploy-production reads its score (drive#526).
   held-out:
     name: held-out split and pass bar
     runs-on: { group: drive-eval } # one runner holds the split and the worker key, with its own rootless podman (fleet-ops#9983)
@@ -36,8 +26,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-          # No cache on own runners (same as ci.yml): npm's cache is already
-          # on this disk.
           package-manager-cache: false
       - run: npm ci
       - name: Install the pinned eval tools (promptfoo and the Inspect venv)
@@ -45,18 +33,9 @@ jobs:
           npm ci --prefix evals/agents
           npm run eval:agents:install
       - name: Run the eval on the held-out split
-        # The split and the worker key live on the runner host, outside the
-        # repo: the split so the hill-climber (#223) cannot read it from a
-        # checkout, the key so no secret sits in this file. The key is read
-        # into the one env var the eval tools read and is never printed.
-        # The end-state suite runs in its compose.yaml sandbox on the runner's rootless podman (DOCKER_HOST, fleet-ops#9983);
-        # Inspect fails the run when that engine is down instead of falling back to a shell on the host (drive#526).
         run: |
           OPENAI_API_KEY="$(<"$HOME/.config/fleet-ops/litellm-keys/worker")"
           export OPENAI_API_KEY
-          # Not a prefix chain (OPENAI_API_KEY="$K" FLEET_API_KEY="$OPENAI_API_KEY"):
-          # a prefix expansion sees the variable's old value, so the fleet
-          # model's key would read empty (shellcheck SC2097/SC2098).
           FLEET_API_KEY="$OPENAI_API_KEY"
           export FLEET_API_KEY
           export FLEET_BASE_URL="http://127.0.0.1:4000/v1" PROMPTFOO_FAILED_TEST_EXIT_CODE=0
@@ -65,11 +44,6 @@ jobs:
           npm run eval:agents
       - name: Score the held-out split against the pass bar
         env:
-          # A provider clears the bar at nine in ten held-out answers. The
-          # 2026-10-03 scores sit at 97.92% (cheap) and 95.83% (capable), so
-          # the bar passes today's pair and one flaky answer, and a whole
-          # grader or price regression — six tasks of sixteen grading the
-          # wrong figure — craters far below it.
           HELDOUT_PASS_BAR: "90"
         run: |
           node -e '
