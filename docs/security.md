@@ -7,50 +7,13 @@ with write access here, and how each download that CI executes is pinned
 
 ## Who can write here
 
-- **fleet-ops writers are drive writers.** `.github/workflows/agent-dispatch.yml`
-  calls `Nishfleet/fleet-ops/.github/workflows/agent-dispatch.yml@main` on
-  issue, comment, pull-request-target, CI-finished and hourly events. Whatever
-  fleet-ops `main` holds at that moment runs on the self-hosted runners with
-  `issues: write`, `pull-requests: write` and `contents: write` on this
-  repository. So anyone who can merge to fleet-ops `main` can act on this
-  repository with those powers.
-- **Why the call is not pinned by SHA.** Runner group 3 admits only fleet-ops
-  workflows at `@main`. A SHA pin here drifts from `agent.yml@main` and strands
-  every dispatched job (Nishfleet/0509#5231). `test/workflow-secrets.test.mjs`
-  records the same decision.
-- **Why `contents: write` stays.** A called workflow cannot hold more than its
-  caller grants, and two fleet-ops jobs need it: `hold-risky` dequeues a risky
-  PR from the merge queue, and the close job deletes a closed PR's branch
-  (`gh pr close --delete-branch`, fleet-ops#8457). Neither job checks out code,
-  so the write token never meets PR head code. If fleet-ops drops both, drop
-  `contents: write` from the stub too.
-- **What limits the risk.** Both `main` branches are protected, and
-  fleet-ops is Nish's own repository.
+- **Only drive writers write here.** No workflow calls code from another
+  repository; every merge goes through the `main gate` ruleset and its merge queue.
 - **What a stranger can read.** Both repositories are public, so every
   workflow, run log and artifact here is readable by anyone. The weekly backup
   seals each dump with `age` before upload for that reason (`d1-export.yml`):
   a database dump is customer data, and only its ciphertext leaves the
   runner.
-
-## Switching the dispatch stub off
-
-Delete `.github/workflows/agent-dispatch.yml` and merge to turn off
-everything. fleet-ops' own workflows keep running on fleet-ops; nothing
-reaches this repository. To turn off only the hourly sweep, delete the two
-`schedule:` lines and its comment (the `- cron: '17 * * * *'` entry) from the
-stub and merge: every event trigger stays.
-
-`test/dispatch-stub.test.mjs` holds the stub to this documented boundary:
-
-- The stub declares exactly these triggers: `issues`, `issue_comment`,
-  `workflow_dispatch`, `pull_request_target`, `workflow_run`, `schedule`.
-- The stub grants the called workflow: `issues: write`, `pull-requests: write`,
-  `contents: write`, `actions: read`, `checks: read`, `statuses: read`. The
-  caller itself holds `contents: read`.
-
-The un-pinned `@main` call means the fleet-ops `main` of the moment decides
-what runs here — its own merge gates are the review, as "Who can write here"
-above states.
 
 ## Downloads that CI runs
 
