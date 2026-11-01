@@ -1,5 +1,20 @@
+# Deploy the drive-pricing Worker only after CI passed on that main commit.
+#
+# drive#499: a push to main used to deploy even when the same commit's CI was
+# red (CI run 37254363049 failed, deploy 37254362979 on 2f62b7a succeeded).
+# GitHub's `workflow_run` on CI's conclusion is the stock gate: the job runs
+# only when CI on a main push succeeded, and it ships the commit CI tested
+# without re-running CI. It builds, ships, checks the live Worker version and
+# health, and rolls the Worker version back when that check fails.
+#
+# drive#132: the old caller pointed at nish3451/shared-workflows (archived),
+# which had no deploy target for drive and waited on every main-SHA check, so
+# merging never shipped the site. This is 0509's plain deploy job, on `cf`.
 name: Deploy production
 
+# zizmor's dangerous-triggers flags workflow_run because a fork's PR run can
+# reach secrets through it. This one is limited to CI on a main push (the job
+# `if` below), and it checks out the commit CI tested, never PR code.
 on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     workflows: [CI]
@@ -16,23 +31,34 @@ permissions:
   actions: read # the main-head step below reads CI's runs
 
 jobs:
-  # Deploy on merge after CI is green on main (drive#499); rolls back if the site opens before launch.
   deploy:
     name: deploy
+    # A red, cancelled or skipped CI run never matches. `event == 'push'` keeps
+    # a merge-queue or pull-request CI run from deploying. A hand start deploys
+    # main only, so a branch that never passed CI cannot reach production.
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
+    # A job with an environment gets a GitHub Deployment and deployment_status
+    # events for free. No `url` while the site has no public address.
     environment:
       name: production
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # workflow_run's GITHUB_SHA is the main tip when the event fired, not
+          # the commit CI tested. Ship the tested commit.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - name: Ship only a CI-green main head
+        # A rerun of an old CI run, or a hand start on a red main, must not
+        # ship. The commit must still be main's head, and CI must have passed
+        # on it. A push's trigger already carries that proof, so only a start
+        # by hand reads the run list (drive#1046). A stale commit stops here,
+        # because the newer commit's own CI run deploys that one.
         run: |
           head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
           test "$SHA" = "$head" || { echo "::error::$SHA is no longer main's head ($head)"; exit 1; }
@@ -44,6 +70,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Ship only an agent score above the pass bar
+        # drive#526: agent-eval.yml records the held-out score on a schedule.
+        # A release ships only while the newest completed eval run on main is
+        # green; a red score stops the deploy here. The gate arms itself with
+        # the first completed run: until then it warns instead of failing, so
+        # merging the gate itself never wedges deploys. A run in progress is
+        # also a pass here — the next deploy after it completes reads its
+        # score. A run by hand (workflow_dispatch) records a fresh score for
+        # a release that cannot wait for Monday.
         run: |
           latest=$(gh run list -R "$GITHUB_REPOSITORY" --workflow agent-eval.yml --branch main --limit 1 --json status,conclusion,createdAt --jq '.[0] // empty | "\(.status) \(.createdAt) \(.conclusion // "none")"')
           if [ -z "$latest" ]; then
@@ -54,6 +88,9 @@ jobs:
               echo "::error::the newest agent eval run on main concluded $conclusion (a score under the pass bar, or a run that could not score); its run summary says which, and the release stops here (drive#526)"
               exit 1
             fi
+            # A green score goes stale when the weekly clock stops (a runner
+            # offline, the schedule disabled): fail loud after two missed
+            # Mondays instead of shipping on an old score.
             age_days=$(( ($(date +%s) - $(date -d "$created" +%s)) / 86400 ))
             if [ "$age_days" -gt 14 ]; then
               echo "::error::the newest agent eval run on main is $age_days days old; run agent-eval.yml by hand (workflow_dispatch) for a fresh score (drive#526)"
@@ -70,8 +107,31 @@ jobs:
       - run: npm ci
       - run: npm run build
         env:
+          # A repository variable, not a secret: the token is in every visitor's
+          # HTML once the build writes it. Unset ships no beacon (drive#646).
           DRIVE_CF_BEACON_TOKEN: ${{ vars.DRIVE_CF_BEACON_TOKEN }}
       - name: Warn when there is no sender (drive#522)
+        # Every customer email goes through MAIL_FROM (src/email-send.js). With
+        # it unset, close receipts, reminders and the welcome failed at the
+        # customer's click while every deploy stayed green (drive#522). This
+        # step makes that loud on every run, before any migration or ship. It
+        # reads the secret NAMES the Worker has, never a value.
+        # Until launch a missing sender is a ::warning:: and the deploy goes
+        # on, because drive is pre-launch and a block would stop every deploy
+        # until drive#667 sets MAIL_FROM. drive#752 turns it back into a block
+        # before the first paying customer. /api/health reports the same gap
+        # as "email":"not-ready", and the close and sign-in routes still
+        # report the missing sender by name rather than fail silently.
+        # drive#10727: both Workers that ship in this job are read, because the
+        # api Worker's deploy read nothing at all: its sign-in mail throws on
+        # the empty sender and no device-approval mail goes out (drive#1088).
+        # The same pass covers BETTER_AUTH_URL, the address readyForAuth needs
+        # beside the secret: with it unset authFor returns no instance
+        # (core/auth.js) and every account route answers as signed out instead
+        # of failing loudly. A missing address is a warning for the reason
+        # above, and drive#752 turns both into blocks.
+        # A CLI or parse failure is still an error, reported as itself, never
+        # as a missing setting.
         run: |
           for worker in drive-pricing drive-api; do
             names=$(npx cf workers secrets list --worker "$worker" --quiet) || { echo "::error::could not list the secret names on $worker; the cf error is above"; exit 1; }
@@ -84,6 +144,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Remember the live Worker version
+        # The rollback target. The first deployment in the list is the one
+        # serving traffic. D1 sits outside the Worker version, so a rollback
+        # restores code only.
         id: live
         run: |
           vid=$(npx cf workers deployments list --worker drive-pricing --per-page 1 --quiet |
@@ -95,6 +158,14 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Record the D1 restore point
+        # A migration is one-way: D1 has no down-migrations, and the databases
+        # sit outside the Worker version a rollback restores (drive#520). So
+        # before the first `cf d1 migrations apply` this captures each
+        # database's Time Travel bookmark and prints it on the run and the
+        # step summary — the point a `cf d1 time-travel restore --bookmark`
+        # returns to (docs/runbook.md has the steps; running one is Nish's).
+        # A failed capture fails the deploy here, before any migration ran:
+        # no restore point, no migration.
         id: bookmark
         run: |
           headers="$RUNNER_TEMP/d1-headers"
@@ -113,6 +184,11 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Apply D1 migrations
+        # The databases live outside the Worker version, so their migrations
+        # apply before the code that reads the new tables ships (drive #170,
+        # #178). One directory per database, matching the bindings in
+        # cloudflare.config.ts. `cf d1 migrations apply` takes the database
+        # id; it rejects names and binding names.
         run: |
           npx cf d1 migrations apply 93c9f523-159c-4261-8541-d4c059906df3 --dir migrations/waitlist
           npx cf d1 migrations apply 0f636b57-4a2e-482a-bf40-8aa315e2403e --dir migrations/drive
@@ -120,16 +196,28 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy the api Worker
+        # drive#342: the api Worker ships first, from the same build output
+        # (`npm run build` writes .cloudflare/output/v0/workers/drive-api).
+        # The site Worker's `API` service binding (cloudflare.config.ts) names
+        # it, and Cloudflare fails a deploy whose binding has no target, so
+        # the order is the point. drive-api has no workers.dev address of its
+        # own; it is reached only through the site Worker, behind Access.
         run: npx cf deploy --prebuilt --worker drive-api
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy the Worker
+        # `npm run build` (cf build) already wrote .cloudflare/output, so
+        # --prebuilt uploads that output instead of building a second time.
         run: npx cf deploy --prebuilt
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Check the site stayed private
+        # The site answers only on storagebun.com, behind Cloudflare Access
+        # (cloudflare.config.ts): a stranger gets the Access sign-in, and the
+        # redirect must name our Access team host exactly, so a lookalike URL
+        # cannot pass (drive #159).
         run: |
           out=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://storagebun.com/)
           echo "storagebun.com answered: ${out%%\?*}"
@@ -137,18 +225,26 @@ jobs:
             "302 https://nish345.cloudflareaccess.com/"* | "302 https://storagebun.cloudflareaccess.com/"*) ;;
             *) echo "::error::storagebun.com is reachable without the Access sign-in"; exit 1 ;;
           esac
+          # The api family is behind the same gate (drive#342): /v1/* on the
+          # site redirects to Access, and drive-api has no address of its own.
           v1=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://storagebun.com/v1/health)
           echo "/v1/health answered: ${v1%%\?*}"
           case "$v1" in
             "302 https://nish345.cloudflareaccess.com/"* | "302 https://storagebun.cloudflareaccess.com/"*) ;;
             *) echo "::error::the api family is reachable without the Access sign-in"; exit 1 ;;
           esac
+          # Neither Worker answers on workers.dev (audit item C3, drive#342).
           for u in https://drive-pricing.nishant345.workers.dev/ https://drive-api.nishant345.workers.dev/v1/health; do
             code=$(curl -s -o /dev/null -w '%{http_code}' "$u")
             echo "workers.dev answered: $code ($u)"
             case "$code" in 200 | 302) echo "::error::$u still answers on workers.dev"; exit 1 ;; esac
           done
       - name: Check the live Worker version and health
+        # The new version must be the one serving, and /api/health must answer
+        # {"ok":true}. Access answers a runner with a 302, so the health call
+        # needs an Access service token (drive#520). Until that token is on
+        # the production environment the health call is skipped with a
+        # warning on the run, and the version check still gates.
         id: smoke
         run: |
           vid=$(npx cf workers deployments list --worker drive-pricing --per-page 1 --quiet |
@@ -159,6 +255,7 @@ jobs:
             echo "::warning::health not checked: no Access service token on the production environment (drive#520)"
             exit 0
           fi
+          # The token goes to curl in a private file, never in its arguments.
           headers="$RUNNER_TEMP/access-headers"
           trap 'rm -f "$headers"' EXIT
           (umask 077 && printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' \
@@ -168,6 +265,8 @@ jobs:
           printf '%s' "$body" | node -e 'if(JSON.parse(require("fs").readFileSync(0,"utf8")).ok!==true)process.exit(1)' ||
             { echo "::error::/api/health is not ok: $body"; exit 1; }
           echo "health ok"
+          # The email part is reported beside ok, never as it (drive#522), so
+          # a live drive that cannot send mail is a warning here, not a rollback.
           if printf '%s' "$body" | node -e 'process.exit(JSON.parse(require("fs").readFileSync(0,"utf8")).email==="not-ready"?0:1)'; then
             echo "::warning title=Email not ready::/api/health reports email not-ready: customer email fails until MAIL_FROM is set (drive#667, drive#752)"
           fi
@@ -178,6 +277,10 @@ jobs:
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           PREVIOUS_VERSION: ${{ steps.live.outputs.version_id }}
       - name: Roll back the Worker version
+        # Stock Workers rollback: a new deployment of the previous version at
+        # 100%. Runs when any step after the live version was read failed,
+        # including a deploy that timed out after Cloudflare took the upload.
+        # When the old version is still live this changes nothing.
         if: failure() && steps.live.outcome == 'success'
         run: |
           npx cf workers deployments create --worker drive-pricing --strategy percentage \
