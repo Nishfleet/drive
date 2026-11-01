@@ -120,7 +120,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run docs:build
-      - run: npx cf previews deploy "pr-$PR" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Deploy the preview, and fail when Cloudflare gives no link
+        run: |
+          npx cf previews deploy "pr-$PR" | tee "$RUNNER_TEMP/preview.out"
+          grep -m1 -oE 'https://pr-[0-9]+-[a-z0-9.-]+' "$RUNNER_TEMP/preview.out" >> "$GITHUB_STEP_SUMMARY"
         env:
           PR: ${{ github.event.pull_request.number }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
