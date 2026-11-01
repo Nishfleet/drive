@@ -74,10 +74,7 @@ test("the job splitter finds every job the workflows declare", () => {
   const found = workflows.flatMap(({ name, text }) =>
     jobsOf(text).map((job) => `${name}:${job.id}`),
   );
-  for (const expected of [
-    "deploy-production.yml:deploy",
-    "ci.yml:verify",
-  ]) {
+  for (const expected of ["deploy-production.yml:deploy", "ci.yml:verify"]) {
     assert.ok(found.includes(expected), `${expected} not found in ${found.join(", ")}`);
   }
 });
