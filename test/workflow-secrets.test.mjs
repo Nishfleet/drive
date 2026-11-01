@@ -7,7 +7,7 @@ const workflows = readdirSync(dir)
   .filter((name) => /\.ya?ml$/.test(name))
   .map((name) => ({ name, text: readFileSync(new URL(name, dir), "utf8") }));
 
-// Deploy credentials: read only in a job whose environment is `production`.
+// Deploy credentials: read only in a job whose environment is `production` or `preview`.
 const DEPLOY_SECRETS = new Set([
   "CLOUDFLARE_API_TOKEN",
   "CLOUDFLARE_ACCOUNT_ID",
@@ -96,10 +96,9 @@ test("every deploy secret is read only in a job bound to the production environm
       const deploy = secretsRead(job.body.join("\n")).filter((s) => DEPLOY_SECRETS.has(s));
       reads += deploy.length;
       if (deploy.length === 0) continue;
-      assert.equal(
-        environmentOf(job.body),
-        "production",
-        `${name} job ${job.id} reads ${deploy.join(", ")} without environment: production`,
+      assert.ok(
+        ["production", "preview"].includes(environmentOf(job.body) ?? ""),
+        `${name} job ${job.id} reads ${deploy.join(", ")} without environment: production or preview`,
       );
     }
   }

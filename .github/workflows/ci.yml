@@ -24,28 +24,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # drive#660: which jobs a pull request's files can affect, read by the
-  # stock dorny/paths-filter from the PR's file list (the API, no checkout).
-  # It runs only on pull_request. On merge_group and on a push to main it is
-  # skipped, and every job below treats a `changes` that did not succeed as
-  # "run everything", so the merge queue always runs the whole suite and a
-  # mis-filed path costs a queue bounce, never a broken main.
-  #
-  # Skipping is job-level `if:`, never a workflow-level `paths:` filter: a job
-  # skipped by `if:` reports success to the required `verify` and `go` checks,
-  # while a workflow that never starts leaves them pending (drive#499).
-  #
-  # The `every` filters are negations: a file counts unless it is in a listed
-  # area, so a path nobody classified runs the job. The `_extra` filters list
-  # the files inside those areas that the job still reads. A job skipped here
-  # still gets a full run in the merge queue, so a mis-filed path costs a
-  # queue bounce, never unchecked code on main (drive#867). Skipping is
-  # job-level `if:` only: inside a running job, a repeated step `if:` is dead
-  # code. Both jobs carry the attribution step, so every pull request keeps
-  # one of them — except files under docs/design and docs/research that no
-  # test executes, the one hole main already has, pinned in
-  # test/ci-deploy-gate.test.mjs (drive#867).
-
+  # drive#660, drive#867: skip the jobs a PR's files cannot affect; the merge
+  # queue always runs everything.
   changes:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -185,13 +165,7 @@ jobs:
           install -D -m 0755 "rclone-$PINNED_RCLONE_VERSION-linux-amd64/rclone" "$RUNNER_TEMP/bin/rclone"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/bin/rclone" version
-      # web-speed (drive#225): LHCI asserts the lighthouserc.json budgets
-      # against the pages as built (`npm run build` writes the same
-      # static-asset bundle the deploy uploads), so a page that gets worse
-      # fails this job: a budget is a ratchet, not a note. Lowering a number
-      # locks in a speed win; raising one needs a measurement in the PR body.
-      # Pinned container, not node_modules: @lhci/cli 0.15.1's dependency
-      # chain carries high npm advisories with no fix (drive#581).
+      # web-speed (drive#225): Lighthouse budgets on the built pages.
       - name: Build the site
         if: >-
           needs.changes.result != 'success' ||
@@ -208,12 +182,6 @@ jobs:
           -v "$PWD:/w" -w /w
           patrickhulce/lhci-client:0.15.1@sha256:558210c5e422a7babaaa09c285b7469da3f00fac1a9880c37883c65d666a7fc9
           lhci autorun --collect.settings.chromeFlags="--no-sandbox --headless=new"
-      # drive#759: a named step beside `npm test`, which already runs the same
-      # checks via pretest (`npm run check`: tsc --noEmit, regenerating
-      # .cloudflare/types, then biome check). One extra step, about three
-      # seconds, so a red run names the tool that turned it red; same
-      # job-level gate as `npm test`. No --write and no --fix, ever: the job
-      # fails on the diff it was given rather than fixing and pushing on.
       - name: Typecheck and Biome
         run: npm run check
       - run: npm test
@@ -318,6 +286,38 @@ jobs:
       # green suite never says so (drive#868).
       - name: Two-device conflict proof, then no fixture outlives its run
         run: go test ./cmd/drive/ -run TestTwoDevicesKeepBothSaves -v -timeout 300s && node --test test/leftover-fixtures.test.mjs
+
+  # The owner clicks a preview link as the last gate of every PR
+  # (fleet-ops#10935). `cf previews deploy` is Cloudflare's own preview command
+  # (cf has no GitHub Action, and Wrangler is off-limits by standing rule).
+  # One stable link per PR; the preview has the pages and no data
+  # (cloudflare.config.ts), and the "Storagebun previews" Access app keeps it
+  # team-only. Skipped in the merge queue, which GitHub counts as passing.
+  preview:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: preview
+      url: ${{ steps.preview.outputs.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run docs:build
+      - id: preview
+        run: |
+          npx cf previews deploy "pr-$PR" > "$RUNNER_TEMP/preview.json"
+          echo "url=$(jq -r '.preview_urls[0]' "$RUNNER_TEMP/preview.json")" >> "$GITHUB_OUTPUT"
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   private-detail-scan:
     name: Private detail scan

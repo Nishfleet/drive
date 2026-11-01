@@ -172,11 +172,11 @@ esac
   assert.match(stale.out.stdout, /bbb222 is no longer main's head/);
 });
 
-test("the site Worker names storagebun.com and has no workers.dev address", () => {
+test("the site Worker names storagebun.com, has no workers.dev address, and serves previews", () => {
   const config = read("cloudflare.config.ts");
   assert.match(config, /domains:\s*\[\s*"storagebun.com"\s*\]/);
   assert.match(config, /workersDev:\s*false/);
-  assert.match(config, /previewUrls:\s*false/);
+  assert.match(config, /previewUrls:\s*true/);
 });
 
 test("the deploy checks the live version and health, and rolls back on failure", () => {
