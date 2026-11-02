@@ -37,12 +37,17 @@ export function pdfString(text) {
  * @returns {string[]}
  */
 function wrap(text, columns) {
-  return text.split(" ").reduce((/** @type {string[]} */ lines, word) => {
+  /** @type {string[]} */
+  const lines = [];
+  for (const word of text.split(" ")) {
     const last = lines.length - 1;
-    return last >= 0 && lines[last].length + 1 + word.length <= columns
-      ? [...lines.slice(0, last), `${lines[last]} ${word}`]
-      : [...lines, word];
-  }, []);
+    if (last >= 0 && lines[last].length + 1 + word.length <= columns) {
+      lines[last] = `${lines[last]} ${word}`;
+    } else {
+      lines.push(word);
+    }
+  }
+  return lines;
 }
 
 /**

@@ -525,8 +525,10 @@ export function monthBillCents(month) {
   const meteredMillicentsBig = (size30Bytes * rateMillicentsPerGb) / BigInt(BYTES_PER_GB);
   const tbBytes = BigInt(GB_PER_TB) * BigInt(BYTES_PER_GB);
   const maxMillicentsPerTb = BigInt(config.maxUsdPerTb) * 100n * BigInt(MILLICENTS_PER_CENT);
+  // biome-ignore lint/complexity/useMathMinMax: both operands are BigInt, and Math.max throws on BigInt
   const sizeForMax = size30Bytes > tbBytes ? size30Bytes : tbBytes;
   const maximumMillicentsBig = (maxMillicentsPerTb * sizeForMax) / tbBytes;
+  // biome-ignore lint/complexity/useMathMinMax: both operands are BigInt, and Math.min throws on BigInt
   const storageMillicentsBig =
     meteredMillicentsBig < maximumMillicentsBig ? meteredMillicentsBig : maximumMillicentsBig;
   const meteredMillicents = millicentsNumber(meteredMillicentsBig, "meteredMillicents");
