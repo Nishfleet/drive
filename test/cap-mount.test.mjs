@@ -109,7 +109,11 @@ async function startMount(rcloneBin, workDir, cred) {
   const mountDir = path.join(workDir, "Drive");
   const cacheDir = path.join(workDir, "cache");
   const logPath = path.join(workDir, "rclone.log");
+  // rclone's remote control on a socket, so the proof can ask the mount for
+  // its own upload queue (rc `vfs/queue`) instead of guessing with a sleep.
+  const rcSocket = path.join(workDir, "rc.sock");
   await run("mkdir", ["-p", mountDir, cacheDir]);
+  await rm(rcSocket, { force: true });
   const child = spawnTracked(
     rcloneBin,
     [
@@ -125,6 +129,9 @@ async function startMount(rcloneBin, workDir, cred) {
       "--log-level",
       "INFO",
       "--allow-non-empty",
+      "--rc",
+      "--rc-addr",
+      `unix://${rcSocket}`,
       ...MOUNT_FLAGS,
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
@@ -146,7 +153,7 @@ async function startMount(rcloneBin, workDir, cred) {
     }
     try {
       await run("findmnt", ["-n", "-M", mountDir]);
-      return { mountDir, cacheDir, logPath, child };
+      return { mountDir, cacheDir, logPath, rcSocket, child };
     } catch {
       if (Date.now() > deadline) {
         child.kill("SIGTERM");
@@ -157,6 +164,31 @@ async function startMount(rcloneBin, workDir, cred) {
       }
       await sleep(400);
     }
+  }
+}
+
+/**
+ * Wait until the mount's rclone holds `name` in its upload queue in the state
+ * `ready` wants, read from rclone's own rc `vfs/queue` (docs: rclone rc,
+ * "vfs/queue: Queue info for a VFS").
+ * @param {string} rcloneBin
+ * @param {{rcSocket: string}} m
+ * @param {string} name
+ * @param {(item: {tries: number, uploading: boolean}) => boolean} ready
+ * @param {number} seconds
+ */
+async function waitForQueued(rcloneBin, m, name, ready, seconds) {
+  const deadline = Date.now() + seconds * 1000;
+  for (;;) {
+    const { stdout } = await run(rcloneBin, ["rc", "--unix-socket", m.rcSocket, "vfs/queue"]);
+    const item = JSON.parse(stdout).queue?.find(
+      (/** @type {{name: string}} */ q) => q.name === name,
+    );
+    if (item && ready(item)) return item;
+    if (Date.now() > deadline) {
+      throw new Error(`rclone's upload queue never reached the state for ${name}: ${stdout}`);
+    }
+    await sleep(200);
   }
 }
 
@@ -285,6 +317,11 @@ async function proof(t, rcloneBin, workDir) {
   const pendingBody = `waiting in the VFS cache ${accountId}\n`;
   await writeFile(path.join(mount.mountDir, "pending.txt"), pendingBody);
   const pendingKey = `${prefix}/pending.txt`;
+  // close() returns before rclone handles the FUSE release, which is where it
+  // writes the file's cache record and queues the upload. Stopping rclone in
+  // that gap can cut the record short, and the next mount then drops the file
+  // (issue #1125). The queue entry is written after the record, so wait for it.
+  await waitForQueued(rcloneBin, mount, "pending.txt", () => true, 20);
 
   const capped = await handleCapRequest(
     new Request("https://drive.test/api/cap", {
@@ -314,7 +351,16 @@ async function proof(t, rcloneBin, workDir) {
     pendingBody,
     "the queued upload is still in the VFS cache after the swap",
   );
-  await sleep(8_000);
+  // Wait for the capped mount to try the queued upload and be refused, so the
+  // storage check below follows a real attempt rather than a guessed delay.
+  const refused = await waitForQueued(
+    rcloneBin,
+    mount,
+    "pending.txt",
+    (item) => item.tries >= 1 && !item.uploading,
+    30,
+  );
+  t.diagnostic(`pending.txt upload tried ${refused.tries} time(s) on the read-only key`);
   const pendingWhileCapped = await root.send("GET", { bucket: BUCKET, key: pendingKey });
   assert.notEqual(
     pendingWhileCapped.status,
