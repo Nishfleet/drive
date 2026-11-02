@@ -31,6 +31,11 @@ const OTHER_SECRETS = new Set([
   "MACOS_NOTARY_KEY",
   "MACOS_NOTARY_KEY_ID",
   "MACOS_NOTARY_ISSUER_ID",
+  // Dependabot auto-merge (GitHub's recipe): the fleet App token arms
+  // auto-merge, because GITHUB_TOKEN cannot add a pull request to the merge
+  // queue. The job checks nothing out and holds no deploy credential.
+  "NISHFLEET_WORKER_APP_ID",
+  "NISHFLEET_WORKER_PRIVATE_KEY",
 ]);
 
 /**
