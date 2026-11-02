@@ -1,2 +1,60 @@
-# Workflow and gate files need Nish's review (fleet-ops#10935).
-/.github/ @nish3451
+# The owner approves the product: anything a user can feel needs @nish3451's click after
+# trying the preview (fleet-ops#10935, 2026-11-02 "both"). Plumbing has no owner, so the
+# fleet's independent reviewer (fleet-ops review.yml) can approve it. Last match wins.
+*                           @nish3451
+
+# Plumbing: no owner.
+/.github/
+/docs/
+/*.md
+/tests/
+/test/
+/e2e/
+/evals/
+/bench/
+/package.json
+/package-lock.json
+/go.mod
+/go.sum
+/.gitignore
+/.npmrc
+/.nvmrc
+/.editorconfig
+/.prettierrc.json
+/.prettierignore
+/.pinact.yaml
+/.gitleaks.toml
+/.gitleaksignore
+/.semgrep/
+/.coderabbit.yaml
+/greptile.json
+/.lane
+/.agents/
+/.claude/
+/.compound-engineering/
+/skills-lock.json
+/.git-blame-ignore-revs
+/eslint.config.js
+/eslint-suppressions.json
+/biome.json
+/knip.json
+/knip.jsonc
+/.jscpd.json
+/stryker.conf.json
+/tsconfig*.json
+/jsconfig.json
+/vitest*.config.ts
+/vite.config.*
+/playwright.config.*
+/lighthouse*.json
+/lighthouserc.json
+
+# Still the owner's, wherever they sit: scripts (scripts-to-zero, no glue), data migrations, the rules file.
+*.sh                        @nish3451
+*.py                        @nish3451
+*.bash                      @nish3451
+*.zsh                       @nish3451
+**/bin/                     @nish3451
+**/scripts/                 @nish3451
+/migrations/                @nish3451
+/AGENTS.md                  @nish3451

@@ -1,0 +1,13 @@
+name: review
+# The fleet's independent reviewer (fleet-ops review.yml): a non-Claude seat reads the
+# diff and approves plumbing as github-actions[bot]; product paths need the owner
+# (CODEOWNERS). Nothing from the pull request runs here, so pull_request_target is safe.
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions: {}
+jobs:
+  review:
+    uses: Nishfleet/fleet-ops/.github/workflows/review.yml@main
+    permissions:
+      pull-requests: write
