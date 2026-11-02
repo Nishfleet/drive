@@ -25,7 +25,7 @@ import { cliTooOld } from "./versiongate.js";
 export { storageLocationFromEnv };
 
 export const TEST_KEY_STORE = Symbol("drive.testKeyStore");
-const missingApiStoreLogged = new WeakSet();
+const missingApiStoreLogged = new Set();
 
 /**
  * What a route in the registry carries. Shared with routes.js so the registry
@@ -439,11 +439,10 @@ function storeFor(env) {
   }
   const missing = missingProductionStore(env);
   if (missing.length > 0) {
-    if (!missingApiStoreLogged.has(env)) {
-      missingApiStoreLogged.add(env);
-      console.error(
-        `api: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not configured`,
-      );
+    const line = `api: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not configured`;
+    if (!missingApiStoreLogged.has(line)) {
+      missingApiStoreLogged.add(line);
+      console.error(line);
     }
     return null;
   }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   captureError,
@@ -437,7 +437,7 @@ test("a DSN with a path prefix and a secret key still resolves its ingest endpoi
   }
 });
 
-test("the SDK is gone from the source and the manifest, so it cannot reach the bundle", () => {
+test("the SDK stays out of the site Worker's sources, so it cannot reach its bundle", () => {
   // The whole point of #847: @sentry/cloudflare was a static import in the
   // entry every request passes through. Pin it out so a re-add is deliberate.
   const index = readIndexSource();
@@ -445,16 +445,15 @@ test("the SDK is gone from the source and the manifest, so it cannot reach the b
   // The word survives only in the comment that records why there is no wrap,
   // so the pin is on the call, not on the prose.
   assert.doesNotMatch(index, /^\s*(?:const|let|var).*withSentry/m, "no withSentry wrap");
-  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  const declared = {
-    ...pkg.dependencies,
-    ...pkg.devDependencies,
-  };
-  assert.deepEqual(
-    Object.keys(declared).filter((name) => name.includes("sentry")),
-    [],
-    "no @sentry dependency is declared",
+  const importers = ["../src/", "../core/"].flatMap((dir) =>
+    readdirSync(new URL(dir, import.meta.url), { recursive: true })
+      .filter((file) => /\.(?:js|mjs|ts)$/.test(String(file)))
+      .map((file) => `${dir}${file}`)
+      .filter((path) =>
+        /from "@sentry\//.test(readFileSync(new URL(path, import.meta.url), "utf8")),
+      ),
   );
+  assert.deepEqual(importers, [], "no site Worker source imports @sentry");
 });
 
 // The `sentry` parameter's default is `sentrySender()` with no DSN, so it is a
