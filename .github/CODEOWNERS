@@ -56,5 +56,5 @@
 *.zsh                       @nish3451
 **/bin/                     @nish3451
 **/scripts/                 @nish3451
-/migrations/                @nish3451
-/AGENTS.md                  @nish3451
+**/migrations/              @nish3451
+**/AGENTS.md                @nish3451
