@@ -776,14 +776,17 @@ test("gate 4: nothing tracked carries a token", () => {
   // The wiring half: the scan has to run in CI, and the deleted
   // `assert.match(ci, /gitleaks/)` proved only that the word was somewhere in
   // the file — it passed with the step's action repointed or unpinned. This
-  // asserts the step itself and its digest, because a workflow change that
+  // asserts the scan step and its checksum, because a workflow change that
   // drops or repoints the scan is exactly the regression to catch, and it is
-  // the one half of this gate a behaviour test cannot run (drive#621).
+  // the one half of this gate a behaviour test cannot run (drive#621). The
+  // scan is the private-detail-scan job's checksum-verified binary; the
+  // `docker://` step it once also asserted is gone, since the org Actions
+  // policy blocks `docker://` steps and the job already covers the default rules.
   const ci = read(".github/workflows/ci.yml");
   assert.match(
     ci,
-    /uses:\s*docker:\/\/ghcr\.io\/gitleaks\/gitleaks:v[\d.]+@sha256:[a-f0-9]{64}/,
-    "every PR runs the pinned gitleaks scan",
+    /GITLEAKS_SHA256:\s*[a-f0-9]{64}[\s\S]*sha256sum -c -[\s\S]*\.\/gitleaks git \./,
+    "every PR runs the checksum-pinned gitleaks scan",
   );
   // The behaviour half: every tracked file a page, a Worker or the CLI ships
   // or runs, code, config, data and docs alike. A token in a log line or a
