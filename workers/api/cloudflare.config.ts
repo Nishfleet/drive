@@ -42,6 +42,8 @@ export default defineWorker({
   workersDev: false,
   previewUrls: false,
   entrypoint: "workers/api/src/index.js",
+  // Workers Logs, as on the site Worker (cloudflare.config.ts, issue #520).
+  observability: { enabled: true },
   env: {
     // The drive database (drive issue #170): customer data, and nothing else.
     // The device sign-in store, the device token store, the team store and the
