@@ -58,3 +58,5 @@
 **/scripts/                 @nish3451
 **/migrations/              @nish3451
 **/AGENTS.md                @nish3451
+# The file that says who approves what is the owner's, even though the rest of .github is plumbing.
+/.github/CODEOWNERS         @nish3451
