@@ -1,3 +1,4 @@
+import { withSentry } from "@sentry/cloudflare";
 import { Hono } from "hono";
 import { methodNotAllowed } from "hono/method-not-allowed";
 
@@ -484,24 +485,32 @@ function storeFor(env) {
   return keyStore;
 }
 
-export default {
-  /**
-   * @param {Request} request
-   * @param {ApiEnv} env
-   */
-  async fetch(request, env) {
-    const store = storeFor(env);
-    if (!store) {
-      return errorResponse(503, failureMessage("drive-not-configured"));
-    }
-    return dispatch(request, {
-      env,
-      db: env.DRIVE_DB,
-      store,
-      /** @type {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}} | null} */
-      accounts: await twoFactorAuthFor(env),
-      queues: createD1QueueStore(env.DRIVE_DB),
-      now: Date.now,
-    });
+export default withSentry(
+  (/** @type {ApiEnv & {SENTRY_DSN?: string, CF_VERSION_METADATA?: {id: string}}} */ env) => ({
+    dsn: env.SENTRY_DSN,
+    release: env.CF_VERSION_METADATA?.id,
+    environment: "production",
+    tracesSampleRate: 0,
+  }),
+  {
+    /**
+     * @param {Request} request
+     * @param {ApiEnv} env
+     */
+    async fetch(request, env) {
+      const store = storeFor(env);
+      if (!store) {
+        return errorResponse(503, failureMessage("drive-not-configured"));
+      }
+      return dispatch(request, {
+        env,
+        db: env.DRIVE_DB,
+        store,
+        /** @type {{api: {getSession: (options: {headers: Headers}) => Promise<{user: {id: string, name: string, email: string}} | null>}} | null} */
+        accounts: await twoFactorAuthFor(env),
+        queues: createD1QueueStore(env.DRIVE_DB),
+        now: Date.now,
+      });
+    },
   },
-};
+);

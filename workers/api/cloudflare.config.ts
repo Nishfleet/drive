@@ -34,6 +34,7 @@ export default defineWorker({
   // core/status.js and core/messages.js with it, and two Workers on two dates
   // drift in the runtime they run on.
   compatibilityDate: "2026-09-29",
+  compatibilityFlags: ["nodejs_compat"],
   // No address of its own (drive#342): the site Worker forwards /v1/* here
   // over its `API` service binding, and the site sits behind Cloudflare Access
   // until drive has its own domain. A workers.dev address here would be a
@@ -121,6 +122,7 @@ export default defineWorker({
     // binding the site Worker uses; MAIL_FROM stays undeclared so a missing
     // sending domain is a skipped notice, not a refused deploy.
     EMAIL: bindings.sendEmail(),
+    CF_VERSION_METADATA: bindings.versionMetadata(),
     // MAIL_FROM stays undeclared: a declared secret is required at deploy, and
     // the approval still finishes when the sending domain is unset. Set it
     // once beside the site Worker's own:
