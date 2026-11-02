@@ -81,6 +81,7 @@ test("the config binds the api Worker to the drive database, the device limits, 
     "DEVICE_GLOBAL_RATE_LIMITER",
     "KEYS_RATE_LIMITER",
     "EMAIL",
+    "CF_VERSION_METADATA",
   ]);
   assert.ok(!("IDRIVE_E2_API_TOKEN" in apiConfig.env));
   assert.equal(apiConfig.env.EMAIL.type, "send-email");
