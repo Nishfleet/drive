@@ -1,17 +1,19 @@
 # GitHub's Dependabot recipe ("Automating Dependabot with GitHub Actions"):
 # patch and minor updates are approved and auto-merged; majors stay manual.
 # The required checks still gate every merge. pull_request_target runs main's
-# copy of this file and checks nothing out. The merge step uses the fleet App
-# token because GITHUB_TOKEN cannot add a pull request to a merge queue.
+# copy of this file and checks nothing out, which is the safe use zizmor
+# documents. The merge step uses the fleet App token because GITHUB_TOKEN
+# cannot add a pull request to a merge queue.
 name: Dependabot auto-merge
-on: pull_request_target
+on: pull_request_target # zizmor: ignore[dangerous-triggers]
 permissions: {}
 jobs:
   auto-merge:
     if: github.event.pull_request.user.id == 49699333 # dependabot[bot]
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {pull-requests: write}
+    permissions:
+      pull-requests: write
     env:
       PR_URL: ${{ github.event.pull_request.html_url }}
     steps:
@@ -22,11 +24,17 @@ jobs:
         run: echo "ok=true" >> "$GITHUB_OUTPUT"
       - if: steps.minor.outputs.ok == 'true'
         run: gh pr review --approve "$PR_URL"
-        env: {GH_TOKEN: "${{ github.token }}"}
+        env:
+          GH_TOKEN: ${{ github.token }}
       - id: app-token
         if: steps.minor.outputs.ok == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with: {app-id: "${{ secrets.NISHFLEET_WORKER_APP_ID }}", private-key: "${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}"}
+        with:
+          app-id: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+          private-key: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
       - if: steps.minor.outputs.ok == 'true'
         run: gh pr merge --auto --squash "$PR_URL"
-        env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
