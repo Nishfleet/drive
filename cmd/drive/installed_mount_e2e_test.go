@@ -121,7 +121,7 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 	}
 	rcAClient := rcClientForTestHome(t, homeA, rcA, RemoteFor(cfg))
 	rcBClient := rcClientForTestHome(t, homeB, rcB, RemoteFor(cfg))
-	releaseSavesTogether(t, rcAClient, rcBClient, name)
+	releaseSavesTogether(t, rcAClient, rcBClient, homeA, homeB, name)
 	conflict := proveBothSavesKept(t, root, cfg, rcAClient, rcBClient, mountA, mountB, name, bodyA, bodyB,
 		[]string{ConflictName(name, "mac"), ConflictName(name, "linux")})
 

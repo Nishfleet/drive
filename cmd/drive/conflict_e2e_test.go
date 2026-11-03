@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -86,7 +87,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
 	rcAClient := rcClientForTestHome(t, homeA, rcA, RemoteFor(cfg))
 	rcBClient := rcClientForTestHome(t, homeB, rcB, RemoteFor(cfg))
-	releaseSavesTogether(t, rcAClient, rcBClient, name)
+	releaseSavesTogether(t, rcAClient, rcBClient, homeA, homeB, name)
 	kept := proveBothSavesKept(t, root, cfg, rcAClient, rcBClient, mountA, mountB, name, bodyA, bodyB, candidates)
 
 	entries, err := os.ReadDir(mountA)
@@ -120,7 +121,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 	}
 
 	candidates = []string{ConflictName(offlineName, deviceA), ConflictName(offlineName, "linux")}
-	releaseSavesTogether(t, rcAClient, rcBClient, offlineName)
+	releaseSavesTogether(t, rcAClient, rcBClient, homeA, homeB, offlineName)
 	kept = proveBothSavesKept(t, root, cfg, rcAClient, rcBClient, mountA, mountB, offlineName, offlineA, offlineB, candidates)
 	plain, err := os.ReadFile(standinObjectPath(root, cfg, offlineName))
 	if err != nil {
@@ -262,7 +263,7 @@ func queueHasName(q Queue, name string) bool {
 	return false
 }
 
-func releaseSavesTogether(t *testing.T, a, b *rcClient, name string) {
+func releaseSavesTogether(t *testing.T, a, b *rcClient, homeA, homeB, name string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	seenBoth := false
@@ -298,7 +299,8 @@ func releaseSavesTogether(t *testing.T, a, b *rcClient, name string) {
 	if !seenBoth {
 		t.Fatalf("both devices did not queue %s within 20s (A queue err=%v, B queue err=%v)", name, lastA, lastB)
 	}
-	time.Sleep(2 * conflictInterval)
+	waitGuardPasses(t, homeA, 2)
+	waitGuardPasses(t, homeB, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := a.ReleaseQueuedUploads(ctx); err != nil {
@@ -306,6 +308,36 @@ func releaseSavesTogether(t *testing.T, a, b *rcClient, name string) {
 	}
 	if err := b.ReleaseQueuedUploads(ctx); err != nil {
 		t.Fatalf("device B release uploads of %s: %v", name, err)
+	}
+}
+
+func waitGuardPasses(t *testing.T, home string, passes int) {
+	t.Helper()
+	path := ConflictGuardStatePath(home)
+	readUpdatedAt := func() time.Time {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return time.Time{}
+		}
+		var s conflictGuardState
+		if json.Unmarshal(b, &s) != nil {
+			return time.Time{}
+		}
+		return s.UpdatedAt
+	}
+	last := readUpdatedAt()
+	seen := 0
+	deadline := time.Now().Add(time.Duration(passes) * (conflictContextTimeout + conflictInterval))
+	for seen < passes && time.Now().Before(deadline) {
+		if at := readUpdatedAt(); at.After(last) {
+			last = at
+			seen++
+			continue
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if seen < passes {
+		t.Fatalf("the conflict guard in %s finished %d of %d passes with the saves held in the queue", home, seen, passes)
 	}
 }
 
