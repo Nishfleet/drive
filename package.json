@@ -33,30 +33,30 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@better-auth/passkey": "1.7.7",
+    "@better-auth/passkey": "1.7.14",
     "@sentry/cloudflare": "^11.10.0",
     "aws4fetch": "^1.0.20",
     "better-auth": "^1.7.7",
-    "hono": "^4.13.13",
+    "hono": "^4.13.14",
     "validator": "^13.15.35",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.15",
+    "@biomejs/biome": "^2.6.4",
     "@cloudflare/vite-plugin": "2.0.0-beta.v.9",
-    "@cloudflare/workers-types": "^5.20261007.1",
+    "@cloudflare/workers-types": "^5.20261031.1",
     "@stryker-mutator/core": "^10.0.0",
     "@types/node": "^25.9.9",
     "@types/validator": "^13.15.10",
     "axe-core": "4.14.0",
     "cf": "^1.0.0-beta.26",
     "fast-check": "^4.10.2",
-    "jose": "^6.2.12",
-    "knip": "^6.39.0",
+    "jose": "^6.2.14",
+    "knip": "^6.44.1",
     "puppeteer-core": "^25.16.0",
     "typescript": "^7.0.2",
     "urlpattern-polyfill": "^10.1.0",
-    "vite": "^8.3.3",
+    "vite": "^8.3.5",
     "vitepress": "^1.6.4",
     "vitepress-plugin-llms": "^1.14.0"
   }
