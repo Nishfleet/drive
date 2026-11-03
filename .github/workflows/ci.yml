@@ -97,10 +97,16 @@ jobs:
           ./gitleaks git . --config .github/gitleaks-private-detail.toml --log-opts "$RANGE" --redact --exit-code 2 --no-banner
 
   # The owner's last gate: a preview link on every PR (fleet-ops#10935), Cloudflare's own preview command.
+  # Not a required check. Skipped for forks and Dependabot, whose runs get no Actions secrets (GitHub docs,
+  # "Automating Dependabot with GitHub Actions"). The link goes on the PR as one comment, edited on each push
+  # (Cloudflare docs, "Previews" examples), because this job's secrets live in the production environment.
   preview:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
     environment:
       name: production
     steps:
@@ -109,13 +115,23 @@ jobs:
       - run: npm ci
       - run: npm run docs:build
       - name: Deploy the preview, and fail when Cloudflare gives no link
+        id: preview
         run: |
           npx cf previews deploy "pr-$PR" | tee "$RUNNER_TEMP/preview.out"
-          grep -m1 -oE 'https://pr-[0-9]+-[a-z0-9.-]+' "$RUNNER_TEMP/preview.out" >> "$GITHUB_STEP_SUMMARY"
+          url=$(grep -m1 -oE 'https://pr-[0-9]+-[a-z0-9.-]+' "$RUNNER_TEMP/preview.out")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Preview: $url" >> "$GITHUB_STEP_SUMMARY"
         env:
           PR: ${{ github.event.pull_request.number }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Put the preview link on the PR
+        run: |
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --edit-last --create-if-none --body "Preview: $URL"
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          URL: ${{ steps.preview.outputs.url }}
+          GH_TOKEN: ${{ github.token }}
 
   dependency-review:
     # GitHub's own check: fails a PR that adds a dependency with a known vulnerability.
