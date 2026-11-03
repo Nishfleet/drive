@@ -112,7 +112,7 @@ jobs:
       contents: read
       pull-requests: write
     environment:
-      name: production
+      name: preview
     steps:
       - *checkout
       - *node
