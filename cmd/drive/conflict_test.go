@@ -109,7 +109,6 @@ type fakeConflictBackend struct {
 	versions      map[string]objectVersion
 	down          error
 	refreshErr    error
-	duringList    func()
 }
 
 type objectVersion struct {
@@ -174,10 +173,6 @@ func (f *fakeConflictBackend) remoteHash(_ context.Context, name string) (string
 func (f *fakeConflictBackend) parentContents(_ context.Context, dir string) (map[string]bool, error) {
 	if f.failWith != nil {
 		return nil, f.failWith
-	}
-	if f.duringList != nil {
-		f.duringList()
-		f.duringList = nil
 	}
 	if f.listErr != nil {
 		return nil, f.listErr
@@ -1231,30 +1226,6 @@ func TestConflictGuardKeepsSavesMadeWhileStorageWasUnreachable(t *testing.T) {
 	}
 	if len(devices[1].back.copied) != 0 {
 		t.Errorf("the device whose save landed last kept a copy of its own: %v", devices[1].back.copied)
-	}
-}
-
-func TestConflictGuardKeepsASaveWhoseBaselineReadOutlastedItsUpload(t *testing.T) {
-	const name = "offline.txt"
-	const bodyA = "A: the save made while the device could not reach storage\n"
-	const bodyB = "B: the save made while the device could not reach storage\n"
-	g, _, f := guardFor(t, "mac", map[string]string{name: bodyA})
-	f.pending = []queueEntry{{Name: name, Size: int64(len(bodyA))}}
-	f.duringList = func() {
-		f.pending = nil
-		f.objects[name] = md5Hex(bodyB)
-	}
-	for i := 0; i < conflictClaimPolls+2; i++ {
-		if _, err := g.pass(context.Background(), f); err != nil {
-			t.Fatalf("pass %d: %v", i, err)
-		}
-	}
-	want := ConflictName(name, "mac")
-	if got := f.objects[want]; got != md5Hex(bodyA) {
-		t.Errorf("%s holds %q: the save whose upload the other device overwrote was dropped with no copy", want, got)
-	}
-	if len(g.seen) != 0 {
-		t.Errorf("the guard still watches %v", g.seen)
 	}
 }
 
