@@ -1,62 +1,23 @@
-# The owner approves the product: anything a user can feel needs @nish3451's click after
-# trying the preview (fleet-ops#10935, 2026-11-02 "both"). Plumbing has no owner, so the
-# fleet's independent reviewer (fleet-ops review.yml) can approve it. Last match wins.
+# The owner reviews every change by default: the product, CI workflows, this file,
+# the Dependabot config, tests, the dependency manifests, and the tool configs that
+# set the quality gates. GitHub's Actions security hardening guide says to put
+# workflow files under code owners, and its code owners docs say to own this file.
+# Last match wins.
 *                           @nish3451
 
-# Plumbing: no owner.
-/.github/
+# No owner, so these merge on the required checks alone: docs, lockfiles and pure
+# formatting config. Dependabot's npm patch and minor updates touch only lockfiles
+# (versioning-strategy: increase-if-necessary in dependabot.yml), so GitHub's
+# auto-merge recipe still merges them. Majors and manifest edits wait for the owner.
 /docs/
 /*.md
-/tests/
-/test/
-/e2e/
-/evals/
-/bench/
-/package.json
-/package-lock.json
-/go.mod
+**/package-lock.json
 /go.sum
-/.gitignore
-/.npmrc
-/.nvmrc
 /.editorconfig
 /.prettierrc.json
 /.prettierignore
-/.pinact.yaml
-/.gitleaks.toml
-/.gitleaksignore
-/.semgrep/
-/.coderabbit.yaml
-/greptile.json
-/.lane
-/.agents/
-/.claude/
-/.compound-engineering/
-/skills-lock.json
 /.git-blame-ignore-revs
-/eslint.config.js
-/eslint-suppressions.json
-/biome.json
-/knip.json
-/knip.jsonc
-/.jscpd.json
-/stryker.conf.json
-/tsconfig*.json
-/jsconfig.json
-/vitest*.config.ts
-/vite.config.*
-/playwright.config.*
-/lighthouse*.json
-/lighthouserc.json
 
-# Still the owner's, wherever they sit: scripts (scripts-to-zero, no glue), data migrations, the rules file.
-*.sh                        @nish3451
-*.py                        @nish3451
-*.bash                      @nish3451
-*.zsh                       @nish3451
-**/bin/                     @nish3451
-**/scripts/                 @nish3451
-**/migrations/              @nish3451
+# Agent rules stay the owner's, even where they sit among unowned docs.
 **/AGENTS.md                @nish3451
-# The file that says who approves what is the owner's, even though the rest of .github is plumbing.
-/.github/CODEOWNERS         @nish3451
+/CLAUDE.md                  @nish3451

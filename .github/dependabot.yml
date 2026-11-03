@@ -23,6 +23,10 @@ version: 2
 updates:
   - package-ecosystem: npm
     directory: /
+    # Patch and minor updates inside a ^ range touch only the lockfile, which
+    # CODEOWNERS leaves unowned, so they auto-merge. A major, or any bump to an
+    # exact pin, edits package.json and waits for the owner.
+    versioning-strategy: increase-if-necessary
     schedule:
       interval: weekly
     cooldown:
@@ -65,6 +69,10 @@ updates:
   # so each needs its own entry or its pins never move (drive#581).
   - package-ecosystem: npm
     directory: /evals/agents
+    # Patch and minor updates inside a ^ range touch only the lockfile, which
+    # CODEOWNERS leaves unowned, so they auto-merge. A major, or any bump to an
+    # exact pin, edits package.json and waits for the owner.
+    versioning-strategy: increase-if-necessary
     schedule:
       interval: weekly
     cooldown:
