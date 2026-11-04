@@ -36,9 +36,6 @@ const OTHER_SECRETS = new Set([
   // queue. The job checks nothing out and holds no deploy credential.
   "NISHFLEET_WORKER_APP_ID",
   "NISHFLEET_WORKER_PRIVATE_KEY",
-  // The approver bot's review token (fleet-ops review.yml): it posts reviews
-  // only, from a hosted job that checks nothing out.
-  "APPROVER_TOKEN",
 ]);
 
 /**
