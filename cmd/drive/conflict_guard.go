@@ -247,6 +247,7 @@ func (g *conflictGuard) forgetBaselinesReadAfterUpload(ctx context.Context, b co
 		return
 	}
 	stillQueued := map[string]bool{}
+	// A failed queue read forgets every baseline: that can only add an extra conflict copy, never lose a save.
 	if queue, err := b.queue(ctx); err == nil {
 		for _, e := range queue {
 			stillQueued[e.Name] = true
