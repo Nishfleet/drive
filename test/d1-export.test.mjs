@@ -22,7 +22,10 @@ const onBlock = (text) => {
 /** One row of the backup matrix, as a [name, id] pair.
  *  @param {string} text */
 const matrixRows = (text) =>
-  [...text.matchAll(/^ {10}- \{ name: (\w+), id: ([0-9a-f-]{36})[,} ]/gm)].map((m) => [m[1], m[2]]);
+  [...text.matchAll(/^ {10}- \{ name: "?(\w+)"?, id: ([0-9a-f-]{36})[,} ]/gm)].map((m) => [
+    m[1],
+    m[2],
+  ]);
 
 test("the backup runs weekly and can be started by hand for a restore drill", () => {
   const on = onBlock(WF);
@@ -39,7 +42,11 @@ test("the backup reads only the deploy credentials, behind the production enviro
   // pairing, and this assert names it so the two move together.
   assert.match(WF, /^ {4}environment:\n {6}name: production$/m);
   const secrets = [...WF.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
-  assert.deepEqual([...new Set(secrets)].sort(), ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]);
+  assert.deepEqual(
+    [...new Set(secrets)].sort(),
+    ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+    "the backup key's private half never goes into Actions: the restore drill runs on the fleet host (fleet-ops#10594)",
+  );
 });
 
 test("the backup walks every database the fleet owns, not only the deploy's", () => {
@@ -207,4 +214,11 @@ test("the runbook's cf d1 commands parse as written, and each query sends its wh
       assert.equal(JSON.parse(run.stdout).body.sql, sql, line);
     }
   }
+});
+
+test("a numeric database name stays a string, so its artifact keeps the name the runbook gives", () => {
+  // Unquoted, YAML reads 0509 as the number 509, and the artifact shipped as
+  // d1-backup-509 (run 41831086013) while the runbook and the host restore
+  // drill ask for d1-backup-0509.
+  assert.doesNotMatch(WF, /name: \d+[,} ]/);
 });

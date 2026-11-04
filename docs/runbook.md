@@ -56,8 +56,6 @@ fresh export first (see "The weekly backup").
 1. Download the newest weekly artifact for the database you are restoring
    (`d1-backup-waitlist` or `d1-backup-drive`) so the pre-restore state is also
    saved. The drive dump is in `sqlite3` format (see "The weekly backup").
-   Until the first green drive job there is no drive dump yet, so a drive
-   restore then has no copy beyond Time Travel itself.
 2. Preview the restore (harmless):
 
    ```sh
@@ -157,14 +155,17 @@ the runner. Until `AGE_RECIPIENT` is set the weekly run fails loud on
 purpose — a backup that quietly shipped plaintext, or quietly shipped
 nothing, is the invisibility drive#520 exists to end.
 
-Restore from a dump:
+Restore from a dump. The first restore path is D1 Time Travel
+(https://developers.cloudflare.com/d1/reference/time-travel/): it puts a
+whole database back to any minute of the last 30 days, and "Restore a
+database to the moment before a deploy" above has the commands. Use a dump
+only when Time Travel cannot help: a deleted database, a moment older than
+30 days, or a read of old rows without touching the live database.
 
 1. Download the artifact for that database from the run's summary page. The
    drive dump is in `sqlite3` format, so after you decrypt it (step 3) a D1
    restore of it takes the four steps under "The drive database is dumped in
-   `sqlite3` format" above. Until the first green drive job there is no drive
-   dump yet, and a drive restore goes through "Restore a database to the
-   moment before a deploy" above.
+   `sqlite3` format" above.
 2. The monthly restore drill does exactly this for every database in the
    matrix, on the fleet host where the private key already lives: it takes the
    newest artifact, decrypts it into a local SQLite file, counts the rows and
