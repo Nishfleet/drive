@@ -20,3 +20,6 @@ linters:
           - forbidigo
 issues:
   new-from-merge-base: origin/main
+  # The defaults (3 per text, 50 per linter) hide every new sleep past the cap, so show them all.
+  max-same-issues: 0
+  max-issues-per-linter: 0
