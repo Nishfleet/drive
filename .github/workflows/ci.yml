@@ -79,6 +79,19 @@ jobs:
           args: check
       - name: Windows code vets and its tests compile
         run: GOOS=windows go vet ./cmd/... && GOOS=windows go test -c -o /dev/null ./cmd/drive/
+      - name: macOS code vets and its tests compile
+        run: GOOS=darwin go vet ./cmd/... && GOOS=darwin go test -c -o /dev/null ./cmd/drive/
+      # golangci-lint-action is not on the org's allowed-actions list, so the pinned release is checked the way rclone is.
+      - name: No new fixed sleep in a Go test (.golangci.yml, only lines new since main)
+        env:
+          GOLANGCI_LINT_VERSION: 2.15.0
+          GOLANGCI_LINT_SHA256: 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
+        run: |
+          tgz="golangci-lint-$GOLANGCI_LINT_VERSION-linux-amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$tgz" "https://github.com/golangci/golangci-lint/releases/download/v$GOLANGCI_LINT_VERSION/$tgz"
+          echo "$GOLANGCI_LINT_SHA256  $RUNNER_TEMP/$tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tgz" -C "$RUNNER_TEMP" --strip-components=1 "golangci-lint-$GOLANGCI_LINT_VERSION-linux-amd64/golangci-lint"
+          "$RUNNER_TEMP/golangci-lint" run ./...
       - run: go test -race ./cmd/drive/ -short
       - run: go test ./cmd/drive/ -run 'TestStandinMountProof|TestTwoDevicesKeepBothSaves' -v -timeout 600s
       - name: No test fixture outlives its run (drive#868)
