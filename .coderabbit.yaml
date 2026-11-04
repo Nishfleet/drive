@@ -1,9 +1,16 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# CodeRabbit is advisory here: it comments, it never requests changes and never
-# fails a check, so it can never block a merge. A repo file overrides the
-# CodeRabbit dashboard: https://docs.coderabbit.ai/guides/configuration-overview
-# Keys: https://docs.coderabbit.ai/reference/configuration
+# CodeRabbit is the one AI review on every pull request, and a different vendor
+# from every builder (pi, Grok, Qwen or Claude). It requests changes on
+# actionable findings and approves once they are resolved and it has reviewed
+# the latest commit; "CodeRabbit's approval counts toward your Git provider's
+# required approvals". Paths in CODEOWNERS still need the owner, because a
+# GitHub App is never a code owner. Public repos get Team features free.
+# https://docs.coderabbit.ai/pr-reviews/automatic-approvals
+# https://docs.coderabbit.ai/pr-reviews/approval-policies
+# https://docs.coderabbit.ai/management/plans
 reviews:
   auto_approvals:
-    enabled: false
-  fail_commit_status: false
+    enabled: true
+    # The author's "@coderabbitai approve" would skip the review of the latest
+    # commit, so the bot that opened the pull request cannot use it.
+    allow_author_approval: false

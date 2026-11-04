@@ -1,30 +1,24 @@
-# Either the owner or the approver bot reviews a change by default. The bot approves only
-# after the one non-Claude review passes, CI is green and a run-proof is present (decisions
-# ledger 2026-11-04). The owner-only block at the end keeps the gate, the checks and the
-# reserved classes his: GitHub's Actions hardening guide says to code-own workflow files,
-# and its code owners docs say to own this file. Last match wins.
-*                           @nish3451 @nishfleet-approver
-
-# No owner, so these merge on the required checks alone: docs, lockfiles and pure
-# formatting config. Dependabot's npm patch and minor updates touch only lockfiles
-# (versioning-strategy: increase-if-necessary in dependabot.yml), so GitHub's
-# auto-merge recipe still merges them. Majors and manifest edits wait for the owner.
-/docs/
-/*.md
-**/package-lock.json
-/go.sum
-/.editorconfig
-/.prettierrc.json
-/.prettierignore
-/.git-blame-ignore-revs
+# Paths with no owner below merge on one approving review, and CodeRabbit's
+# automatic approval counts as that review (.coderabbit.yaml). A GitHub App
+# cannot be a code owner, so the old catch-all line that named the approver
+# bot is gone: "Without an owner, changes ... can be made with the approval of
+# any user who has write access to the repository."
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+# https://docs.coderabbit.ai/pr-reviews/approval-policies
+# The owner-only block keeps the gate, the checks and the reserved classes his:
+# GitHub's Actions hardening guide says to code-own workflow files. Last match wins.
 
 # Agent rules stay the owner's, even where they sit among unowned docs.
 **/AGENTS.md                @nish3451
 /CLAUDE.md                  @nish3451
 
-# The owner alone (decisions ledger 2026-11-04, approver bot): the review gate, the
+# The owner alone: the review gate, the
 # checks, the schema, money, sign-in, data deletion and privacy promises.
 /.github/                   @nish3451
+# CodeRabbit reads this file from the branch under review, so a pull request
+# could loosen its own review; the owner signs off on every change to it.
+# https://docs.coderabbit.ai/getting-started/yaml-configuration
+/.coderabbit.yaml           @nish3451
 # Lint, type and test configs, and package.json, which holds the commands CI runs.
 /biome.json                 @nish3451
 /knip.json                  @nish3451
