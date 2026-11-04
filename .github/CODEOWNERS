@@ -1,9 +1,9 @@
-# The owner reviews every change by default: the product, CI workflows, this file,
-# the Dependabot config, tests, the dependency manifests, and the tool configs that
-# set the quality gates. GitHub's Actions security hardening guide says to put
-# workflow files under code owners, and its code owners docs say to own this file.
-# Last match wins.
-*                           @nish3451
+# Either the owner or the approver bot reviews a change by default. The bot approves only
+# after the one non-Claude review passes, CI is green and a run-proof is present (decisions
+# ledger 2026-11-04). The owner-only block at the end keeps the gate, the checks and the
+# reserved classes his: GitHub's Actions hardening guide says to code-own workflow files,
+# and its code owners docs say to own this file. Last match wins.
+*                           @nish3451 @nishfleet-approver
 
 # No owner, so these merge on the required checks alone: docs, lockfiles and pure
 # formatting config. Dependabot's npm patch and minor updates touch only lockfiles
@@ -21,3 +21,38 @@
 # Agent rules stay the owner's, even where they sit among unowned docs.
 **/AGENTS.md                @nish3451
 /CLAUDE.md                  @nish3451
+
+# The owner alone (decisions ledger 2026-11-04, approver bot): the review gate, the
+# checks, the schema, money, sign-in, data deletion and privacy promises.
+/.github/                   @nish3451
+# Lint, type and test configs, and package.json, which holds the commands CI runs.
+/biome.json                 @nish3451
+/knip.json                  @nish3451
+/tsconfig.json              @nish3451
+/stryker.conf.json          @nish3451
+/lighthouserc.json          @nish3451
+/.golangci.yml              @nish3451
+/lint/                      @nish3451
+/package.json               @nish3451
+# Database migrations.
+/migrations/                @nish3451
+# Payments and billing (Dodo, metering, prices, history add-on).
+/core/billing.js            @nish3451
+/core/billing-report.js     @nish3451
+/core/dodo.js               @nish3451
+/core/pricing.js            @nish3451
+/core/meter-*.js            @nish3451
+/core/history-addon.js      @nish3451
+/public/billing.html        @nish3451
+# Sign-in (Better Auth, passkeys, two-factor, CLI login).
+/core/auth.js               @nish3451
+/core/auth-d1-adapter.js    @nish3451
+/core/auth-passkey.js       @nish3451
+/core/auth-two-factor.js    @nish3451
+/cmd/drive/login.go         @nish3451
+/internal/login/            @nish3451
+# Data deletion and privacy promises.
+/core/devices-close.js      @nish3451
+/core/legal.js              @nish3451
+/public/privacy.html        @nish3451
+/public/terms.html          @nish3451
