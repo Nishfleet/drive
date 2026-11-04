@@ -7,7 +7,7 @@ dist/
 /drive
 .env
 .env.*
-.dev.vars
+.dev.vars*
 .wrangler/
 .cloudflare/
 
