@@ -1,0 +1,14 @@
+name: review
+# The one AI review and the approver bot (fleet-ops review.yml): runs when CI finishes on a
+# pull request. Nothing from the pull request is checked out or run.
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] the called workflow reads the diff as text only
+    workflows: [CI]
+    types: [completed]
+permissions: {}
+jobs:
+  review:
+    uses: Nishfleet/fleet-ops/.github/workflows/review.yml@main # zizmor: ignore[unpinned-uses] the owner's own paved road, like agent.yml
+    permissions: {contents: read, pull-requests: read}
+    secrets:
+      APPROVER_TOKEN: ${{ secrets.APPROVER_TOKEN }}
