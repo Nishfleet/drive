@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit is advisory here: it comments, it never requests changes and never
+# fails a check, so it can never block a merge. A repo file overrides the
+# CodeRabbit dashboard: https://docs.coderabbit.ai/guides/configuration-overview
+# Keys: https://docs.coderabbit.ai/reference/configuration
+reviews:
+  auto_approvals:
+    enabled: false
+  fail_commit_status: false
