@@ -238,6 +238,108 @@ deploy smoke's credentials or deploying anything (review finding on PR
 scoped to its path only, for the same reason - see "Registering a bucket's
 storage notifications" below.
 
+## Worker facts
+
+Generated from `cloudflare.config.ts` and the route table in `src/index-app.js` by `npm run docs:facts` (`src/render-docs.js`). `test/docs-drift.test.mjs` fails when a block differs. Edit the config or the routes, not these lists.
+
+Bindings:
+<!-- facts:BINDINGS -->
+| Binding | Kind |
+| --- | --- |
+| `ASSETS` | assets |
+| `METER_JOBS` | queue |
+| `BRANCH_JOBS` | queue |
+| `WAITLIST_DB` | d1 |
+| `DRIVE_DB` | d1 |
+| `METER_DB` | d1 |
+| `BRANCH_SNAPSHOTS` | kv |
+| `REINDEX_QUEUE` | queue |
+| `METER_EVENT_TOKEN` | secret |
+| `API` | worker |
+| `WAITLIST_RATE_LIMITER` | rateLimit |
+| `SIGNIN_RATE_LIMITER` | rateLimit |
+| `SIGNIN_GLOBAL_RATE_LIMITER` | rateLimit |
+| `REQUEST_UPLOAD_RATE_LIMITER` | rateLimit |
+| `REQUEST_UPLOAD_LINK_RATE_LIMITER` | rateLimit |
+| `HEALTH_RATE_LIMITER` | rateLimit |
+| `SHARE_DOWNLOAD_RATE_LIMITER` | rateLimit |
+| `SHARE_MINT_RATE_LIMITER` | rateLimit |
+| `REQUEST_MINT_RATE_LIMITER` | rateLimit |
+| `BRANCH_RATE_LIMITER` | rateLimit |
+| `EMAIL` | sendEmail |
+<!-- /facts:BINDINGS -->
+Site Worker routes:
+<!-- facts:ROUTES -->
+- `ALL /*`
+- `ALL /api/keys/revoke`
+- `ALL /api/*`
+- `GET /api/auth/*`
+- `POST /api/auth/*`
+- `ALL /v1/*`
+- `GET /api/first-run-status`
+- `GET /api/search/*`
+- `GET /api/files`
+- `POST /api/files`
+- `GET /api/files/*`
+- `POST /api/files/*`
+- `GET /api/starter`
+- `POST /api/starter`
+- `GET /api/branches`
+- `POST /api/branches`
+- `GET /api/branches/*`
+- `POST /api/branches/*`
+- `GET /api/rewind`
+- `POST /api/rewind`
+- `GET /api/rewind/*`
+- `POST /api/rewind/*`
+- `GET /api/usage`
+- `GET /api/export`
+- `GET /api/balance`
+- `GET /api/milestones`
+- `POST /api/milestones`
+- `GET /api/history`
+- `POST /api/history`
+- `GET /api/webhooks`
+- `POST /api/webhooks`
+- `DELETE /api/webhooks/:id`
+- `POST /api/webhooks/:id/test`
+- `GET /api/webhooks/:id/deliveries`
+- `GET /api/receipts/:id`
+- `POST /api/topup/auto`
+- `POST /api/topup`
+- `GET /api/billing/portal`
+- `GET /api/devices`
+- `DELETE /api/devices`
+- `GET /api/devices/*`
+- `DELETE /api/devices/*`
+- `GET /api/cap`
+- `POST /api/cap`
+- `GET /api/account/close`
+- `POST /api/account/close`
+- `POST /api/account/close/cancel`
+- `GET /api/share`
+- `POST /api/share`
+- `DELETE /api/share`
+- `GET /api/request`
+- `POST /api/request`
+- `DELETE /api/request`
+- `POST /api/waitlist`
+- `GET /api/quote`
+- `POST /api/storage-events`
+- `POST /api/storage-events/signed`
+- `POST /api/signin`
+- `GET /api/signin/verify`
+- `GET /api/signin/access`
+- `POST /api/signin/access`
+- `GET /s/*`
+- `GET /api/request/info`
+- `POST /api/request/upload`
+- `POST /api/billing/webhook`
+- `GET /unsubscribe`
+- `POST /api/emails/send`
+- `GET /api/health`
+<!-- /facts:ROUTES -->
+
 ## The merge gate
 
 Ruleset `main gate` (id 24262668) guards `main` with GitHub's merge queue and two required checks from `ci.yml`: `verify` and `go`. Nothing else is required. The bypass list is empty: `gh api repos/Nishfleet/drive/rulesets/24262668 --jq '.bypass_actors'` prints `[]`. A renamed required job never reports, so nothing can merge; rename a job only together with the ruleset.

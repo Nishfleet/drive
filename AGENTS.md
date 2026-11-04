@@ -19,7 +19,7 @@ A Finder drive for people and their agents: plain files in object storage, mount
 - An issue can name a path that has moved. Check `README.md` ("The repository") before you search. The static pages are in `public/`, but `get-started.html` sits at the repo root and Vite builds it to `/get-started.html`.
 - The site Worker is `src/index.js` (the route table). The api Worker is `workers/api/src/index.js`. The download Worker is `workers/dl/src/index.js`. The CLI is `cmd/drive/`. Each has its tests beside it: `test/` for the site Worker, `workers/*/test/`, and `cmd/drive/*_test.go`.
 - `core/` is the code all three Workers share (drive issue #616). A module more than one Worker needs lives there, never in one Worker's own `src/`. `biome.json` refuses an import that crosses: a module in `src/` or `core/` may not import a `workers/**` tree, and a module in a Worker's own `workers/*/src/` may not import the site Worker's `src/`. So a cross-import fails `npm run lint`; the way to share a module is to move it into `core/` and import it from there. `test/pr-gate.test.mjs` gate 8 plants each crossing and proves the rule on every `npm test` run.
-- The D1 bindings are `WAITLIST_DB` and `DRIVE_DB` in `cloudflare.config.ts`. There is no plain `DB`. Migrations live in `migrations/waitlist/` and `migrations/drive/`.
+- The D1 bindings are <!-- facts:D1_BINDINGS -->`WAITLIST_DB`, `DRIVE_DB`, `METER_DB`<!-- /facts:D1_BINDINGS --> in `cloudflare.config.ts`. There is no plain `DB`. Migrations live in `migrations/waitlist/` and `migrations/drive/`.
 
 ## Set up and check fast
 
@@ -43,7 +43,9 @@ Live: https://storagebun.com. It stays private until launch, so every path, heal
 
 Declared `bindings.secret()` names in `cloudflare.config.ts`. A PR that adds one lists it under 'Secrets to set' and stays draft until it is set on drive-pricing.
 
+<!-- facts:SECRETS -->
 - `METER_EVENT_TOKEN`
+<!-- /facts:SECRETS -->
 
 ## Before you open a PR
 
