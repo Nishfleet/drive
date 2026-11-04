@@ -33,6 +33,7 @@ test("a skip of a proof this runner can run is a failure under CI=true (drive#58
       "test/cap-mount.test.mjs",
       "test/files-page-click.test.mjs",
       "test/home-demos.test.mjs",
+      "test/speed-ratchet.test.mjs",
       "test/step1-storage.test.mjs",
       "test/step5-meter-standin.test.mjs",
     ],
@@ -45,7 +46,7 @@ test("a skip of a proof this runner can run is a failure under CI=true (drive#58
       `${file} carries no skip guard of its own`,
     );
   }
-  const gated = ["chrome-file-click", "s3-standin", "cap-mount-rclone"];
+  const gated = ["chrome-file-click", "s3-standin", "cap-mount-rclone", "speed-ratchet-cli"];
   const ungated = ["cap-mount", "home-page-demos"];
   const reported = new Set();
   for (const file of writers) {
