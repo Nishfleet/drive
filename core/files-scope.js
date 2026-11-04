@@ -223,6 +223,17 @@ export function accountStorageKey(account, path) {
   return { key };
 }
 
+export const WRITE_GATE = Symbol("drive.writeGate");
+
+export class WritesRefusedError extends Error {
+  /** @param {"cap-reached"|"paused"} reason */
+  constructor(reason) {
+    super(`writes refused: ${reason}`);
+    this.name = "WritesRefusedError";
+    this.reason = reason;
+  }
+}
+
 /**
  * One account's view of a shared store: every drive path is rewritten to that
  * account's own prefix, and every row that comes back is rewritten to a drive
@@ -250,6 +261,10 @@ export function scopeStore(store, account) {
     throw new TypeError("scopeStore needs a store");
   }
   const prefix = accountPrefix(account);
+  const gate = /** @type {{[WRITE_GATE]?: (accountId: string) => Promise<void>}} */ (store)[
+    WRITE_GATE
+  ];
+  const gated = async () => gate?.(account.id);
 
   /** @param {string} path */
   const toKey = (path) => {
@@ -304,15 +319,18 @@ export function scopeStore(store, account) {
       return (await store.listAll(toKey(path))).map(toDriveEntry);
     },
     async write(path, body, contentType, options) {
+      await gated();
       return store.write(toKey(path), body, contentType, options);
     },
     async writeIfAbsent(path, body, contentType) {
+      await gated();
       return store.writeIfAbsent(toKey(path), body, contentType);
     },
     async remove(path, options) {
       return store.remove(toKey(path), options);
     },
     async copy(from, to, size, options) {
+      await gated();
       const [source, dest] = toKeys(from, to);
       return store.copy(source, dest, size, options);
     },

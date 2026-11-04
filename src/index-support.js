@@ -1,3 +1,4 @@
+import { rootStoreFor as storeFor } from "../core/account-store.js";
 import { authFor, authForPasskey, SIGNIN_LINK_PATH, twoFactorAuthFor } from "../core/auth.js";
 import { QUOTE_ENDPOINT } from "../core/billing.js";
 import { capStateForAccount } from "../core/cap-request.js";
@@ -5,8 +6,6 @@ import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { isSameOriginRequest } from "../core/email-send.js";
 import { handleFilesRequest } from "../core/files-handlers.js";
-import { storageBucketForKey, storageVarsFromEnv } from "../core/files-memory.js";
-import { createS3Store } from "../core/files-s3.js";
 import { bearerToken, errorResponse } from "../core/http.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { failureMessage } from "../core/messages.js";
@@ -129,26 +128,6 @@ function isPublic(pathname) {
   });
 }
 
-export const TEST_FILES_STORE = Symbol("drive.testFilesStore");
-/** @type {import("../core/files.js").FileStore|undefined} */
-let filesStore;
-const missingFilesStoreLogged = new WeakSet();
-/**
- * Storage config vars. They are set per deployment, never declared as
- * bindings in cloudflare.config.ts: a declared secret is required at deploy,
- * and a deployment with none of them answers 503 rather than an in-memory
- * store (drive#505). The names match the api Worker's iDrive pair so the site
- * Worker can read the buckets a minted key writes to, plus the older
- * FILES_S3_* stand-in pair a local `rclone serve s3` still uses. The typedef's
- * one definition is core/files.js's, beside the one reader of the vars.
- * @typedef {import("../core/files-memory.js").StorageEnv} StorageEnv
- * @param {Env} env
- * @returns {StorageEnv}
- */
-function devStorage(env) {
-  return /** @type {StorageEnv} */ (env);
-}
-
 /**
  * The close handlers' dependencies, or null when this deployment has no
  * customer database or no storage endpoint. A missing database or store is a
@@ -230,46 +209,6 @@ export function forwardToApi(c) {
   const api = apiBinding(c.env).API;
   if (!api) return errorResponse(503, failureMessage("unexpected"));
   return api.fetch(c.req.raw);
-}
-
-/**
- * @param {Env} env
- * @returns {import("../core/files.js").FileStore | null}
- */
-export function storeFor(env) {
-  const injected =
-    /** @type {{[key: symbol]: import("../core/files.js").FileStore | undefined}} */ (env)[
-      TEST_FILES_STORE
-    ];
-  if (injected) {
-    return injected;
-  }
-  if (!filesStore) {
-    const { endpoint, accessKeyId, secretAccessKey, region } = storageVarsFromEnv(devStorage(env));
-    if (!endpoint) {
-      if (!missingFilesStoreLogged.has(env)) {
-        missingFilesStoreLogged.add(env);
-        console.error("files: no storage endpoint is set, so this deployment cannot serve files");
-      }
-      return null;
-    }
-    const signed =
-      accessKeyId !== undefined && secretAccessKey !== undefined && region !== undefined;
-    filesStore = createS3Store({
-      endpoint,
-      bucketFor: storageBucketForKey,
-      ...(signed
-        ? {
-            region,
-            credentials: {
-              accessKeyId: /** @type {string} */ (accessKeyId),
-              secretAccessKey: /** @type {string} */ (secretAccessKey),
-            },
-          }
-        : {}),
-    });
-  }
-  return filesStore;
 }
 
 /**
@@ -470,3 +409,6 @@ export function fairUseUploadOptions(env) {
     }),
   };
 }
+
+export { TEST_FILES_STORE } from "../core/account-store.js";
+export { storeFor };
