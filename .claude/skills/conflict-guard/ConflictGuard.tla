@@ -93,7 +93,8 @@ GuardGivesUp ==
     /\ phase = "watching"
     /\ ~queued
     /\ remote # "mine"
-    /\ remote = previous
+    /\ \/ remote = previous
+       \/ RelearnBaseline /\ previous = Unknown
     /\ phase' = "done"
     /\ outcome' = "dropped"
     /\ UNCHANGED <<remote, queued, theirsDone, previous>>
@@ -103,6 +104,7 @@ GuardKeepsConflictCopy ==
     /\ ~queued
     /\ remote # "mine"
     /\ remote # previous
+    /\ ~(RelearnBaseline /\ previous = Unknown)
     /\ phase' = "done"
     /\ outcome' = "conflictCopy"
     /\ UNCHANGED <<remote, queued, theirsDone, previous>>

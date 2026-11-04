@@ -21,7 +21,7 @@ java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC -config ConflictGuard.cfg -me
 
 - `ConflictGuard.cfg` is the code as it is now. It must print `Model checking completed. No error has been found.` (51 distinct states, under 2 seconds). It checks `SightedSaveNeverDropped`.
 - `Before1143.cfg` is the code before #1143 (no queue re-check after the baseline read). It must print `Invariant SightedSaveNeverDropped is violated` with a 7-state trace.
-- `Before1057.cfg` is today's code with the pre-#1057 baseline re-learn put back. It must print the same violation with a 9-state trace.
+- `Before1057.cfg` is today's code with the two pre-#1057 pieces put back: the baseline re-learn, and `decide` giving up on a save whose baseline is unknown. It must print the same violation with a 7-state trace: the save is sighted, both uploads land, the baseline read and the queue re-check leave the baseline unknown, and the guard drops the save. That is the drop CI saw before #1057 ("neither save survived"). The slow-read race on the re-learn is the same race `Before1143.cfg` covers.
 - `Unwatched.cfg` is the code now, checked against the full `SaveNeverDropped`. It fails today with a 4-state trace: this device's upload lands, the other device's upload overwrites it, and the guard never saw the save, so nothing keeps a copy. This is an open finding (#869), not a model error. When the code fixes it, this config must pass, and then `ConflictGuard.cfg` should check `SaveNeverDropped` too.
 - Delete the `ConflictGuard_TTrace_*` files TLC writes here on a violation.
 - If a `Before*` config stops failing, the model has lost the power to see the bug. Fix the model, not the config.
@@ -39,9 +39,9 @@ One file, two writers: this device (`mine`) and another device (`theirs`). Stora
 | `GuardSightsSave` | `pass` reads the queue once (`b.queue`, start of `pass`) and finds a name it has not seen |
 | `BaselineRead` / `BaselineUnreadable` | `sight` -> `previousHash`: one `b.remoteHash` read, at any later moment, or a failed read that leaves `previous` empty |
 | `QueueRecheck` / `QueueRecheckFails` | `forgetBaselinesReadAfterUpload` (called at the end of the sighting loop in `pass`): a second `b.queue` read clears `previous` for a save no longer queued; a failed read clears every baseline. Constant `RecheckQueue` turns this off |
-| `RelearnStart` / `RelearnRead` | the pre-#1057 re-read of an unknown baseline inside the seen-branch of `pass`, using the queue snapshot from the start of the pass. Constant `RelearnBaseline`; it is FALSE in the current code |
+| `RelearnStart` / `RelearnRead` | the pre-#1057 re-read of an unknown baseline inside the seen-branch of `pass`, using the queue snapshot from the start of the pass. The read can return after the upload lands, so only `RelearnStart` needs the save queued. Constant `RelearnBaseline`; it is FALSE in the current code |
 | `GuardKeepsUpload` | `decide`, `case landed == save.hash` |
-| `GuardGivesUp` | `decide`, `case landed == "" \|\| landed == save.previous` after `conflictClaimPolls`: the save is dropped with no copy |
+| `GuardGivesUp` | `decide`, `case landed == "" \|\| landed == save.previous` after `conflictClaimPolls`: the save is dropped with no copy. With `RelearnBaseline` it also fires on an unknown baseline: the pre-#1057 `case save.baselineUnknown` |
 | `GuardKeepsConflictCopy` | `decide`, `default` -> `claim` writes the conflict copy |
 | `GuardMissesSave` | the upload finished before any pass saw it in the queue (`pass` only sights names in `b.queue`). The outcome is `lost` when storage no longer holds this save |
 
