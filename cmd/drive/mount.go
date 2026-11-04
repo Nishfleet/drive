@@ -54,7 +54,7 @@ func VFSArgs(cacheMax string) []string {
 		"--vfs-write-back", vfsWriteBackValue,
 		"--vfs-cache-max-size", cacheMax,
 		"--vfs-cache-min-free-space", vfsCacheMinFreeSpaceValue,
-		// rclone re-lists when the directory cache is older than this and returns the error on failure, with no stale-on-error (https://github.com/rclone/rclone/issues/1963).
+		// rclone re-lists when the directory cache is older than this and returns the error on failure, with no stale-on-error (https://github.com/rclone/rclone/blob/v1.75.2/vfs/dir.go#L867-L873).
 		"--dir-cache-time", vfsDirCacheTimeValue,
 		"--vfs-read-chunk-size", tunedVFSValue("VFS_READ_CHUNK_SIZE", vfsReadChunkSizeValue),
 		"--vfs-read-chunk-streams", tunedVFSValue("VFS_READ_CHUNK_STREAMS", vfsReadChunkStreamsValue),
