@@ -1,6 +1,11 @@
 import { appendFileSync } from "node:fs";
 
-const RUNNABLE_PROOFS = new Set(["chrome-file-click", "s3-standin", "cap-mount-rclone"]);
+const RUNNABLE_PROOFS = new Set([
+  "chrome-file-click",
+  "s3-standin",
+  "cap-mount-rclone",
+  "speed-ratchet-cli",
+]);
 
 /**
  * @param {string} name
