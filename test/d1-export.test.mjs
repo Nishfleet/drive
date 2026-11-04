@@ -18,7 +18,7 @@ const onBlock = (text) => {
 /** One row of the backup matrix, as a [name, id] pair.
  *  @param {string} text */
 const matrixRows = (text) =>
-  [...text.matchAll(/^ {10}- \{ name: (\w+), id: ([0-9a-f-]{36}) \}$/gm)].map((m) => [m[1], m[2]]);
+  [...text.matchAll(/^ {10}- \{ name: (\w+), id: ([0-9a-f-]{36})[,} ]/gm)].map((m) => [m[1], m[2]]);
 
 test("the backup runs weekly and can be started by hand for a restore drill", () => {
   const on = onBlock(WF);
@@ -55,16 +55,8 @@ test("the backup walks every database the fleet owns, not only the deploy's", ()
   for (const id of deployIds)
     assert.ok(backupIds.includes(id), `the deploy migrates ${id} and the backup must dump it`);
   assert.ok(deployIds.length >= 2, "both databases are exported");
-  // The fleet's four product databases (fleet-ops#10594), by name and id, so
-  // one cannot drop out of the matrix. They are dumped from here because the
-  // production environment's D1 token is account-scoped and their own
-  // repositories hold no export credential and no AGE_RECIPIENT; when that
-  // setup lands each moves to its own repository (fleet-ops#10829), and this
-  // list moves with it. Until then, a name that leaves this matrix loses the
-  // only backup that database has.
   const PRODUCT_DATABASES = [
     ["siterep_payments", "ec176fc4-b4f2-44c0-a925-b36ec067cff5"],
-    ["tinystudio_email_signups", "ff360a55-14fc-468c-895f-893c89e0db79"],
     ["aiconverter", "376080eb-60f1-4bb8-aabb-06622acabb63"],
     ["0509", "746c6e3d-782e-443a-82d6-28ca93a16294"],
   ];
@@ -81,10 +73,6 @@ test("the backup walks every database the fleet owns, not only the deploy's", ()
 });
 
 test("a database that cannot be dumped fails its own job, and the others still ship", () => {
-  // The drive database is in the matrix the export API refuses, so its job is
-  // red on purpose. What must never happen is a green run that carried only
-  // the waitlist dump, which is what shipping a partial backup silently
-  // would look like.
   const strategy = WF.slice(WF.indexOf("strategy:"), WF.indexOf("steps:"));
   assert.match(
     strategy,

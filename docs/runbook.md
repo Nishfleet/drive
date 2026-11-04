@@ -99,38 +99,35 @@ nothing. The dumps are sealed with `age` before upload: anyone with read
 access to this public repository can download its workflow artifacts, so only
 the ciphertext leaves the runner.
 
-**The matrix also carries the fleet's four other product databases**
-(fleet-ops#10594): `siterep_payments` (siterep-public),
-`tinystudio_email_signups` (TinyStudio.io-public), `aiconverter`
+**The matrix also carries the fleet's three other product databases**
+(fleet-ops#10594): `siterep_payments` (siterep-public), `aiconverter`
 (aiconverter-app) and `0509` (0509). They are dumped from here because the
 export credential is the Cloudflare D1 token on this repository's production
 environment, D1 permissions are account-scoped, and those four repositories
 hold no such token and no `AGE_RECIPIENT`. Each of them moves to its own
 repository's copy of the job when that setup lands (fleet-ops#10829);
-`test/d1-export.test.mjs` fails while one of the four is out of the matrix,
+`test/d1-export.test.mjs` fails while one of the three is out of the matrix,
 because that would end the only backup it has. Their artifacts are named
 after the database, so `d1-backup-0509` and `d1-backup-aiconverter` sit
 beside `d1-backup-waitlist` on the run's summary page.
 
-Three of the four dump clean. `tinystudio_email_signups` does not, and its
-job is red on purpose: the export API answers HTTP 404 for the database id
-its own deploy config declares, and for the preview id beside it, so that
-database is not in the account this token names (fleet-ops#10830). The row
-stays in the matrix so the fix is one line and the missing backup stays
-visible on the run.
+The TinyStudio signups database was deleted (fleet-ops incident
+2026-10-29), so its row left the matrix (drive#1027).
 
-**The drive database has no dump in its artifact, and its job is red on
-purpose.** The stock D1 export API does not take a database that holds
-virtual tables, and the FTS5 index on `file_index` (migration
-`0039_file_index_fts.sql`) is live production schema, so the drive database
-is the dump the export step records and fails on. Every Monday its job names
-it in an `::error::` annotation and exits red, while the waitlist job stays
-green and ships its own dump. The drive database's only recovery point is
-then D1 Time Travel, which keeps 30 days and lives on Cloudflare: for that
-database a restore further back than 30 days, a deleted database, or a loss
-on Cloudflare's side is not recoverable. The gap closes by itself — its job
-goes green and `drive-<date>.sql.age` appears in its artifact — when a
-mechanism lands (fleet-ops#10745); drive#1027 stays open until then.
+**The drive database is dumped in `sqlite3` format.** The stock D1 export
+refuses a database that holds a virtual table, and the FTS5 index on
+`file_index` (migration `0039_file_index_fts.sql`) is one. Its matrix row
+sets the export API's own `dump_options.compatibility: sqlite3_cli_only`,
+which "matches the output of the `sqlite3 .dump` command, including virtual
+tables such as FTS5"
+(https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/).
+That dump loads with plain `sqlite3 -bail`, not with `-safe`, because it
+writes the FTS5 table through `PRAGMA writable_schema`. It does not load
+straight back into D1. To put it back in D1: load it with `sqlite3 -bail`,
+drop the triggers `file_index_fts_ai`, `file_index_fts_au` and
+`file_index_fts_ad` and the table `file_index_fts`, `.dump` that file, import
+it, then run `0039_file_index_fts.sql` again to rebuild the index. The FTS
+table is a copy of `file_index`, so nothing is lost.
 
 **One-time setup (Nish):** run `age-keygen -o d1-backup-key.txt` on a
 machine you keep keys on, and put the public key line it prints (`age1…`)
