@@ -176,7 +176,7 @@
       }
     },
     {
-      "includes": ["core/files-s3.js", "core/s3.js"],
+      "includes": ["core/s3.js"],
       "linter": {
         "rules": {
           "style": {

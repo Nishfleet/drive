@@ -78,6 +78,27 @@ export function ok(operation, response) {
  */
 
 /**
+ * The one place `aws4fetch`'s `AwsClient` is built (drive#1164). Biome bans
+ * the `aws4fetch` import, static and dynamic, in every other file, so a
+ * second signer cannot appear beside this one; core/files-s3.js signs its
+ * store's requests with what this returns. `retries: 0` because each caller
+ * owns its one retry (core/fetch-retry.js).
+ * @param {S3Credentials} credentials
+ * @param {string} region
+ * @param {string} [service] "s3", or "sts" for the AssumeRole call
+ */
+export function createSigner(credentials, region, service = "s3") {
+  return new AwsClient({
+    accessKeyId: credentials.accessKeyId,
+    secretAccessKey: credentials.secretAccessKey,
+    sessionToken: credentials.sessionToken,
+    region,
+    service,
+    retries: 0,
+  });
+}
+
+/**
  * A signed S3 client. Signing is `aws4fetch` (`AwsClient`), the stock
  * Worker-side SigV4 library; this file only builds the path-style URL, sends
  * the signed request, and reads the XML. `send` returns every answer, refusals
@@ -100,14 +121,7 @@ export function createS3Client(config) {
     throw new TypeError("An S3 client needs an endpoint, a region and a credential.");
   }
   const origin = endpoint.replace(/\/+$/, "");
-  const aws = new AwsClient({
-    accessKeyId: credentials.accessKeyId,
-    secretAccessKey: credentials.secretAccessKey,
-    sessionToken: credentials.sessionToken,
-    region,
-    service,
-    retries: 0,
-  });
+  const aws = createSigner(credentials, region, service);
 
   return {
     /**

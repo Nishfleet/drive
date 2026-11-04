@@ -1119,6 +1119,10 @@ test("gate 8b: the raw-storage import ban still holds in the files that build th
     { file: "core/account-store.js", line: 'import { AwsClient as zzProbe } from "aws4fetch";' },
     { file: "core/s3.js", line: 'import { createS3Store as zzProbe } from "./files-s3.js";' },
     { file: "core/files-s3.js", line: 'import { createS3Store as zzProbe } from "./files-s3.js";' },
+    // core/s3.js is the one file that imports aws4fetch and builds AwsClient;
+    // core/files-s3.js was exempt before and could build a second one.
+    { file: "core/files-s3.js", line: 'import { AwsClient as zzProbe } from "aws4fetch";' },
+    { file: "core/files-s3.js", line: 'const zzProbe = () => import("aws4fetch");' },
   ];
   for (const { file, line } of cases) {
     const path = new URL(`../${file}`, import.meta.url);
