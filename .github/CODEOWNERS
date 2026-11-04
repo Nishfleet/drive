@@ -60,3 +60,9 @@
 **/AGENTS.md                @nish3451
 # The file that says who approves what is the owner's, even though the rest of .github is plumbing.
 /.github/CODEOWNERS         @nish3451
+# The gates are the owner's too: the tests, the CI workflows and the lint configs decide what may merge,
+# so a change that weakens one must not pass as plumbing that needs no owner.
+/.github/workflows/         @nish3451
+/test/                      @nish3451
+/biome.json                 @nish3451
+/knip.json                  @nish3451
