@@ -150,30 +150,10 @@ every search name. The nightly reconciler (`src/search.js`) rewrites it again.
 **One-time setup (Nish):** run `age-keygen -o d1-backup-key.txt` on a
 machine you keep keys on, and put the public key line it prints (`age1…`)
 into the repository variable `AGE_RECIPIENT` (Settings → Secrets and
-variables → Actions → Variables). Until `AGE_RECIPIENT` is set the weekly run
-fails loud on purpose — a backup that quietly shipped plaintext, or quietly
-shipped nothing, is the invisibility drive#520 exists to end.
-
-**The restore drill.** After the exports, the same run's `drill` job restores
-each artifact it just made: it downloads the artifact with the run's own
-token (https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/storing-and-sharing-data-from-a-workflow),
-decrypts it, loads it into a fresh SQLite file with `sqlite3 -bail`, and
-fails unless `PRAGMA integrity_check` answers `ok` and the tables hold rows.
-The log names the database and the table count, never a row or a count of
-rows, because the logs of this repository are public. One job per database,
-so a red export fails only its own restore. The drill needs the backup key's
-private half, so it runs behind its own environment:
-
-1. Create the environment `restore-drill` (Settings → Environments), with
-   "Deployment branches and tags" set to "Selected branches and tags" and the
-   one rule `main`.
-2. Add the secret `AGE_IDENTITY` to that environment: the
-   `AGE-SECRET-KEY-1…` line of `d1-backup-key.txt`. Never print it.
-
-Until the secret is set, every restore fails with "the age identity is unset".
-This puts the key on a GitHub runner for the length of that one job, which
-fleet-ops#10594 first ruled out; the drill moved here from the fleet host so
-no host-side unit and no hand-minted token is needed.
+variables → Actions → Variables). Keep the private file off GitHub and off
+the runner. Until `AGE_RECIPIENT` is set the weekly run fails loud on
+purpose — a backup that quietly shipped plaintext, or quietly shipped
+nothing, is the invisibility drive#520 exists to end.
 
 Restore from a dump. The first restore path is D1 Time Travel
 (https://developers.cloudflare.com/d1/reference/time-travel/): it puts a
@@ -186,8 +166,12 @@ only when Time Travel cannot help: a deleted database, a moment older than
    drive dump is in `sqlite3` format, so after you decrypt it (step 3) a D1
    restore of it takes the four steps under "The drive database is dumped in
    `sqlite3` format" above.
-2. The run's `drill` job (see "The restore drill") already did steps 1 and 3
-   into SQLite, so a green run means the artifact restores.
+2. The monthly restore drill does exactly this for every database in the
+   matrix, on the fleet host where the private key already lives: it takes the
+   newest artifact, decrypts it into a local SQLite file, counts the rows and
+   writes one report. It is `fleet-d1-restore-drill.service` in the
+   Nishfleet/fleet-ops repository, and `docs/RUNBOOK.md` there has its
+   schedule and how to start it by hand.
 3. Decrypt it with the private key, and check the sha256 the run log
    printed against the decrypted file:
 

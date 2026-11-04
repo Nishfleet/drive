@@ -40,9 +40,6 @@ const OTHER_SECRETS = new Set([
   // review workflow, which reads it to approve. Not a deploy credential.
   "APPROVER_TOKEN",
 ]);
-// The D1 backup key's private half: read only by d1-export.yml's restore
-// drill, in a job bound to its own environment (fleet-ops#10594).
-const DRILL_SECRETS = new Set(["AGE_IDENTITY"]);
 
 /**
  * Split a workflow into its jobs: each key two spaces under `jobs:` starts a
@@ -116,29 +113,11 @@ test("every deploy secret is read only in a job bound to its environment: previe
   assert.ok(reads >= 2, `expected the deploy job's secret reads, found ${reads}`);
 });
 
-test("the backup key is read only in a job bound to restore-drill that reads no deploy secret", () => {
-  let reads = 0;
-  for (const { name, text } of workflows) {
-    for (const job of jobsOf(text)) {
-      const secrets = secretsRead(job.body.join("\n"));
-      if (!secrets.some((s) => DRILL_SECRETS.has(s))) continue;
-      reads += 1;
-      assert.equal(environmentOf(job.body), "restore-drill", `${name} job ${job.id}`);
-      assert.deepEqual(
-        secrets.filter((s) => DEPLOY_SECRETS.has(s)),
-        [],
-        `${name} job ${job.id} holds the backup key beside a deploy secret`,
-      );
-    }
-  }
-  assert.equal(reads, 1, "only the restore drill reads the backup key");
-});
-
 test("no workflow reads a secret this table does not list", () => {
   for (const { name, text } of workflows) {
     for (const secret of secretsRead(text)) {
       assert.ok(
-        DEPLOY_SECRETS.has(secret) || OTHER_SECRETS.has(secret) || DRILL_SECRETS.has(secret),
+        DEPLOY_SECRETS.has(secret) || OTHER_SECRETS.has(secret),
         `${name} reads secrets.${secret}, which test/workflow-secrets.test.mjs does not list`,
       );
     }

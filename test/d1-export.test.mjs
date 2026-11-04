@@ -27,10 +27,6 @@ const matrixRows = (text) =>
     m[2],
   ]);
 
-/** The export job and the restore drill job, each as its own text. */
-const EXPORT_JOB = WF.slice(WF.indexOf("\n  export:"), WF.indexOf("\n  drill:"));
-const DRILL_JOB = WF.slice(WF.indexOf("\n  drill:"));
-
 test("the backup runs weekly and can be started by hand for a restore drill", () => {
   const on = onBlock(WF);
   assert.match(on, /^ {2}schedule:\n(?: {4}#[^\n]*\n)* {4}- cron: "\d+ \d+ \* \* \d+"$/m);
@@ -44,9 +40,13 @@ test("the backup reads only the deploy credentials, behind the production enviro
   // The deploy job's environment block, for the same reason drive#507 keeps
   // the deploy secrets there: test/workflow-secrets.test.mjs enforces the
   // pairing, and this assert names it so the two move together.
-  assert.match(EXPORT_JOB, /^ {4}environment:\n {6}name: production$/m);
-  const secrets = [...EXPORT_JOB.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
-  assert.deepEqual([...new Set(secrets)].sort(), ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]);
+  assert.match(WF, /^ {4}environment:\n {6}name: production$/m);
+  const secrets = [...WF.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
+  assert.deepEqual(
+    [...new Set(secrets)].sort(),
+    ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+    "the backup key's private half never goes into Actions: the restore drill runs on the fleet host (fleet-ops#10594)",
+  );
 });
 
 test("the backup walks every database the fleet owns, not only the deploy's", () => {
@@ -98,7 +98,7 @@ test("a database that cannot be dumped fails its own job, and the others still s
   assert.doesNotMatch(WF, /for pair in/, "the matrix walks the databases, not a shell loop");
   assert.doesNotMatch(WF, /missing=/, "a database that cannot dump fails its own job");
   assert.doesNotMatch(WF, /continue/, "nothing steps past a failed database");
-  assert.doesNotMatch(EXPORT_JOB, /if:/, "no export step waits for a failed database to ship");
+  assert.doesNotMatch(WF, /if: always\(\)/, "no step waits for a failed database to ship");
   // Each job uploads its own dump, so the dumps that were made still ship.
   assert.match(
     WF,
@@ -218,46 +218,7 @@ test("the runbook's cf d1 commands parse as written, and each query sends its wh
 
 test("a numeric database name stays a string, so its artifact keeps the name the runbook gives", () => {
   // Unquoted, YAML reads 0509 as the number 509, and the artifact shipped as
-  // d1-backup-509 (run 41831086013) while the runbook and the drill ask for
-  // d1-backup-0509.
+  // d1-backup-509 (run 41831086013) while the runbook and the host restore
+  // drill ask for d1-backup-0509.
   assert.doesNotMatch(WF, /name: \d+[,} ]/);
-  assert.doesNotMatch(DRILL_JOB, /database: \[[^\]]*(?:\[|, )\d+[,\]]/);
-});
-
-test("the restore drill loads every database this run exported, from this run's own artifacts", () => {
-  const exported = matrixRows(EXPORT_JOB).map(([name]) => name);
-  const list = DRILL_JOB.match(/^ {8}database: \[([^\]]+)\]$/m)?.[1];
-  assert.ok(list, "the drill walks the databases in one matrix");
-  const drilled = list.split(",").map((name) => name.trim().replace(/^"|"$/g, ""));
-  assert.deepEqual(drilled, exported, "every exported database is restored, and nothing else");
-  assert.match(DRILL_JOB, /^ {4}needs: export$/m);
-  // A red export leg (a database the API refuses) must not skip the others.
-  assert.match(DRILL_JOB, /^ {4}if: \$\{\{ !cancelled\(\) \}\}/m);
-  assert.match(DRILL_JOB, /fail-fast: false/);
-  // Same run: no run-id and no token, so github.token reads only this run.
-  assert.match(DRILL_JOB, /actions\/download-artifact@[0-9a-f]{40}/);
-  assert.match(DRILL_JOB, /name: d1-backup-\$\{\{ matrix\.database \}\}/);
-  assert.doesNotMatch(DRILL_JOB, /run-id|github-token/);
-});
-
-test("the private key lives only in the drill job, behind its own environment", () => {
-  assert.match(DRILL_JOB, /^ {4}environment:\n {6}name: restore-drill$/m);
-  const secrets = [...DRILL_JOB.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
-  assert.deepEqual(secrets, ["AGE_IDENTITY"]);
-  assert.doesNotMatch(EXPORT_JOB, /AGE_IDENTITY/);
-  // The key reaches age through a file descriptor, never argv or a file.
-  assert.match(DRILL_JOB, /age" -d -i <\(printf '%s\\n' "\$AGE_IDENTITY"\)/);
-  assert.match(DRILL_JOB, /the age identity is unset/);
-});
-
-test("a dump that does not decrypt, load, pass integrity_check or hold rows fails its restore", () => {
-  for (const message of [
-    "does not decrypt with the backup key",
-    "does not load into SQLite",
-    "integrity_check failed",
-    "every table is empty",
-  ])
-    assert.match(DRILL_JOB, new RegExp(`::error::\\$DB_NAME restore: [^"]*${message}[^\n]*exit 1`));
-  assert.match(DRILL_JOB, /sqlite3 -bail "\$db" < "\$sql"/);
-  assert.match(DRILL_JOB, /PRAGMA integrity_check/);
 });
