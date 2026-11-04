@@ -1,13 +1,23 @@
-# golangci-lint runs one linter here: forbidigo bans new fixed sleeps in Go tests (drive#869, flaky
-# conflict proofs). staticcheck and go vet run as their own CI steps. The ban is a ratchet: only
-# lines new since the merge base with main are reported, so the existing sleeps stay until cleaned up.
-# Docs: https://golangci-lint.run/docs/configuration/file/ and https://golangci-lint.run/docs/linters/configuration/#forbidigo
+# golangci-lint runs three linters here. forbidigo bans new fixed sleeps in Go tests (drive#869, flaky
+# conflict proofs). godox and gocritic commentedOutCode carry the house comment ban as far as stock
+# linters reach: TODO-style comments and commented-out code. No golangci-lint linter bans every comment.
+# staticcheck and go vet run as their own CI steps. The ban is a ratchet: only lines new since the
+# merge base with main are reported, so existing hits stay until cleaned up.
+# Docs: https://golangci-lint.run/docs/configuration/file/ and https://golangci-lint.run/docs/linters/configuration/
 version: "2"
 linters:
   default: none
   enable:
     - forbidigo
+    - godox
+    - gocritic
   settings:
+    godox:
+      keywords: ["TODO", "FIXME", "XXX", "HACK", "BUG"]
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - commentedOutCode
     forbidigo:
       analyze-types: true
       forbid:
