@@ -6,9 +6,9 @@ Expected answers are the anonymous local ones, observed with `npx cf dev` on a f
 
 | Route | Gate | How to reach it | Expected answer | Evidence |
 | --- | --- | --- | --- | --- |
-| `ALL /api/keys/revoke` | forwarded to `drive-api` | `curl -X POST $B/api/keys/revoke -d '{}'` | 500 `That did not work` locally (no api Worker behind the binding) | status+body |
+| `ALL /api/keys/revoke` | forwarded to `drive-api` | `curl -X POST $B/api/keys/revoke -d '{}'` | 500 `That did not work` locally: the `API` binding is declared but no `drive-api` runs, so the forward throws. The 503 in `forwardToApi` is only for an undeclared binding | status+body |
 | `GET,POST /api/auth/*` | public | `curl $B/api/auth/get-session` | 503 `Signing in is not open yet`; `/api/auth/nope` 404 `Not found.` | status+body |
-| `ALL /v1/*` | forwarded to `drive-api` | `curl $B/v1/anything` | 500 `That did not work` locally | status+body |
+| `ALL /v1/*` | forwarded to `drive-api` | `curl $B/v1/anything` | 500 `That did not work` locally (same as `/api/keys/revoke`) | status+body |
 | `GET /api/first-run-status` | gated | `curl $B/api/first-run-status` | 401 | status+body |
 | `GET /api/search` | gated | `curl $B/api/search` | 401 | status+body |
 | `GET,POST /api/files` and `/api/files/*` | gated | `curl $B/api/files` | 401 | status+body, span |
@@ -31,12 +31,12 @@ Expected answers are the anonymous local ones, observed with `npx cf dev` on a f
 | `GET,POST,DELETE /api/request` | gated | `curl $B/api/request` | 401 | status+body |
 | `POST /api/waitlist` | public | `curl -X POST $B/api/waitlist $H -H 'content-type: application/json' -d '{"email":"verify-probe@example.com"}'` | 200; one row `verify-probe@example.com`, source `pricing-page`, in `WAITLIST_DB` table `waitlist` | D1 row, POST span with `http.response.status_code` 200, log line `POST .../api/waitlist` |
 | `GET /api/quote` | public | `curl $B/api/quote` (no size) | 400 `That size is not a storage amount we can quote` | status+body |
-| `POST /api/storage-events` | public, token | without a token: 401 `The event could not be accepted`. With the `.dev.vars` dummy as a Bearer `authorization` header and `-d '{}'`: 400 (the token passed, the empty event was refused) | status+body; proves `.dev.vars` loaded |
+| `POST /api/storage-events` | public, token | without a token: 401 `The event could not be accepted from this caller.` With the `.dev.vars` dummy as a Bearer `authorization` header and `-d '{}'`: 400 (the token passed, the empty event was refused) | status+body; proves `.dev.vars` loaded |
 | `POST /api/storage-events/signed` | public | `curl -X POST $B/api/storage-events/signed -d '{}'` | 503 `not configured` (secret unset) | status+body |
 | `POST /api/signin` | public | `curl -X POST $B/api/signin $H -H 'content-type: application/json' -d '{}'` | 400 `Choose one of: email, google, github.` | status+body |
 | `GET /api/signin/verify` | public | `curl -i $B/api/signin/verify` | 302 | status, Location header |
 | `GET,POST /api/signin/access` | public | `curl $B/api/signin/access` | 404 `Not found.` (no Access header locally) | status+body |
-| `GET /s/*` (share link) | public | `curl $B/s/x` | 503 `The drive is not configured` (no storage) | status+body |
+| `GET /s/*` (share link) | public | `curl $B/s/x` | 503 `The drive is not configured` (no storage): `withFileStore` answers before the link token is read, so the 404 `That link does not open anything` needs storage bound | status+body |
 | `GET /api/request/info` | public | `curl $B/api/request/info` | 404 `That link does not open anything` | status+body |
 | `POST /api/request/upload` | public | `curl -X POST $B/api/request/upload $H -d '{}'` | 503 `not configured` | status+body |
 | `POST /api/billing/webhook` | public | `curl -X POST $B/api/billing/webhook -d '{}'` | 503 `Adding money is not open yet` | status+body |
