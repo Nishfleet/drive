@@ -1,4 +1,8 @@
 name: agent
+# review.yml reads the builder's engine from this run's name (Nishfleet/fleet-ops#11732). This
+# stub never passes `engine`, so the lane runs pi.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#run-name
+run-name: "agent #${{ github.event.issue.number || inputs.issue }} engine=pi"
 # An issue labelled agent-ready starts the fleet's one worker lane, which lives in fleet-ops.
 # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
 on:
