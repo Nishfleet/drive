@@ -79,6 +79,12 @@ jobs:
           args: check
       - name: Windows code vets and its tests compile
         run: GOOS=windows go vet ./cmd/... && GOOS=windows go test -c -o /dev/null ./cmd/drive/
+      - name: macOS code vets and its tests compile
+        run: GOOS=darwin go vet ./cmd/... && GOOS=darwin go test -c -o /dev/null ./cmd/drive/
+      # No new fixed sleep in a Go test (.golangci.yml: forbidigo, only lines new since main).
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
       - run: go test -race ./cmd/drive/ -short
       - run: go test ./cmd/drive/ -run 'TestStandinMountProof|TestTwoDevicesKeepBothSaves' -v -timeout 600s
       - name: No test fixture outlives its run (drive#868)

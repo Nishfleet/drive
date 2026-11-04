@@ -1,0 +1,22 @@
+# golangci-lint runs one linter here: forbidigo bans new fixed sleeps in Go tests (drive#869, flaky
+# conflict proofs). staticcheck and go vet run as their own CI steps. The ban is a ratchet: only
+# lines new since the merge base with main are reported, so the existing sleeps stay until cleaned up.
+# Docs: https://golangci-lint.run/docs/configuration/file/ and https://golangci-lint.run/docs/linters/configuration/#forbidigo
+version: "2"
+linters:
+  default: none
+  enable:
+    - forbidigo
+  settings:
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^time\.Sleep$
+          msg: "a fixed sleep in a test is a flake. Wait on the condition itself: a channel, a context deadline, or a poll helper such as waitForFile."
+  exclusions:
+    rules:
+      - path-except: _test\.go$
+        linters:
+          - forbidigo
+issues:
+  new-from-merge-base: origin/main
