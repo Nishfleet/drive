@@ -1,6 +1,6 @@
 import { capLine, usageSummary } from "./billing-report.js";
 import { enforceCap } from "./cap.js";
-import { failureMessage } from "./messages.js";
+import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 import { notifySecurityEvent } from "./security-event.js";
 import { unauthorizedResponse } from "./status.js";
 
@@ -34,10 +34,8 @@ export function parseCapUsd(input) {
  * @returns {string}
  */
 function capShapeError(given) {
-  return (
-    `A spending cap is a dollar amount like 20 or 12.50, got ${JSON.stringify(given)}. ` +
-    "Type a number like that again."
-  );
+  const { what, next } = FAILURE_MESSAGES["cap-shape"];
+  return `${what.slice(0, -1)}, got ${JSON.stringify(given)}. ${next}`;
 }
 
 /**
@@ -173,7 +171,7 @@ export async function handleCapRequest(request, account, capStore, mail = null) 
     usd = parseCapUsd(amount);
   } catch (error) {
     if (error instanceof TypeError) {
-      return jsonCapError(error.message, 400);
+      return jsonCapError(failureMessage("cap-shape"), 400);
     }
     throw error;
   }

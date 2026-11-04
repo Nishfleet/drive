@@ -334,6 +334,7 @@ test("a full day of GB-minutes matches the storage provider's own report within 
           `only ${receiver.answers.length} of ${count} deliveries arrived in ${seconds}s: ${JSON.stringify(receiver.answers.map((/** @type {{status: number}} */ a) => a.status))}`,
         );
       }
+      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
       await sleep(250);
     }
   };

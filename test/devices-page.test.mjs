@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { createD1DeviceStore } from "../core/devices.js";
 import { failureMessage } from "../core/messages.js";
 import { DEVICES_ENDPOINT, devicesPath, handleDevicesRequest } from "../src/devices-page.js";
@@ -285,7 +286,7 @@ async function runDevicesPage(keys) {
   };
   const start = page.indexOf("<script>");
   vm.runInNewContext(page.slice(start + 8, page.indexOf("</script>", start)), sandbox);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await nextTurn();
   return { elements, copyButton, copied };
 }
 

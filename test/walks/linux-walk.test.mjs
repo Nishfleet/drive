@@ -858,6 +858,7 @@ async function waitFor(predicate, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return true;
+    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
     await sleep(100);
   }
   return predicate();

@@ -529,6 +529,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
         t.diagnostic(`receiver answers: ${JSON.stringify(receiver.answers)}`);
         throw new Error(`no ObjectCreated event for ${key} reached the worker in 30s`);
       }
+      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
       await sleep(500);
     }
     t.diagnostic(`worker log: ${line}`);
@@ -615,6 +616,7 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
           t.diagnostic(`receiver answers after 30s: ${JSON.stringify(receiver.answers)}`);
           throw new Error(`no ObjectCreated event for the awkward key reached the worker in 30s`);
         }
+        // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
         await sleep(500);
       }
       t.diagnostic(`receiver answer: ${JSON.stringify(answer.body)}`);

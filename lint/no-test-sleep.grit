@@ -1,0 +1,8 @@
+or {
+  `new Promise($r => setTimeout($r, $...))`,
+  `new Promise(($r) => setTimeout($r, $...))`,
+  `sleep($...)`,
+  `delay($...)`
+} as $wait where {
+  register_diagnostic(span=$wait, message="Do not wait a fixed time in a test: it is slow when the machine is fast and flaky when it is slow. Wait on the event or condition itself, or fake the clock with node:test mock timers (https://nodejs.org/api/test.html#class-mocktimers).")
+}

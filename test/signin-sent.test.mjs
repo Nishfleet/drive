@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import vm from "node:vm";
 
 const page = readFileSync(new URL("../public/signin.html", import.meta.url), "utf8");
@@ -50,7 +51,7 @@ async function run() {
   };
   const start = page.indexOf("<script>");
   vm.runInNewContext(page.slice(start + 8, page.indexOf("</script>", start)), sandbox);
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await nextTurn();
   return { elements, ticks };
 }
 
@@ -59,7 +60,7 @@ test("after the link is sent the form gives way to a Check your email step with 
   const form = elements.get("signin-form");
   elements.get("email").value = "me@example.com";
   form.listeners.get("submit")({ preventDefault() {} });
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await nextTurn();
   assert.equal(form.hidden, true);
   assert.equal(elements.get("sent").hidden, false);
   assert.equal(elements.get("sent-to").textContent, "me@example.com");
@@ -77,7 +78,7 @@ test("Use a different email brings the form back", async () => {
   const form = elements.get("signin-form");
   elements.get("email").value = "me@example.com";
   form.listeners.get("submit")({ preventDefault() {} });
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await nextTurn();
   elements.get("sent-change").listeners.get("click")();
   assert.equal(form.hidden, false);
   assert.equal(elements.get("sent").hidden, true);

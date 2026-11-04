@@ -1,0 +1,16 @@
+`$err.message` as $read where {
+  $err <: or {
+    `err`,
+    `e`,
+    `error`
+  },
+  $read <: within or {
+    `new Response($...)`,
+    `Response.json($...)`,
+    `c.json($...)`,
+    `json($...)`,
+    `errorResponse($...)`,
+    `jsonCapError($...)`
+  },
+  register_diagnostic(span=$read, message="Do not put err.message in a response: it leaks internal text. User-facing failure words come from core/messages.js (failureMessage or failureWords).")
+}
