@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DOC_PAGES as SEO_DOC_PAGES } from "../core/seo.js";
 import { faqMarkdown, markerValues } from "./docs.js";
@@ -25,18 +25,6 @@ const SCOREBOARD = fileURLToPath(new URL("../docs/scoreboard.md", import.meta.ur
 const BENCHMARKS = fileURLToPath(new URL("../docs/benchmarks.md", import.meta.url));
 
 const MAIN_GO = fileURLToPath(new URL("../cmd/drive/main.go", import.meta.url));
-export const HELP_SNAPSHOT = fileURLToPath(
-  new URL("../evals/agents/context/drive-help.txt", import.meta.url),
-);
-
-export function cliUsageText() {
-  const src = readFileSync(MAIN_GO, "utf8");
-  const match = src.match(/^const usage = `([^`]*)`/m);
-  if (!match) {
-    throw new Error("cmd/drive/main.go has no `const usage = ...` block to render");
-  }
-  return match[1].trim();
-}
 
 /**
  * The subcommands the CLI runs, from cmd/drive/main.go's `commands` table:
@@ -75,21 +63,6 @@ export function cliSubcommands() {
     throw new Error("cmd/drive/main.go's command table parsed to fewer than 10 subcommands");
   }
   return new Set([...names, "version", "help"]);
-}
-
-/**
- * Write the eval's CLI-help snapshot from main.go, so the eval's context and
- * the shipped CLI cannot drift apart. Plain function, so `node --test` runs
- * it directly, and the eval's own gate compares the committed file to the same
- * text this writes.
- * @param {string} [snapshotPath] defaults to evals/agents/context/drive-help.txt
- * @returns {string} the text written
- */
-export function renderHelpSnapshot(snapshotPath = HELP_SNAPSHOT) {
-  const text = `${cliUsageText()}\n`;
-  mkdirSync(dirname(snapshotPath), { recursive: true });
-  writeFileSync(snapshotPath, text);
-  return text;
 }
 
 function publishedBenchmarks() {
@@ -167,9 +140,5 @@ export function renderDocs(outDir = RENDERED_DIR) {
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  if (process.argv.includes("--sync-help")) {
-    renderHelpSnapshot();
-  } else {
-    renderDocs();
-  }
+  renderDocs();
 }

@@ -37,8 +37,6 @@ dist/
 docs-site/.rendered/
 public/docs/
 
-# Inspect eval logs (evals/agents) stay out of the repository.
-logs/
 docsbuild.done
 docsbuild.log
 
