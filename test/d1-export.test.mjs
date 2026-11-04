@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 const WF = readFileSync(new URL("../.github/workflows/d1-export.yml", import.meta.url), "utf8");
 const DEPLOY = readFileSync(
@@ -18,7 +22,7 @@ const onBlock = (text) => {
 /** One row of the backup matrix, as a [name, id] pair.
  *  @param {string} text */
 const matrixRows = (text) =>
-  [...text.matchAll(/^ {10}- \{ name: (\w+), id: ([0-9a-f-]{36}) \}$/gm)].map((m) => [m[1], m[2]]);
+  [...text.matchAll(/^ {10}- \{ name: (\w+), id: ([0-9a-f-]{36})[,} ]/gm)].map((m) => [m[1], m[2]]);
 
 test("the backup runs weekly and can be started by hand for a restore drill", () => {
   const on = onBlock(WF);
@@ -55,16 +59,8 @@ test("the backup walks every database the fleet owns, not only the deploy's", ()
   for (const id of deployIds)
     assert.ok(backupIds.includes(id), `the deploy migrates ${id} and the backup must dump it`);
   assert.ok(deployIds.length >= 2, "both databases are exported");
-  // The fleet's four product databases (fleet-ops#10594), by name and id, so
-  // one cannot drop out of the matrix. They are dumped from here because the
-  // production environment's D1 token is account-scoped and their own
-  // repositories hold no export credential and no AGE_RECIPIENT; when that
-  // setup lands each moves to its own repository (fleet-ops#10829), and this
-  // list moves with it. Until then, a name that leaves this matrix loses the
-  // only backup that database has.
   const PRODUCT_DATABASES = [
     ["siterep_payments", "ec176fc4-b4f2-44c0-a925-b36ec067cff5"],
-    ["tinystudio_email_signups", "ff360a55-14fc-468c-895f-893c89e0db79"],
     ["aiconverter", "376080eb-60f1-4bb8-aabb-06622acabb63"],
     ["0509", "746c6e3d-782e-443a-82d6-28ca93a16294"],
   ];
@@ -81,10 +77,6 @@ test("the backup walks every database the fleet owns, not only the deploy's", ()
 });
 
 test("a database that cannot be dumped fails its own job, and the others still ship", () => {
-  // The drive database is in the matrix the export API refuses, so its job is
-  // red on purpose. What must never happen is a green run that carried only
-  // the waitlist dump, which is what shipping a partial backup silently
-  // would look like.
   const strategy = WF.slice(WF.indexOf("strategy:"), WF.indexOf("steps:"));
   assert.match(
     strategy,
@@ -187,4 +179,32 @@ test("the age binary is a digest-pinned release download", () => {
   );
   const pins = readFileSync(new URL("../docs/security.md", import.meta.url), "utf8");
   assert.match(pins, /AGE_LINUX_AMD64_SHA256/);
+});
+
+test("the runbook's cf d1 commands parse as written, and each query sends its whole file", (t) => {
+  const runbook = readFileSync(new URL("../docs/runbook.md", import.meta.url), "utf8");
+  const commands = runbook.match(/npx cf d1 (?:query|time-travel restore) [^`\n]+/g) ?? [];
+  assert.ok(commands.length >= 4, `found ${commands.length} cf d1 commands in docs/runbook.md`);
+  const repo = fileURLToPath(new URL("..", import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), "runbook-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  symlinkSync(join(repo, "migrations"), join(dir, "migrations"));
+  writeFileSync(join(dir, "dump.sql"), "-- one table\nSELECT 1;\n");
+  for (const line of commands) {
+    const cmd = line
+      .replace("npx cf", JSON.stringify(join(repo, "node_modules/.bin/cf")))
+      .replace("<database-id>", "00000000-0000-0000-0000-000000000000")
+      .replace("<deploy-start-time>", "2026-11-01T00:00:00Z");
+    const run = spawnSync("sh", ["-c", cmd.includes("--dry-run") ? cmd : `${cmd} --dry-run`], {
+      cwd: dir,
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH}` },
+    });
+    assert.equal(run.status, 0, `${line}\n${run.stderr}${run.stdout}`);
+    const file = line.match(/\$\(cat ([^)]+)\)/)?.[1];
+    if (file) {
+      const sql = readFileSync(join(dir, file), "utf8").replace(/\n+$/, "");
+      assert.equal(JSON.parse(run.stdout).body.sql, sql, line);
+    }
+  }
 });

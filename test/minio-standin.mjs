@@ -193,6 +193,7 @@ async function boundPort(engine, name, port) {
         `the stand-in ${name} logged no "API:" address on 127.0.0.1 or 0.0.0.0 in 30s:\n${logs.stdout}${logs.stderr}`,
       );
     }
+    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
     await sleep(250);
   }
 }
@@ -281,6 +282,7 @@ export async function startMinioStandin({ name, environment, port }, t) {
     if (Date.now() > deadline) {
       throw new Error(`the S3 stand-in at ${endpoint} never answered /minio/health/live in 60s`);
     }
+    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
     await sleep(500);
   }
 }

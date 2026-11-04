@@ -1143,3 +1143,72 @@ test("gate 8b: the raw-storage import ban still holds in the files that build th
     assert.match(out, /noRestrictedImports/, `${file} must fail on the raw-storage ban itself`);
   }
 });
+
+test("gate 9: a fixed test wait, a module-level Map and err.message in a response fail lint", () => {
+  // The three GritQL plugins in lint/ are proved the way gate 8 proves the
+  // import ban: plant the mistake, run `biome check`, and require the plugin's
+  // own diagnostic, then plant the accepted form and require a pass.
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const probe = "zz-plugin-probe";
+  const bad = [
+    {
+      file: `test/${probe}.test.mjs`,
+      code: "const sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nawait sleep(250);\nawait new Promise((resolve) => setTimeout(resolve, 20));\n",
+      says: /Do not wait a fixed time in a test/,
+    },
+    {
+      file: `core/${probe}.js`,
+      code: "export const seen = new Map();\n",
+      says: /A module-level Map is per-isolate state/,
+    },
+    {
+      file: `src/${probe}.js`,
+      code: "export const f = (err) => new Response(err.message, { status: 400 });\nexport const g = (error) => Response.json({ error: error.message });\nexport const h = (e) => json({ error: e.message }, 400);\n",
+      says: /Do not put err\.message in a response/,
+    },
+  ];
+  const good = [
+    {
+      file: `test/${probe}.test.mjs`,
+      code: 'import { setImmediate as nextTurn } from "node:timers/promises";\n\nawait nextTurn();\n',
+    },
+    {
+      file: `core/${probe}.js`,
+      code: "export function seen() {\n  return new Map();\n}\n",
+    },
+    {
+      file: `src/${probe}.js`,
+      code: 'export const f = () => new Response("fine", { status: 400 });\n',
+    },
+  ];
+  /** @param {string} rel @returns {{code: number, out: string}} */
+  const lintOne = (rel) => {
+    try {
+      const out = execFileSync("npx", ["biome", "lint", rel], { cwd: root, encoding: "utf8" });
+      return { code: 0, out };
+    } catch (err) {
+      const e = /** @type {{status?: number, stdout?: string, stderr?: string}} */ (err);
+      return { code: e.status ?? 1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  try {
+    for (const { file, code, says } of bad) {
+      const path = new URL(`../${file}`, import.meta.url);
+      writeFileSync(path, code);
+      const { code: status, out } = lintOne(file);
+      assert.notEqual(status, 0, `${file} must fail lint`);
+      assert.match(out, says, `${file} must fail on its plugin rule:\n${out}`);
+      rmSync(path, { force: true });
+    }
+    for (const { file, code } of good) {
+      const path = new URL(`../${file}`, import.meta.url);
+      writeFileSync(path, code);
+      const { code: status, out } = lintOne(file);
+      assert.equal(status, 0, `${file} must pass lint:\n${out}`);
+      rmSync(path, { force: true });
+    }
+  } finally {
+    for (const { file } of [...bad, ...good])
+      rmSync(new URL(`../${file}`, import.meta.url), { force: true });
+  }
+});

@@ -39,6 +39,14 @@
       }
     }
   },
+  "plugins": [
+    { "path": "./lint/no-test-sleep.grit", "includes": ["**/test/**"] },
+    {
+      "path": "./lint/no-err-message-response.grit",
+      "includes": ["**/src/**", "**/core/**"]
+    },
+    { "path": "./lint/no-module-map.grit", "includes": ["**/src/**", "**/core/**"] }
+  ],
   "overrides": [
     {
       "includes": ["public/files.html", "public/index.html", "public/upload.html"],

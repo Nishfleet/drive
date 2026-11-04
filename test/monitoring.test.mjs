@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import {
   captureError,
   monitorConfig,
@@ -409,7 +410,7 @@ test("a capture resolves only once the POST has actually been made", async () =>
       captureResolved = true;
       return id;
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextTurn();
     assert.equal(postOpen, true, "the POST is in flight");
     // The load-bearing assertion: fire-and-forget would have resolved by now
     // while the POST was still open, and the event would be lost at teardown.

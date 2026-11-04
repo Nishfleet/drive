@@ -58,16 +58,7 @@ func TestTwoDevicesKeepBothSaves(t *testing.T) {
 		}
 		return func() { stopStandinProcess(cmd, filepath.Join(home, "Drive")) }
 	}
-	t.Cleanup(func() {
-		if !t.Failed() {
-			return
-		}
-		for _, h := range []string{homeA, homeB} {
-			if log, err := os.ReadFile(filepath.Join(h, ".config", "drive", "mount.log")); err == nil {
-				t.Logf("%s mount log:\n%s", filepath.Base(h), tailLines(string(log), 60))
-			}
-		}
-	})
+	logMountLogsOnFailure(t, homeA, homeB)
 	stopA := startDevice(homeA, deviceA, rcA)
 	defer stopA()
 	stopB := startDevice(homeB, "linux", rcB)
@@ -441,6 +432,24 @@ func waitMountSees(t *testing.T, c *rcClient, dir string, names []string) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("mount %s did not show %v: %v", dir, names, last)
+}
+
+func logMountLogsOnFailure(t *testing.T, homes ...string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		for _, h := range homes {
+			path := filepath.Join(DefaultConfigDir(h), "mount.log")
+			log, err := os.ReadFile(path)
+			if err != nil {
+				t.Errorf("%s mount log unreadable: %v", filepath.Base(h), err)
+				continue
+			}
+			t.Logf("%s mount log:\n%s", filepath.Base(h), tailLines(string(log), 60))
+		}
+	})
 }
 
 func tailLines(s string, n int) string {

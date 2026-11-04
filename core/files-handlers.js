@@ -528,7 +528,7 @@ async function uploadRequest(request, url, store, account, options = {}) {
     await store.write(path, payload, contentType, { contentLength });
   } catch (error) {
     if (error instanceof PreChargeLimitError) {
-      return json({ error: error.message }, 403);
+      return json({ error: failureMessage("pre-charge-storage-limit") }, 403);
     }
     return json({ error: `The upload did not finish: ${String(error)}` }, 500);
   }

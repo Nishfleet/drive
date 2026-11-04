@@ -417,6 +417,7 @@ async function startStorage(t) {
       // Not listening yet.
     }
     if (Date.now() > deadline) throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
+    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
     await sleep(250);
   }
   return { endpoint: `http://127.0.0.1:${port}`, bucket, real: false, stop: async () => {} };

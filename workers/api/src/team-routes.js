@@ -1,5 +1,6 @@
 import { errorResponse, json, readJsonObject } from "../../../core/http.js";
 import { checkedTeamRole, teamScopeFor } from "../../../core/keyprovider.js";
+import { failureMessage } from "../../../core/messages.js";
 import { mailFromEnv, notifySecurityEvent } from "../../../core/security-event.js";
 
 /**
@@ -62,10 +63,10 @@ export async function inviteMemberRoute(request, ctx) {
   try {
     role = checkedTeamRole(read.body.role);
   } catch (error) {
-    return errorResponse(
-      400,
-      error instanceof Error ? error.message : "That role is not one this drive has.",
-    );
+    if (!(error instanceof TypeError)) {
+      throw error;
+    }
+    return errorResponse(400, failureMessage("team-role"));
   }
   const previous = (await ctx.store.teams.listMembers(ctx.account, ctx.params.teamId)).find(
     (/** @type {import("../../../core/teams.js").TeamMember} */ row) =>

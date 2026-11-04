@@ -1,0 +1,17 @@
+name: agent
+# An issue labelled agent-ready starts the fleet's one worker lane, which lives in fleet-ops.
+# https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
+on:
+  issues:
+    types: [labeled]
+permissions: {}
+jobs:
+  agent:
+    # The lane's gate job reads the issue's labels with this token. A called
+    # workflow can only lower the caller's GITHUB_TOKEN permissions, never raise them:
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations
+    permissions: {issues: read}
+    # @main, not a SHA: runner group "agent" admits only agent.yml@refs/heads/main.
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
+    with:
+      issue: ${{ github.event.issue.number }}

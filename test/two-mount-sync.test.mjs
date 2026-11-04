@@ -271,6 +271,7 @@ async function startStandin(dir, configPath) {
         killTracked(server);
         throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
       }
+      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
       await sleep(300);
     }
   }
@@ -415,6 +416,7 @@ async function startMachine(label, workDir, cfg) {
         `rclone ${isDarwin ? "nfsmount" : "mount"} ${label} never came up in 30s\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
       );
     }
+    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
     await sleep(500);
   }
 }
@@ -423,6 +425,7 @@ async function startMachine(label, workDir, cfg) {
 async function stopMachine(m) {
   m.child.kill("SIGTERM");
   const exited = new Promise((resolve) => m.child.once("exit", resolve));
+  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
   await Promise.race([exited, sleep(10_000)]);
   if (m.child.exitCode === null) m.child.kill("SIGKILL");
   // Clear the mount point after rclone exits the same way Unmount() does:
@@ -462,6 +465,7 @@ async function waitForFile(mountDir, name, seconds, rcAddr, configPath) {
       return { seconds: (Date.now() - started) / 1000 };
     } catch {
       if (Date.now() > deadline) return null;
+      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
       await sleep(500);
     }
   }

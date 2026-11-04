@@ -80,6 +80,7 @@ async function waitForObject(client, bucket, key, seconds) {
     const got = await client.send("GET", { bucket, key });
     if (got.status === 200) return got;
     if (Date.now() > deadline) return got;
+    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
     await sleep(400);
   }
 }
@@ -162,6 +163,7 @@ async function startMount(rcloneBin, workDir, cred) {
           `rclone mount never came up in 30s\n${stderr}${log.split("\n").slice(-8).join("\n")}`,
         );
       }
+      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
       await sleep(400);
     }
   }
@@ -188,6 +190,7 @@ async function waitForQueued(rcloneBin, m, name, ready, seconds) {
     if (Date.now() > deadline) {
       throw new Error(`rclone's upload queue never reached the state for ${name}: ${stdout}`);
     }
+    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
     await sleep(200);
   }
 }
@@ -196,6 +199,7 @@ async function waitForQueued(rcloneBin, m, name, ready, seconds) {
 async function stopMount(m) {
   m.child.kill("SIGTERM");
   const exited = new Promise((resolve) => m.child.once("exit", resolve));
+  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
   await Promise.race([exited, sleep(10_000)]);
   if (m.child.exitCode === null) killTracked(m.child, "SIGKILL");
   await run("fusermount3", ["-uz", m.mountDir]).catch(() => {});
@@ -341,6 +345,7 @@ async function proof(t, rcloneBin, workDir) {
   t.diagnostic(`cap 0 swapped to ${cappedBody.credential.accessKeyId}`);
 
   await stopMount(mount);
+  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
   await sleep(500);
   mount = await startMount(rcloneBin, workDir, credFor(cappedBody.credential));
   const keptAfter = await readFile(path.join(mount.mountDir, "kept.txt"), "utf8");
@@ -406,6 +411,7 @@ async function proof(t, rcloneBin, workDir) {
   );
 
   await stopMount(mount);
+  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
   await sleep(500);
   mount = await startMount(rcloneBin, workDir, credFor(raisedBody.credential));
   const pendingAfter = await waitForObject(root, BUCKET, pendingKey, 70);

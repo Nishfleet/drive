@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import vm from "node:vm";
 
 const page = readFileSync(new URL("../public/usage.html", import.meta.url), "utf8");
@@ -90,7 +91,7 @@ async function run(config = {}) {
     },
   };
   vm.runInNewContext(script, sandbox);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await nextTurn();
   return { elements, calls };
 }
 

@@ -1,0 +1,11 @@
+`new Map($...)` as $map where {
+  not $map <: within or {
+    JsFunctionDeclaration(),
+    JsFunctionExpression(),
+    JsArrowFunctionExpression(),
+    JsMethodClassMember(),
+    JsConstructorClassMember(),
+    JsMethodObjectMember()
+  },
+  register_diagnostic(span=$map, message="A module-level Map is per-isolate state: each Worker isolate holds its own copy, and isolates start and stop without notice. Keep shared state in D1, KV or a Durable Object, or create the Map inside the function that uses it (https://developers.cloudflare.com/workers/reference/how-workers-works/).")
+}
