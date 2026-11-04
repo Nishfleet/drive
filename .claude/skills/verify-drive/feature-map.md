@@ -31,7 +31,7 @@ Expected answers are the anonymous local ones, observed with `npx cf dev` on a f
 | `GET,POST,DELETE /api/request` | gated | `curl $B/api/request` | 401 | status+body |
 | `POST /api/waitlist` | public | `curl -X POST $B/api/waitlist $H -H 'content-type: application/json' -d '{"email":"verify-probe@example.com"}'` | 200; one row `verify-probe@example.com`, source `pricing-page`, in `WAITLIST_DB` table `waitlist` | D1 row, POST span with `http.response.status_code` 200, log line `POST .../api/waitlist` |
 | `GET /api/quote` | public | `curl $B/api/quote` (no size) | 400 `That size is not a storage amount we can quote` | status+body |
-| `POST /api/storage-events` | public, token | without a token: 401 `The event could not be accepted`. With `-H 'authorization: Bearer local-dummy-token'` and `-d '{}'`: 400 (the token passed, the empty event was refused) | status+body; proves `.dev.vars` loaded |
+| `POST /api/storage-events` | public, token | without a token: 401 `The event could not be accepted`. With the `.dev.vars` dummy as a Bearer `authorization` header and `-d '{}'`: 400 (the token passed, the empty event was refused) | status+body; proves `.dev.vars` loaded |
 | `POST /api/storage-events/signed` | public | `curl -X POST $B/api/storage-events/signed -d '{}'` | 503 `not configured` (secret unset) | status+body |
 | `POST /api/signin` | public | `curl -X POST $B/api/signin $H -H 'content-type: application/json' -d '{}'` | 400 `Choose one of: email, google, github.` | status+body |
 | `GET /api/signin/verify` | public | `curl -i $B/api/signin/verify` | 302 | status, Location header |
