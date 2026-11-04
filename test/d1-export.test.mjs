@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 const WF = readFileSync(new URL("../.github/workflows/d1-export.yml", import.meta.url), "utf8");
 const DEPLOY = readFileSync(
@@ -175,4 +179,32 @@ test("the age binary is a digest-pinned release download", () => {
   );
   const pins = readFileSync(new URL("../docs/security.md", import.meta.url), "utf8");
   assert.match(pins, /AGE_LINUX_AMD64_SHA256/);
+});
+
+test("the runbook's cf d1 commands parse as written, and each query sends its whole file", (t) => {
+  const runbook = readFileSync(new URL("../docs/runbook.md", import.meta.url), "utf8");
+  const commands = runbook.match(/npx cf d1 (?:query|time-travel restore) [^`\n]+/g) ?? [];
+  assert.ok(commands.length >= 4, `found ${commands.length} cf d1 commands in docs/runbook.md`);
+  const repo = fileURLToPath(new URL("..", import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), "runbook-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  symlinkSync(join(repo, "migrations"), join(dir, "migrations"));
+  writeFileSync(join(dir, "dump.sql"), "-- one table\nSELECT 1;\n");
+  for (const line of commands) {
+    const cmd = line
+      .replace("npx cf", JSON.stringify(join(repo, "node_modules/.bin/cf")))
+      .replace("<database-id>", "00000000-0000-0000-0000-000000000000")
+      .replace("<deploy-start-time>", "2026-11-01T00:00:00Z");
+    const run = spawnSync("sh", ["-c", cmd.includes("--dry-run") ? cmd : `${cmd} --dry-run`], {
+      cwd: dir,
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH}` },
+    });
+    assert.equal(run.status, 0, `${line}\n${run.stderr}${run.stdout}`);
+    const file = line.match(/\$\(cat ([^)]+)\)/)?.[1];
+    if (file) {
+      const sql = readFileSync(join(dir, file), "utf8").replace(/\n+$/, "");
+      assert.equal(JSON.parse(run.stdout).body.sql, sql, line);
+    }
+  }
 });

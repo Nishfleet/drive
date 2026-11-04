@@ -136,9 +136,12 @@ https://developers.cloudflare.com/d1/best-practices/import-export-data/):
    and any `CREATE TABLE _cf_KV` from `d1.sql`, as the same Cloudflare page
    says, then import it the way "Restore from a dump" steps 4 and 5 say.
 4. Run the migration file itself as a query:
-   `npx cf d1 query <database-id> --sql "$(cat migrations/drive/0039_file_index_fts.sql)"`.
-   Do not use `cf d1 migrations apply`, because the imported `d1_migrations`
-   table already lists 0039, so `apply` would skip it. The file creates
+   `npx cf d1 query <database-id> --sql="$(cat migrations/drive/0039_file_index_fts.sql)"`.
+   Keep the `=`: the file starts with `--`, so `--sql "…"` with a space
+   reads it as a new flag and stops with "Unknown argument".
+   `test/d1-export.test.mjs` runs every `cf d1` command here with
+   `--dry-run`. Do not use `cf d1 migrations apply`, because the imported
+   `d1_migrations` table already lists 0039, so `apply` would skip it. The file creates
    `file_index_fts`, fills it from `file_index` (its backfill), and adds the
    three triggers.
 
@@ -178,7 +181,7 @@ Restore from a dump:
 4. Small dumps, or a table at a time, go back through the CLI:
 
    ```sh
-   npx cf d1 query <database-id> --sql "$(cat dump.sql)"
+   npx cf d1 query <database-id> --sql="$(cat dump.sql)"
    ```
 
    `--sql` carries the statements in the command line, so split a large dump
