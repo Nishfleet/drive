@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { reportSkip } from "./proof-skip.mjs";
 
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -173,6 +174,7 @@ test("hyperfine on PATH is the CLI tool, and an added sleep fails against the CL
   try {
     bin = execFileSync("which", ["hyperfine"], { encoding: "utf8" }).trim();
   } catch {
+    reportSkip("speed-ratchet-cli", "hyperfine is not installed");
     t.skip("hyperfine is not installed; the synthetic sleep test above still holds");
     return;
   }

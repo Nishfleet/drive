@@ -174,6 +174,7 @@ async function startMount({ workDir, label, mountDir, cacheDir, cred }) {
           `rclone mount ${label} never came up in 40s\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
         );
       }
+      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
       await sleep(500);
     }
   }
@@ -188,10 +189,12 @@ async function startMount({ workDir, label, mountDir, cacheDir, cred }) {
 async function stopMount(mount) {
   mount.child.kill("SIGTERM");
   const exited = new Promise((resolve) => mount.child.once("exit", resolve));
+  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
   await Promise.race([exited, sleep(10_000)]);
   if (mount.child.exitCode === null) mount.child.kill("SIGKILL");
   await run("fusermount3", ["-uz", mount.mountDir]).catch(() => {});
   await run("fusermount", ["-uz", mount.mountDir]).catch(() => {});
+  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
   await sleep(500);
 }
 
@@ -207,6 +210,7 @@ async function stopMount(mount) {
 async function killMount(mount) {
   killTracked(mount.child, "SIGKILL");
   const exited = new Promise((resolve) => mount.child.once("exit", resolve));
+  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
   await Promise.race([exited, sleep(10_000)]);
   if (mount.child.exitCode === null) killTracked(mount.child, "SIGKILL");
   // The kernel releases a FUSE point when the last reference to it goes, which
@@ -214,6 +218,7 @@ async function killMount(mount) {
   // mount left behind.
   await run("fusermount3", ["-uz", mount.mountDir]).catch(() => {});
   await run("fusermount", ["-uz", mount.mountDir]).catch(() => {});
+  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
   await sleep(500);
 }
 
@@ -231,6 +236,7 @@ async function waitForFile(mountDir, name, seconds) {
       return true;
     } catch {
       if (Date.now() > deadline) return false;
+      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
       await sleep(500);
     }
   }
@@ -415,6 +421,7 @@ async function proof(t, workDir) {
   // Give rclone's write-back more than its 5s window so the ordinary case is
   // settled (the file is in storage), then confirm it. This proves the happy
   // path writes through BEFORE anything is capped.
+  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
   await sleep(8000);
   const pendingUploaded = await objectBody(master, bucket, `${prefix}pending.txt`);
   assert.equal(
@@ -435,6 +442,7 @@ async function proof(t, workDir) {
   assert.ok(await waitForFile(mountDir, "in-flight.txt", 30), "the file is accepted by the mount");
   // Spend only a fraction of the 5s write-back, then prove the object is not
   // in storage yet: it is a real pending upload, not luck.
+  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
   await sleep(1500);
   assert.equal(
     await objectBody(master, bucket, `${prefix}in-flight.txt`),
@@ -590,6 +598,7 @@ async function proof(t, workDir) {
   // cache and fails the upload later, the test that matters is the same: the
   // object is not in storage. A cache that holds it is the spec's promise, not
   // a leak.
+  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
   await sleep(7000);
   assert.equal(
     (await objectBody(master, bucket, `${prefix}after-cap.txt`)) ?? null,
@@ -671,6 +680,7 @@ async function proof(t, workDir) {
     if (Date.now() > deadline) {
       assert.fail("the restored mount's new file never reached storage in 45s");
     }
+    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
     await sleep(1000);
   }
 
@@ -690,6 +700,7 @@ async function proof(t, workDir) {
     if (Date.now() > pendingDeadline) {
       assert.fail("the upload that waited through the cap never reached storage");
     }
+    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
     await sleep(1000);
   }
 

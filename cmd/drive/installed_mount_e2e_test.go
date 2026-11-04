@@ -45,6 +45,7 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 	mountA := filepath.Join(homeA, "Drive")
 	mountB := filepath.Join(homeB, "Drive")
 	rcA, rcB := "127.0.0.1:"+freePort(t), "127.0.0.1:"+freePort(t)
+	logMountLogsOnFailure(t, homeA, homeB)
 
 	t.Setenv("DRIVE_S3_ACCESS_KEY_ID", cfg.AccessKey)
 	t.Setenv("DRIVE_S3_SECRET_ACCESS_KEY", cfg.SecretKey)
@@ -121,7 +122,7 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 	}
 	rcAClient := rcClientForTestHome(t, homeA, rcA, RemoteFor(cfg))
 	rcBClient := rcClientForTestHome(t, homeB, rcB, RemoteFor(cfg))
-	releaseSavesTogether(t, rcAClient, rcBClient, name)
+	releaseSavesTogether(t, rcAClient, rcBClient, homeA, homeB, name)
 	conflict := proveBothSavesKept(t, root, cfg, rcAClient, rcBClient, mountA, mountB, name, bodyA, bodyB,
 		[]string{ConflictName(name, "mac"), ConflictName(name, "linux")})
 

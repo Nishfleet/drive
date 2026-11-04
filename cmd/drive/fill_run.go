@@ -36,7 +36,7 @@ type fillBackend interface {
 	stats(ctx context.Context) (vfsStats, error)
 	refresh(ctx context.Context, recursive bool) error
 	refreshDirs(ctx context.Context, dirs []string) error
-	// vfs/refresh marks the directory cache stale before re-listing, so refreshing while storage is down fails later opens (https://github.com/rclone/rclone/issues/1963).
+	// vfs/refresh marks the directory cache stale before re-listing, so refreshing while storage is down fails later opens (https://github.com/rclone/rclone/blob/v1.75.2/vfs/dir.go#L809-L815, then https://github.com/rclone/rclone/blob/v1.75.2/vfs/dir.go#L526-L540).
 	reachable(ctx context.Context) error
 	remote() string
 }

@@ -19,12 +19,11 @@ A Finder drive for people and their agents: plain files in object storage, mount
 - An issue can name a path that has moved. Check `README.md` ("The repository") before you search. The static pages are in `public/`, but `get-started.html` sits at the repo root and Vite builds it to `/get-started.html`.
 - The site Worker is `src/index.js` (the route table). The api Worker is `workers/api/src/index.js`. The download Worker is `workers/dl/src/index.js`. The CLI is `cmd/drive/`. Each has its tests beside it: `test/` for the site Worker, `workers/*/test/`, and `cmd/drive/*_test.go`.
 - `core/` is the code all three Workers share (drive issue #616). A module more than one Worker needs lives there, never in one Worker's own `src/`. `biome.json` refuses an import that crosses: a module in `src/` or `core/` may not import a `workers/**` tree, and a module in a Worker's own `workers/*/src/` may not import the site Worker's `src/`. So a cross-import fails `npm run lint`; the way to share a module is to move it into `core/` and import it from there. `test/pr-gate.test.mjs` gate 8 plants each crossing and proves the rule on every `npm test` run.
-- The D1 bindings are `WAITLIST_DB` and `DRIVE_DB` in `cloudflare.config.ts`. There is no plain `DB`. Migrations live in `migrations/waitlist/` and `migrations/drive/`.
+- The D1 bindings are <!-- facts:D1_BINDINGS -->`WAITLIST_DB`, `DRIVE_DB`, `METER_DB`<!-- /facts:D1_BINDINGS --> in `cloudflare.config.ts`. There is no plain `DB`. Migrations live in `migrations/waitlist/` and `migrations/drive/`.
 
 ## Set up and check fast
 
 - Run `npm ci` in a new checkout, and again after you merge `origin/main`. The packages are all in the root `package.json` (`workers/*` has none), so a stale `node_modules` fails with `Cannot find package 'validator'` or `'hono'`. This is not a bug in your change.
-- promptfoo (the agent eval, `evals/agents/`) is its own npm project, pinned there and not in the root `package.json`. Install it with `npm ci --prefix evals/agents` and check the version with `evals/agents/node_modules/.bin/promptfoo --version` (about 160 MB). Do not run `npx` or `npm exec` for it: that downloads the whole package each time and fills a runner's 3 GiB memory limit (drive#257).
 - `npm test` is the full gate: types, lint, the dead-export lint, the docs build, then every test. A single `node --test test/x.test.mjs` is the fast loop, but the docs tests need the built pages. If you see `... was not built` or `ENOENT ... public/docs`, run `npm run docs:build` once and retry. This is not a failure on main.
 - Nothing dead is left exported. `npm run lint:exports` (knip, part of `npm run check` and so of `npm test`) fails on an export that nothing imports, and on a file nothing imports. A module that must keep an export lists the reason beside it and the entry points are in `knip.json`. Un-export rather than delete when the module uses the name itself. `knip.json` ignores `axe-core` because the a11y test loads it through `createRequire().resolve`, `rolldown` because the dl boot test dynamic-imports vite's bundler, `zod` because #778 added it and nothing in this tree imports it yet, and `@stryker-mutator/command-runner` because `stryker.conf.json` names it as a plugin and it ships inside `@stryker-mutator/core` (`npm run mutate`, drive#642).
 - `npm run typecheck` writes the Worker types first (`pretypecheck`), so run it through npm, not bare `tsc`.
@@ -44,7 +43,9 @@ Live: https://storagebun.com. It stays private until launch, so every path, heal
 
 Declared `bindings.secret()` names in `cloudflare.config.ts`. A PR that adds one lists it under 'Secrets to set' and stays draft until it is set on drive-pricing.
 
+<!-- facts:SECRETS -->
 - `METER_EVENT_TOKEN`
+<!-- /facts:SECRETS -->
 
 ## Before you open a PR
 

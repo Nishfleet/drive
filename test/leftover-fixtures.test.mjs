@@ -67,6 +67,7 @@ const waitUntil = async (predicate, ms, what) => {
   for (;;) {
     if (predicate()) return;
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
     await sleep(200);
   }
 };

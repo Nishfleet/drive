@@ -1,6 +1,6 @@
 import { capLine, usageSummary } from "./billing-report.js";
 import { enforceCap } from "./cap.js";
-import { failureMessage } from "./messages.js";
+import { FAILURE_MESSAGES, failureMessage } from "./messages.js";
 import { notifySecurityEvent } from "./security-event.js";
 import { unauthorizedResponse } from "./status.js";
 
@@ -20,7 +20,7 @@ export function parseCapUsd(input) {
     return checkedCap(input, input);
   }
   if (typeof input !== "string") {
-    throw new TypeError(capShapeError(String(input)));
+    throw new TypeError(capShapeError(input));
   }
   const amount = input.trim().replace(/^\$/, "").trim();
   if (!CAP_DOLLARS.test(amount)) {
@@ -34,10 +34,9 @@ export function parseCapUsd(input) {
  * @returns {string}
  */
 function capShapeError(given) {
-  return (
-    `A spending cap is a dollar amount like 20 or 12.50, got ${JSON.stringify(given)}. ` +
-    "Type a number like that again."
-  );
+  const { what, next } = FAILURE_MESSAGES["cap-shape"];
+  const typed = typeof given === "number" ? given : String(given);
+  return `${what.slice(0, -1)}, got ${JSON.stringify(typed)}. ${next}`;
 }
 
 /**
@@ -173,7 +172,7 @@ export async function handleCapRequest(request, account, capStore, mail = null) 
     usd = parseCapUsd(amount);
   } catch (error) {
     if (error instanceof TypeError) {
-      return jsonCapError(error.message, 400);
+      return jsonCapError(capShapeError(amount), 400);
     }
     throw error;
   }

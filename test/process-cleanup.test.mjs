@@ -77,6 +77,7 @@ const waitUntil = async (predicate, ms, what) => {
   for (;;) {
     if (predicate()) return;
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
     await sleep(200);
   }
 };
@@ -104,6 +105,7 @@ test("a signalled test process leaves no container and no rclone serve behind", 
     if (typeof child.pid === "number" && alive(child.pid)) {
       child.kill("SIGTERM");
       const deadline = Date.now() + 15_000;
+      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
       while (alive(child.pid) && Date.now() < deadline) await sleep(200);
       if (alive(child.pid)) child.kill("SIGKILL");
     }

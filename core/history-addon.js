@@ -25,11 +25,13 @@ export const HISTORY_ENDPOINT = "/api/history";
 const HISTORY_WINDOWS = Object.freeze([HIDDEN_VERSION_DAYS, 30, 365]);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+// biome-ignore lint/plugin: constant lookup table, never written, so per-isolate state is harmless
 const LABELS = new Map([
   [HIDDEN_VERSION_DAYS, "Keep history 3 days"],
   [30, "Keep history 30 days"],
   [365, "Keep history 1 year"],
 ]);
+// biome-ignore lint/plugin: constant lookup table, never written, so per-isolate state is harmless
 const WORDS = new Map([
   [HIDDEN_VERSION_DAYS, `${HIDDEN_VERSION_DAYS} days`],
   [30, "30 days"],

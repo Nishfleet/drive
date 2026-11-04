@@ -45,7 +45,16 @@ jobs:
           unzip -qo "$zip"
           install -D -m 0755 "rclone-$PINNED_RCLONE_VERSION-linux-amd64/rclone" "$RUNNER_TEMP/bin/rclone"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - &go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0  # zizmor: ignore[cache-poisoning]
+        with:
+          go-version: "1.24"
+          cache: true
+      - name: Install hyperfine (the speed ratchet's CLI row)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends hyperfine
       - run: npm test
+        env:
+          DRIVE_WALK_CLI: "1"
 
   # The drive CLI and its mount proofs (docs/build-spec.md step 1, drive#501, drive#868). Required check.
   go:
@@ -53,10 +62,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - *checkout
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0  # zizmor: ignore[cache-poisoning]
-        with:
-          go-version: "1.24"
-          cache: true
+      - *go
       - name: Install rclone (the stock tool the mount drives)
         run: *rclone
       - name: Go code is gofmt-formatted
@@ -73,6 +79,19 @@ jobs:
           args: check
       - name: Windows code vets and its tests compile
         run: GOOS=windows go vet ./cmd/... && GOOS=windows go test -c -o /dev/null ./cmd/drive/
+      - name: macOS code vets and its tests compile
+        run: GOOS=darwin go vet ./cmd/... && GOOS=darwin go test -c -o /dev/null ./cmd/drive/
+      # golangci-lint-action is not on the org's allowed-actions list, so the pinned release is checked the way rclone is.
+      - name: No new fixed sleep in a Go test (.golangci.yml, only lines new since main)
+        env:
+          GOLANGCI_LINT_VERSION: 2.15.0
+          GOLANGCI_LINT_SHA256: 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
+        run: |
+          tgz="golangci-lint-$GOLANGCI_LINT_VERSION-linux-amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$tgz" "https://github.com/golangci/golangci-lint/releases/download/v$GOLANGCI_LINT_VERSION/$tgz"
+          echo "$GOLANGCI_LINT_SHA256  $RUNNER_TEMP/$tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tgz" -C "$RUNNER_TEMP" --strip-components=1 "golangci-lint-$GOLANGCI_LINT_VERSION-linux-amd64/golangci-lint"
+          "$RUNNER_TEMP/golangci-lint" run ./...
       - run: go test -race ./cmd/drive/ -short
       - run: go test ./cmd/drive/ -run 'TestStandinMountProof|TestTwoDevicesKeepBothSaves' -v -timeout 600s
       - name: No test fixture outlives its run (drive#868)
@@ -97,25 +116,41 @@ jobs:
           ./gitleaks git . --config .github/gitleaks-private-detail.toml --log-opts "$RANGE" --redact --exit-code 2 --no-banner
 
   # The owner's last gate: a preview link on every PR (fleet-ops#10935), Cloudflare's own preview command.
+  # Not a required check. Skipped for forks and Dependabot, whose runs get no Actions secrets (GitHub docs,
+  # "Automating Dependabot with GitHub Actions"). The link goes on the PR as one comment, edited on each push
+  # (Cloudflare docs, "Previews" examples), because this job's secrets live in the production environment.
   preview:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
     environment:
-      name: production
+      name: preview
     steps:
       - *checkout
       - *node
       - run: npm ci
       - run: npm run docs:build
       - name: Deploy the preview, and fail when Cloudflare gives no link
+        id: preview
         run: |
           npx cf previews deploy "pr-$PR" | tee "$RUNNER_TEMP/preview.out"
-          grep -m1 -oE 'https://pr-[0-9]+-[a-z0-9.-]+' "$RUNNER_TEMP/preview.out" >> "$GITHUB_STEP_SUMMARY"
+          url=$(grep -m1 -oE 'https://pr-[0-9]+-[a-z0-9.-]+' "$RUNNER_TEMP/preview.out")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Preview: $url" >> "$GITHUB_STEP_SUMMARY"
         env:
           PR: ${{ github.event.pull_request.number }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Put the preview link on the PR
+        run: |
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --edit-last --create-if-none --body "Preview: $URL"
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          URL: ${{ steps.preview.outputs.url }}
+          GH_TOKEN: ${{ github.token }}
 
   dependency-review:
     # GitHub's own check: fails a PR that adds a dependency with a known vulnerability.

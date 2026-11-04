@@ -33,6 +33,7 @@ const BRANCH_JOB_CURSOR_UNSET = 0;
  * shadows a live one.
  * @type {Map<string, number>}
  */
+// biome-ignore lint/plugin: best-effort duplicate drop; the durable guard is the ack order (drive#845)
 const ackedCursors = new Map();
 
 const ACKED_CURSORS_LIMIT = 10_000;

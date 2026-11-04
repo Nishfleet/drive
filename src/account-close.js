@@ -1,7 +1,7 @@
 import { sendEmail } from "../core/email-send.js";
 import { scopeStore } from "../core/files-scope.js";
 import { json } from "../core/http.js";
-import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { FAILURE_MESSAGES, failureMessage, failureWords } from "../core/messages.js";
 import { DAY_MS } from "../core/units.js";
 
 /** @typedef {import("../core/files.js").FileStore} FileStore */
@@ -544,7 +544,7 @@ export async function handleCloseRequest(request, account, deps) {
     return json(closePayload(account, closed));
   } catch (error) {
     if (error instanceof TypeError) {
-      return json({ error: error.message }, 400);
+      return json({ error: failureWords(error, "close-failed") }, 400);
     }
     throw error;
   }
@@ -580,7 +580,7 @@ export async function handleCloseCancelRequest(request, account, deps) {
     return json(closePayload(account, cancelled));
   } catch (error) {
     if (error instanceof TypeError) {
-      return json({ error: error.message }, 400);
+      return json({ error: failureWords(error, "close-failed") }, 400);
     }
     throw error;
   }

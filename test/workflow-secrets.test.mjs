@@ -90,17 +90,18 @@ test("the environment reader handles both YAML shapes and a job without one", ()
   assert.equal(environmentOf(["    runs-on: ubuntu-latest"]), undefined);
 });
 
-test("every deploy secret is read only in a job bound to the production environment", () => {
+test("every deploy secret is read only in a job bound to its environment: preview for the PR preview, production otherwise", () => {
   let reads = 0;
   for (const { name, text } of workflows) {
     for (const job of jobsOf(text)) {
       const deploy = secretsRead(job.body.join("\n")).filter((s) => DEPLOY_SECRETS.has(s));
       reads += deploy.length;
       if (deploy.length === 0) continue;
+      const expected = job.id === "preview" ? "preview" : "production";
       assert.equal(
         environmentOf(job.body),
-        "production",
-        `${name} job ${job.id} reads ${deploy.join(", ")} without environment: production`,
+        expected,
+        `${name} job ${job.id} reads ${deploy.join(", ")} without environment: ${expected}`,
       );
     }
   }

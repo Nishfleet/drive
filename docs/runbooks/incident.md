@@ -32,8 +32,8 @@ and the point where the decision is Nish's.
   (`.github/workflows/deploy-production.yml`) rolls the Worker back to the
   previous version automatically when a step after the live-version read fails
   (its "Roll back the Worker version" step). Read that run first.
-- **Health named a binding.** `WAITLIST_DB`, `DRIVE_DB`, `METER_DB`,
-  `BRANCH_SNAPSHOTS`, `ASSETS` and the rate limiters are the names it can report.
+- **Health named a binding.** The names it can report are the Worker's bindings, listed in
+  `docs/runbook.md` under "Worker facts".
   A D1 name means a database is unreachable. An `ASSETS` name means a page will
   not serve.
 - **Worker logs.** The `[pricing] request failed:` line (`src/index.js`

@@ -244,6 +244,26 @@ export const FAILURE_MESSAGES = Object.freeze({
     what: "New accounts can store 1 TB until the first payment goes through.",
     next: "Ask support if you need more storage before then.",
   }),
+  "cap-shape": Object.freeze({
+    what: "A spending cap is a dollar amount like 20 or 12.50.",
+    next: "Type a number like that again.",
+  }),
+  "event-shape": Object.freeze({
+    what: "That event did not arrive as a list of records.",
+    next: "Send a single event or a list under Records and try again.",
+  }),
+  "close-failed": Object.freeze({
+    what: "The account could not be closed or reopened from that request.",
+    next: "Type the email on this account and try again.",
+  }),
+  "team-role": Object.freeze({
+    what: "That is not a role this team has.",
+    next: "Use read_only or read_write.",
+  }),
+  "key-mint-refused": Object.freeze({
+    what: "That key could not be made.",
+    next: "Check the kind and name you sent and try again.",
+  }),
   "topup-amount": Object.freeze({
     what: "Top-ups start at $10 and go up to $1,000.",
     next: "Pick an amount from $10 to $1,000 and try again.",
@@ -304,4 +324,18 @@ export function failureMessage(key) {
     );
   }
   return `${entry.what} ${entry.next}`;
+}
+
+/**
+ * The words for an error a lower layer threw: its own text when that text is
+ * one of the table's entries, otherwise the named fallback, so no raw error
+ * text reaches a response.
+ * @param {unknown} error
+ * @param {string} fallbackKey
+ * @returns {string}
+ */
+export function failureWords(error, fallbackKey) {
+  const text = error instanceof Error ? error.message : "";
+  const known = Object.keys(FAILURE_MESSAGES).find((key) => failureMessage(key) === text);
+  return failureMessage(known ?? fallbackKey);
 }

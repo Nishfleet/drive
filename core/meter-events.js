@@ -1,5 +1,6 @@
 import { eventIndexStatement } from "./file-index.js";
 import { BodyTooLargeError, bearerToken, json, readLimitedBody, tokensMatch } from "./http.js";
+import { failureMessage } from "./messages.js";
 import { HOUR_MS, hourStart, rollupHour, toMillis, wholeBytes } from "./meter.js";
 import {
   EVENT_ACTIONS,
@@ -299,7 +300,7 @@ export async function handleStorageEventRequest(request, db, eventToken) {
     );
   } catch (error) {
     if (error instanceof TypeError) {
-      return json({ error: error.message }, 400);
+      return json({ error: failureMessage("event-shape") }, 400);
     }
     throw error;
   }

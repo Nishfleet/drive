@@ -81,7 +81,7 @@ and the invoice disagree.
 | `docs-site/` | the docs pages and the VitePress build |
 | `docs/` | the build spec and spec, the API notes, the scoreboard, benchmarks, `research/` and `design/` |
 | `migrations/` | D1 migrations, split by database: `waitlist/` for the sign-up table, `drive/` for customer tables |
-| `cloudflare.config.ts` | the Worker, its D1 bindings (`WAITLIST_DB`, `DRIVE_DB`), secrets and cron triggers |
+| `cloudflare.config.ts` | the Worker, its D1 bindings (<!-- facts:D1_BINDINGS -->`WAITLIST_DB`, `DRIVE_DB`, `METER_DB`<!-- /facts:D1_BINDINGS -->), secrets and cron triggers |
 
 Run `npm ci` first, on Node 24 (`.nvmrc`; `nvm use` picks it up). `npm run dev`
 starts the site Worker and the api Worker on <http://localhost:5173>. `npm test`

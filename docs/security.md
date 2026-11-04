@@ -43,5 +43,4 @@ that same step, and on a step that holds more than one download.
   - `vite` 6.4.2 and older (with `esbuild`), under `vitepress` 1.6.4, the
     newest stable vitepress. npm has no fix, so drive#615
     tracks it until vitepress ships one.
-- Dependabot watches the root npm project, Go modules, GitHub Actions, and the
-  agent eval's own npm and pip pins under `evals/agents/`.
+- Dependabot watches the root npm project, Go modules and GitHub Actions.
