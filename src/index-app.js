@@ -3,6 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import { methodNotAllowed } from "hono/method-not-allowed";
 import { secureHeaders } from "hono/secure-headers";
 import { trimTrailingSlash } from "hono/trailing-slash";
+import { accountStore } from "../core/account-store.js";
 import { SIGNIN_LINK_PATH } from "../core/auth.js";
 import { BILLING_CONFIG, QUOTE_ENDPOINT, USAGE_ENDPOINT } from "../core/billing.js";
 import { handleQuoteRequest, handleUsageRequest } from "../core/billing-report.js";
@@ -12,7 +13,6 @@ import { handleSendEmailRequest } from "../core/email-send.js";
 import { EXPORT_ENDPOINT, exportRoute } from "../core/export.js";
 import { FILES_ENDPOINT } from "../core/files.js";
 import { provisionAccountBucket } from "../core/files-memory.js";
-import { scopeStore } from "../core/files-scope.js";
 import { HISTORY_ENDPOINT, handleHistoryRequest } from "../core/history-addon.js";
 import { keyProviderFor } from "../core/keyprovider-env.js";
 import { balanceCents } from "../core/ledger.js";
@@ -156,14 +156,16 @@ export function createApp() {
   app.post(`${FILES_ENDPOINT}/*`, filesHandler);
 
   /** @param {DriveContext} c */
-  const starterHandler = (c) => {
+  const starterHandler = async (c) => {
     const account = c.get("account");
     if (!account) {
       return handleStarterRequest(c.req.raw, null, account);
     }
-    return withFileStore(c, (store) =>
-      handleStarterRequest(c.req.raw, scopeStore(store, account), account),
-    );
+    const store = accountStore(c.env, account);
+    if (!store) {
+      return c.json({ error: failureMessage("drive-not-configured") }, 503);
+    }
+    return handleStarterRequest(c.req.raw, store, account);
   };
   app.get(STARTER_ENDPOINT, starterHandler);
   app.post(STARTER_ENDPOINT, starterHandler);

@@ -1,4 +1,3 @@
-import { AwsClient } from "aws4fetch";
 import { FETCH_TIMEOUT_MS, fetchWithTimeoutAndRetry } from "./fetch-retry.js";
 import {
   fileKind,
@@ -17,7 +16,7 @@ import {
   sourceSize,
 } from "./files-s3-copy.js";
 import { ChangedUnderUsError, quotedEntityTag } from "./files-scope.js";
-import { contentMd5 } from "./s3.js";
+import { contentMd5, createSigner } from "./s3.js";
 import {
   computeHiddenAt,
   decodeEntities,
@@ -38,9 +37,9 @@ import { DAY_MS } from "./units.js";
  * The storage the issue names: plain S3 over HTTP, pointed at `rclone serve s3`
  * on the build host and at a real vendor's endpoint (iDrive e2, eu-west-3)
  * when `credentials` and `region` are given. The four S3 calls the page needs
- * are the four store methods; signing is `aws4fetch` (`AwsClient`), the same
- * stock signer the api Worker signs its bucket calls with, so a real account
- * speaks through the same FileStore interface as the stand-in. The keys are
+ * are the four store methods; signing is `aws4fetch` (`AwsClient`, built by
+ * core/s3.js `createSigner`), the same stock signer the api Worker signs its
+ * bucket calls with, so a real account speaks through the same FileStore interface as the stand-in. The keys are
  * exactly the paths the store is given — the account prefix is applied by
  * scopeStore, which is the one place it is applied.
  *
@@ -72,16 +71,7 @@ export function createS3Store(config) {
   if (Boolean(credentials) !== Boolean(region)) {
     throw new Error("createS3Store needs both a region and a credential, or neither.");
   }
-  const aws = credentials
-    ? new AwsClient({
-        accessKeyId: credentials.accessKeyId,
-        secretAccessKey: credentials.secretAccessKey,
-        sessionToken: credentials.sessionToken,
-        region,
-        service: "s3",
-        retries: 0,
-      })
-    : null;
+  const aws = credentials ? createSigner(credentials, /** @type {string} */ (region)) : null;
   /** @param {string} path */
   const bucketOf = (path) =>
     typeof bucketFor === "function" ? bucketFor(path) : /** @type {string} */ (bucket);

@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 
-import { storageBucketForKey, storageVarsFromEnv } from "../../../core/files-memory.js";
-import { createS3Store } from "../../../core/files-s3.js";
+import { rootStoreFor } from "../../../core/account-store.js";
 import { GRANT_SEGMENT, readGrant } from "../../../core/grant.js";
 import { failureMessage } from "../../../core/messages.js";
 import { folderAccount, recordDownloadBytes } from "../../../core/meter-usage.js";
@@ -303,36 +302,6 @@ function storageDown(error) {
   });
 }
 
-/** @type {FileStore|null|undefined} */
-let isolateStore;
-/** @type {DlEnv|undefined} */
-let isolateStoreEnv;
-
-/**
- * The storage the bindings name, built once per isolate: the S3 store over
- * each account's own bucket, signed with the master credential. Null when the
- * deployment carries no complete credential.
- * @param {DlEnv} env
- * @returns {FileStore|null}
- */
-function storeFromEnv(env) {
-  if (isolateStore !== undefined && isolateStoreEnv === env) {
-    return isolateStore;
-  }
-  const vars = storageVarsFromEnv(env);
-  isolateStore =
-    vars.endpoint && vars.accessKeyId && vars.secretAccessKey && vars.region
-      ? createS3Store({
-          endpoint: vars.endpoint,
-          bucketFor: storageBucketForKey,
-          region: vars.region,
-          credentials: { accessKeyId: vars.accessKeyId, secretAccessKey: vars.secretAccessKey },
-        })
-      : null;
-  isolateStoreEnv = env;
-  return isolateStore;
-}
-
 /**
  * The context a deployed request runs with, built from the Worker's bindings
  * and the runtime's own execution context (rule 5).
@@ -347,7 +316,7 @@ export function contextFromEnv(env, platform) {
       ? env.DL_SIGNING_SECRET
       : null;
   return {
-    store: storeFromEnv(env),
+    store: rootStoreFor(/** @type {Env} */ (/** @type {unknown} */ (env))),
     db,
     authorize: db && secret ? keyAccessCheck(db, secret, Date.now) : null,
     now: Date.now,

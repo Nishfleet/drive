@@ -1107,6 +1107,43 @@ test("gate 8: the two Worker trees cannot import each other, only core", () => {
   }
 });
 
+test("gate 8b: the raw-storage import ban still holds in the files that build the client", () => {
+  // drive#1164. Biome gives a file the rule options of the last override that
+  // matches it, so an override for these three files that sets
+  // noRestrictedImports with only the drive#616 patterns silently drops the
+  // raw-storage ban for them. Each row plants the import the file must not
+  // make into the real file, runs the real linter, and restores the file.
+  // https://biomejs.dev/reference/configuration/#overrides
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const cases = [
+    { file: "core/account-store.js", line: 'import { AwsClient as zzProbe } from "aws4fetch";' },
+    { file: "core/s3.js", line: 'import { createS3Store as zzProbe } from "./files-s3.js";' },
+    { file: "core/files-s3.js", line: 'import { createS3Store as zzProbe } from "./files-s3.js";' },
+    // core/s3.js is the one file that imports aws4fetch and builds AwsClient;
+    // core/files-s3.js was exempt before and could build a second one.
+    { file: "core/files-s3.js", line: 'import { AwsClient as zzProbe } from "aws4fetch";' },
+    { file: "core/files-s3.js", line: 'const zzProbe = () => import("aws4fetch");' },
+  ];
+  for (const { file, line } of cases) {
+    const path = new URL(`../${file}`, import.meta.url);
+    const original = readFileSync(path, "utf8");
+    let status = 0;
+    let out = "";
+    try {
+      writeFileSync(path, `${line}\n${original}export const zzUse = zzProbe;\n`);
+      out = execFileSync("npx", ["biome", "lint", file], { cwd: root, encoding: "utf8" });
+    } catch (err) {
+      const e = /** @type {{status?: number, stdout?: string, stderr?: string}} */ (err);
+      status = e.status ?? 1;
+      out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
+    } finally {
+      writeFileSync(path, original);
+    }
+    assert.notEqual(status, 0, `${file} must fail \`biome lint\` on: ${line}`);
+    assert.match(out, /noRestrictedImports/, `${file} must fail on the raw-storage ban itself`);
+  }
+});
+
 test("gate 9: a fixed test wait, a module-level Map and err.message in a response fail lint", () => {
   // The three GritQL plugins in lint/ are proved the way gate 8 proves the
   // import ban: plant the mistake, run `biome check`, and require the plugin's
