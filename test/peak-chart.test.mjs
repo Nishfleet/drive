@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { monthBillCents } from "../core/billing.js";
+import { BILLING_CONFIG, monthBillCents } from "../core/billing.js";
 
 const page = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const chart = page.slice(
@@ -9,7 +9,9 @@ const chart = page.slice(
   page.indexOf("</figure>", page.indexOf('<figure class="peak-chart">')),
 );
 const GB = 1_000_000_000;
-const usd = (/** @type {number} */ gb) => monthBillCents({ size30Bytes: gb * GB }).totalCents / 100;
+const usd = (/** @type {number} */ gb) =>
+  monthBillCents({ size30Bytes: gb * GB, downloadBytes: 0, config: BILLING_CONFIG }).totalCents /
+  100;
 
 test("the chart's dollar figures are what the bill produces for its sizes", () => {
   assert.ok(chart.length > 0, "the chart ships on the home page");

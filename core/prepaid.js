@@ -1,5 +1,6 @@
 import { accountStoredBytes } from "./abuse-guards.js";
 import {
+  BILLING_CONFIG,
   centsFromDrawnMillicents,
   dailyDrawMillicents,
   MILLICENTS_PER_CENT,
@@ -78,7 +79,7 @@ export async function size30DayUnpaid(db, accountId, extraBytes) {
   if (nextBytes <= size30.size30Bytes) {
     return false;
   }
-  const bill = monthBillCents({ size30Bytes: nextBytes });
+  const bill = monthBillCents({ size30Bytes: nextBytes, downloadBytes: 0, config: BILLING_CONFIG });
   const day = dailyDrawMillicents(bill.totalMillicents, 0);
   if (day.drawMillicents <= 0) {
     return false;
@@ -308,6 +309,7 @@ async function drawForDay(db, accountId, day, now, skipEmpty = false) {
   const bill = monthBillCents({
     size30Bytes: size30.size30Bytes,
     downloadBytes: size30.downloadBytes,
+    config: BILLING_CONFIG,
   });
   const dayStart = Date.parse(`${day}T00:00:00.000Z`);
   const prev = /** @type {{remainder_millicents?: unknown}|null} */ (
@@ -436,6 +438,7 @@ export async function checkYesterdayDraws(db, now = Date.now()) {
       const bill = monthBillCents({
         size30Bytes: size30.size30Bytes,
         downloadBytes: size30.downloadBytes,
+        config: BILLING_CONFIG,
       });
       const prev = /** @type {{remainder_millicents?: unknown}|null} */ (
         await db

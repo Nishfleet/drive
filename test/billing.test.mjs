@@ -71,7 +71,11 @@ test("the formula edges, held all month", () => {
     [4000, 6000],
   ];
   for (const [gb, cents] of cases) {
-    const bill = monthBillCents({ size30Bytes: bytes(gb) });
+    const bill = monthBillCents({
+      size30Bytes: bytes(gb),
+      downloadBytes: 0,
+      config: BILLING_CONFIG,
+    });
     assert.equal(bill.storageCents, cents, `${gb} GB bills ${usd(cents)}`);
     assert.equal(bill.totalCents, cents, `${gb} GB, no downloads, totals ${usd(cents)}`);
     assert.equal("foundingMember" in bill, false, "the bill carries no founding field");
@@ -84,6 +88,7 @@ test("downloads bill at the one rate: 1 cent a GB over 3x size30", () => {
   const bill = monthBillCents({
     size30Bytes: bytes(2000),
     downloadBytes,
+    config: BILLING_CONFIG,
   });
   assert.equal(bill.storageCents, 3000);
   assert.equal(bill.downloadCents, 2000);
@@ -94,7 +99,13 @@ test("the retired founding fields are refused, so nothing quietly halves a bill 
   for (const field of ["foundingMember", "payingAccountNumber", "foundingOfferOpen"]) {
     for (const value of [true, false, 1]) {
       assert.throws(
-        () => monthBillCents({ size30Bytes: 0, [field]: value }),
+        () =>
+          monthBillCents({
+            size30Bytes: 0,
+            [field]: value,
+            downloadBytes: 0,
+            config: BILLING_CONFIG,
+          }),
         (err) => {
           assert.ok(err instanceof TypeError);
           assert.match(err.message, new RegExp(`month\\.${field} is no longer part of the bill`));
@@ -157,7 +168,11 @@ test("the maximum is $15 up to 1 TB, then $15 a TB to the GB, and never falls", 
 });
 
 test("a 2 TB peak bills $30 even if it only lasted three days", () => {
-  const bill = monthBillCents({ size30Bytes: bytes(2000) });
+  const bill = monthBillCents({
+    size30Bytes: bytes(2000),
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
   assert.equal(bill.maximumCents, 3000);
   assert.equal(bill.storageCents, 3000);
 });
@@ -171,7 +186,10 @@ test("the bill is the meter below the maximum, the maximum above it", () => {
 
 test("the 'you saved' lines: against our maximum and against a usual 1 TB plan", () => {
   // 300 GB: bill $6 under the $15 maximum and the $15 plan.
-  const uncapped = savedLine(monthBillCents({ size30Bytes: bytes(300) }), bytes(300));
+  const uncapped = savedLine(
+    monthBillCents({ size30Bytes: bytes(300), downloadBytes: 0, config: BILLING_CONFIG }),
+    bytes(300),
+  );
   assert.ok(uncapped);
   assert.equal(uncapped.usd, 9);
   assert.equal(uncapped.planUsd, 9);
@@ -180,8 +198,17 @@ test("the 'you saved' lines: against our maximum and against a usual 1 TB plan",
     "You saved $9.00 against our maximum. You saved $9.00 against a usual 1 TB plan.",
   );
   // At 750 GB the meter is exactly the maximum and the plan, so nothing shows.
-  assert.equal(savedLine(monthBillCents({ size30Bytes: bytes(750) }), bytes(750)), null);
-  assert.equal(savedLine(monthBillCents({ size30Bytes: 0 }), 0), null);
+  assert.equal(
+    savedLine(
+      monthBillCents({ size30Bytes: bytes(750), downloadBytes: 0, config: BILLING_CONFIG }),
+      bytes(750),
+    ),
+    null,
+  );
+  assert.equal(
+    savedLine(monthBillCents({ size30Bytes: 0, downloadBytes: 0, config: BILLING_CONFIG }), 0),
+    null,
+  );
   assert.match(SAVED_COPY.plan, /\{plan\}/);
   assert.throws(() => savedLine(null, 0), TypeError);
 });
@@ -195,12 +222,19 @@ test("no 'you saved' line is shown at 1 TB and above", () => {
   // comparison at all. The usage page and the calculator read this function,
   // so null is what both of them show.
   for (const gb of [1000, 1001, 1500, 2000, 4000, 12000]) {
-    const bill = monthBillCents({ size30Bytes: bytes(gb) });
+    const bill = monthBillCents({
+      size30Bytes: bytes(gb),
+      downloadBytes: 0,
+      config: BILLING_CONFIG,
+    });
     assert.equal(savedLine(bill, bytes(gb)), null, `${gb} GB shows no saving`);
   }
   // Just below the floor the line is still there, so the floor is the plan's
   // included size and not "any big drive".
-  const under = savedLine(monthBillCents({ size30Bytes: bytes(999) }), bytes(999));
+  const under = savedLine(
+    monthBillCents({ size30Bytes: bytes(999), downloadBytes: 0, config: BILLING_CONFIG }),
+    bytes(999),
+  );
   assert.ok(under, "999 GB still shows its saving");
   assert.ok(under.planUsd > 0 || under.usd > 0);
   // The savings calculator's own number obeys the same floor: /api/quote is a
@@ -280,12 +314,13 @@ test("downloads are free up to 3x the average stored, then 1 cent a GB", () => {
 });
 
 test("downloads add 1c a GB above 3x, on top of the storage line", () => {
-  const stored = { size30Bytes: bytes(100) };
+  const stored = { size30Bytes: bytes(100), downloadBytes: 0, config: BILLING_CONFIG };
   const quiet = monthBillCents(stored);
   assert.equal(quiet.totalCents, 200);
   const busy = monthBillCents({
     ...stored,
     downloadBytes: 400e9,
+    config: BILLING_CONFIG,
   });
   assert.equal(busy.downloadCents, 100, "the 100 GB above the free 3x");
   assert.equal(busy.storageCents, quiet.storageCents, "downloads do not move storage");
@@ -294,6 +329,7 @@ test("downloads add 1c a GB above 3x, on top of the storage line", () => {
     const bill = monthBillCents({
       ...stored,
       downloadBytes: gb * 1e9,
+      config: BILLING_CONFIG,
     });
     assert.equal(bill.downloadCents, gb - 300, `${gb} GB downloaded`);
   }
@@ -302,6 +338,7 @@ test("downloads add 1c a GB above 3x, on top of the storage line", () => {
   const capped = monthBillCents({
     size30Bytes: bytes(2000),
     downloadBytes: 8000e9,
+    config: BILLING_CONFIG,
   });
   assert.equal(capped.storageCents, 3000);
   assert.equal(capped.downloadCents, 2000, "8 TB downloaded, 6 TB free, 2 TB billable");
@@ -310,7 +347,7 @@ test("downloads add 1c a GB above 3x, on top of the storage line", () => {
 
 test("a light month pays for what it stores and nothing more", () => {
   // No minimum: 10 GB all month is 20 cents, never a floor.
-  const bill = monthBillCents({ size30Bytes: bytes(10) });
+  const bill = monthBillCents({ size30Bytes: bytes(10), downloadBytes: 0, config: BILLING_CONFIG });
   assert.equal(bill.totalCents, 20);
   assert.deepEqual(
     bill.lines.map((line) => [line.label, line.usd]),
@@ -443,6 +480,7 @@ test("every line is integer cents, whatever the meter recorded", () => {
       const bill = monthBillCents({
         size30Bytes,
         downloadBytes: size30Bytes === 0 ? 0 : 987654321,
+        config: BILLING_CONFIG,
       });
       for (const key of /** @type {const} */ ([
         "meteredCents",
@@ -460,25 +498,39 @@ test("every line is integer cents, whatever the meter recorded", () => {
     }
   }
   for (const bad of [Number.NaN, -1, "600x", null]) {
+    // @ts-expect-error a bad size30Bytes is refused at runtime, and by the type
     assert.throws(() => monthBillCents({ size30Bytes: bad }), TypeError);
+    // @ts-expect-error a bad downloadBytes is refused at runtime, and by the type
     assert.throws(() => monthBillCents({ size30Bytes: 0, downloadBytes: bad }), TypeError);
+    // @ts-expect-error averageStoredGb is retired: refused at runtime, and by the type
     assert.throws(() => monthBillCents({ size30Bytes: 0, averageStoredGb: bad }), TypeError);
   }
+  // @ts-expect-error a missing size30Bytes is refused at runtime, and by the type
   assert.throws(() => monthBillCents({ size30Bytes: undefined }), TypeError);
 });
 
 test("downloads with an empty size30 throw, and empty size30 with no downloads is $0", () => {
-  assert.throws(() => monthBillCents({ size30Bytes: 0, downloadBytes: 1 }), /size30Bytes above 0/);
-  assert.equal(monthBillCents({ size30Bytes: 0 }).totalCents, 0);
-  assert.equal(monthBillCents({ size30Bytes: 0, downloadBytes: 0 }).totalCents, 0);
+  assert.throws(
+    () => monthBillCents({ size30Bytes: 0, downloadBytes: 1, config: BILLING_CONFIG }),
+    /size30Bytes above 0/,
+  );
+  assert.equal(
+    monthBillCents({ size30Bytes: 0, downloadBytes: 0, config: BILLING_CONFIG }).totalCents,
+    0,
+  );
+  assert.equal(
+    monthBillCents({ size30Bytes: 0, downloadBytes: 0, config: BILLING_CONFIG }).totalCents,
+    0,
+  );
 });
 
 test("a size30 above 2^53 bills and formats the exact integer", () => {
   const huge = 2n ** 53n + 1n;
   const tbBytes = 1000n * 1_000_000_000n;
   const expectedMilli = (15n * 100n * 1000n * huge) / tbBytes;
-  const bill = monthBillCents({ size30Bytes: huge });
+  const bill = monthBillCents({ size30Bytes: huge, downloadBytes: 0, config: BILLING_CONFIG });
   assert.equal(bill.storageMillicents, Number(expectedMilli));
+  // @ts-expect-error a string size30Bytes is accepted at runtime
   const asString = monthBillCents({ size30Bytes: huge.toString() });
   assert.equal(asString.storageMillicents, Number(expectedMilli));
   const summary = usageSummary({
@@ -517,6 +569,8 @@ test("the retired inputs fail loudly: peak, first month, month number", () => {
         monthBillCents({
           size30Bytes: 0,
           [retired]: retired === "firstMonth" ? true : 1,
+          downloadBytes: 0,
+          config: BILLING_CONFIG,
         }),
       new RegExp(`month\\.${retired}`),
     );
@@ -549,6 +603,7 @@ test("the usage page and the cap check read this one function", () => {
     const bill = monthBillCents({
       size30Bytes: usage.size30Bytes,
       downloadBytes: usage.downloadBytes,
+      config: BILLING_CONFIG,
     });
     const summary = usageSummary(usage);
     assert.equal(summary.billUsd, bill.totalCents / 100);
@@ -591,6 +646,7 @@ test("the bill is refused unless the month carries its size30 bill", () => {
   // A bill is never guessed from a month that did not say what it stored.
   for (const notAMonth of [null, undefined, 42, "2026-10", true]) {
     assert.throws(
+      // @ts-expect-error a month that is not an object is refused at runtime, and by the type
       () => monthBillCents(notAMonth),
       (err) => {
         assert.ok(err instanceof TypeError);
@@ -600,16 +656,18 @@ test("the bill is refused unless the month carries its size30 bill", () => {
     );
   }
   assert.throws(
+    // @ts-expect-error an empty month is refused at runtime, and by the type
     () => monthBillCents({}),
     /^TypeError: month\.size30Bytes is the bill \(drive#642\): the charge follows the biggest size in the last 30 days$/,
   );
+  // @ts-expect-error a retired field is refused by name at runtime, and by the type
   assert.throws(() => monthBillCents({ peakBytes: bytes(100) }), /month\.size30Bytes is the bill/);
   assert.throws(
-    () => monthBillCents({ size30Bytes: bytes(100), downloadBytes: -1 }),
+    () => monthBillCents({ size30Bytes: bytes(100), downloadBytes: -1, config: BILLING_CONFIG }),
     /^TypeError: month\.downloadBytes must be a number of 0 or more, got -1$/,
   );
   assert.throws(
-    () => monthBillCents({ size30Bytes: bytes(100), downloadBytes: 1.5 }),
+    () => monthBillCents({ size30Bytes: bytes(100), downloadBytes: 1.5, config: BILLING_CONFIG }),
     /^TypeError: month\.downloadBytes must be 0 or more whole bytes, got 1\.5$/,
   );
 });
@@ -658,14 +716,30 @@ test("the usage summary is refused unless the usage carries its size30 bill", ()
 test("the maximum is the whole bill above the meter's rate, at 900 GB and at 12 TB", () => {
   // 900 GB metered is $18 and the $15 per TB maximum is lower, so the maximum
   // is the bill. 12 TB metered is $240 against a $180 maximum.
-  const nineHundred = monthBillCents({ size30Bytes: bytes(900) });
+  const nineHundred = monthBillCents({
+    size30Bytes: bytes(900),
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
   assert.equal(nineHundred.meteredCents, 1800, "the meter's own rate at 900 GB is $18");
   assert.equal(nineHundred.maximumCents, 1500);
   assert.equal(nineHundred.storageCents, 1500, "the maximum is the bill");
   assert.equal(nineHundred.totalCents, 1500);
 
-  const twelveTb = monthBillCents({ size30Bytes: bytes(12_000) });
+  const twelveTb = monthBillCents({
+    size30Bytes: bytes(12_000),
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
   assert.equal(twelveTb.meteredCents, 24_000, "the meter's own rate at 12 TB is $240");
   assert.equal(twelveTb.maximumCents, 18_000);
   assert.equal(twelveTb.storageCents, 18_000);
+});
+
+test("a month that drops an input does not type-check, and the runtime still bills the list price", () => {
+  // @ts-expect-error config and downloadBytes are required by BillMonth
+  const bill = monthBillCents({ size30Bytes: bytes(100) });
+  assert.equal(bill.totalCents, 200);
+  // @ts-expect-error size30Bytes is required by BillMonth
+  assert.throws(() => monthBillCents({ downloadBytes: 0, config: BILLING_CONFIG }), TypeError);
 });

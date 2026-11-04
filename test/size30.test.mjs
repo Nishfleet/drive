@@ -21,7 +21,11 @@ const GB = 1e9;
 
 /** @param {number} gb */
 function billGb(gb) {
-  return monthBillCents({ size30Bytes: Math.round(gb * GB) });
+  return monthBillCents({
+    size30Bytes: Math.round(gb * GB),
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
 }
 
 test("MAX_USD_PER_TB is 15, and the rate reaches it at 750 GB", () => {
@@ -32,7 +36,11 @@ test("MAX_USD_PER_TB is 15, and the rate reaches it at 750 GB", () => {
 });
 
 test("the four worked cases: 10 MB, 200 GB, 1 TB uploaded and deleted, 4 TB", () => {
-  const tenMb = monthBillCents({ size30Bytes: 10_000_000 });
+  const tenMb = monthBillCents({
+    size30Bytes: 10_000_000,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
   assert.equal(tenMb.storageMillicents, 20, "10 MB held all month is $0.0002");
   assert.equal(tenMb.storageCents, 0);
   assert.equal(tenMb.totalMillicents, 20);
@@ -181,8 +189,10 @@ test("monthlyBillForStoredTb is monthBillCents on that size held as size30", () 
 });
 
 test("gbMinutes is refused: the bill follows size30, not the month's average", () => {
+  // @ts-expect-error gbMinutes is retired: refused at runtime, and by the type
   assert.throws(() => monthBillCents({ gbMinutes: 0, monthMinutes: 30 * 1440 }), /size30Bytes/);
   assert.throws(
+    // @ts-expect-error gbMinutes is retired: refused at runtime, and by the type
     () => monthBillCents({ size30Bytes: 0, gbMinutes: 1, monthMinutes: 30 * 1440 }),
     /gbMinutes/,
   );
@@ -212,7 +222,11 @@ test("a peak at 29 days 23 hours is in, at 30 days is out, and 30 days 1 minute 
 
 test("property: a draw is never negative and never above monthly/30 plus remainder", () => {
   for (let gb = 0; gb <= 4000; gb += 17) {
-    const monthly = monthBillCents({ size30Bytes: Math.round(gb * GB) }).totalMillicents;
+    const monthly = monthBillCents({
+      size30Bytes: Math.round(gb * GB),
+      downloadBytes: 0,
+      config: BILLING_CONFIG,
+    }).totalMillicents;
     let remainder = 0;
     let sum = 0;
     for (let day = 0; day < DRAW_DAYS; day += 1) {

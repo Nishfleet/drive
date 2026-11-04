@@ -70,6 +70,7 @@ export function fairUseLimitBytes(input) {
   const payCents = monthBillCents({
     size30Bytes,
     config,
+    downloadBytes: 0,
   }).storageCents;
   const afterFee = payAfterFeeCents(payCents);
   const cost = storageCostCentsPerTbMonth(storage);
