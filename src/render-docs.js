@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DOC_PAGES as SEO_DOC_PAGES } from "../core/seo.js";
 import { faqMarkdown, markerValues } from "./docs.js";
+import { createApp } from "./index-app.js";
 
 export const DOC_PAGES = Object.freeze(
   SEO_DOC_PAGES.map((page) =>
@@ -63,6 +64,113 @@ export function cliSubcommands() {
     throw new Error("cmd/drive/main.go's command table parsed to fewer than 10 subcommands");
   }
   return new Set([...names, "version", "help"]);
+}
+
+const REPO = fileURLToPath(new URL("../", import.meta.url));
+
+/**
+ * The bindings `cloudflare.config.ts` declares, as `NAME: bindings.kind(`.
+ * The config imports `cf/config`, which Node cannot load, so it is read as
+ * text (the way test/worker-secrets.test.mjs reads its secrets). Line
+ * comments are dropped first, so a commented-out binding is not a fact.
+ * @returns {ReadonlyArray<{name: string, kind: string}>}
+ */
+export function workerBindings() {
+  const config = readFileSync(join(REPO, "cloudflare.config.ts"), "utf8");
+  const live = config.replace(/^\s*\/\/.*$/gm, "");
+  const found = [...live.matchAll(/^\s*([A-Z][A-Z0-9_]+)\s*:\s*bindings\.(\w+)\s*[(<]/gm)].map(
+    (m) => ({ name: m[1], kind: m[2] }),
+  );
+  if (found.length < 5) {
+    throw new Error("cloudflare.config.ts parsed to fewer than 5 bindings");
+  }
+  return found;
+}
+
+/**
+ * The site Worker's routes, read from the Hono app src/index-app.js builds:
+ * the table the Worker answers from, not a copy of it. `app.use` middleware
+ * on every path (`*`) is not a route.
+ * @returns {string[]}
+ */
+export function siteRoutes() {
+  const seen = new Set(
+    createApp()
+      .routes.filter((r) => r.path !== "*")
+      .map((r) => `${r.method} ${r.path}`),
+  );
+  return [...seen];
+}
+
+/** @param {string} kind */
+const named = (kind) => workerBindings().filter((b) => b.kind === kind);
+
+/**
+ * The generated fact lists, by the name in `<!-- facts:NAME -->`. A block
+ * value starts and ends with a newline; an inline one has none.
+ * @returns {Record<string, string>}
+ */
+export function factValues() {
+  return {
+    D1_BINDINGS: named("d1")
+      .map((b) => `\`${b.name}\``)
+      .join(", "),
+    SECRETS: `\n${named("secret")
+      .map((b) => `- \`${b.name}\``)
+      .join("\n")}\n`,
+    BINDINGS: `\n| Binding | Kind |\n| --- | --- |\n${workerBindings()
+      .map((b) => `| \`${b.name}\` | ${b.kind} |`)
+      .join("\n")}\n`,
+    ROUTES: `\n${siteRoutes()
+      .map((r) => `- \`${r}\``)
+      .join("\n")}\n`,
+  };
+}
+
+/** Every file that holds a facts block: where a list used to be typed by hand. */
+export const FACT_FILES = Object.freeze([
+  "README.md",
+  "AGENTS.md",
+  "docs/runbook.md",
+  "docs/runbooks/incident.md",
+]);
+
+const FACT_BLOCK = /(<!-- facts:([A-Z0-9_]+) -->)([\s\S]*?)(<!-- \/facts:\2 -->)/g;
+
+/**
+ * Fill every `<!-- facts:NAME -->...<!-- /facts:NAME -->` block in `text`
+ * from `values`. A name with no generator is an error.
+ * @param {string} text
+ * @param {Record<string, string>} [values]
+ * @param {Set<string>} [used]
+ * @returns {string}
+ */
+export function applyFacts(text, values = factValues(), used = new Set()) {
+  return text.replace(FACT_BLOCK, (_whole, open, name, _old, close) => {
+    if (!(name in values)) {
+      throw new Error(
+        `a docs page has <!-- facts:${name} -->, which src/render-docs.js does not generate`,
+      );
+    }
+    used.add(name);
+    return `${open}${values[name]}${close}`;
+  });
+}
+
+/** Rewrite the facts blocks in the repo docs in place. */
+export function renderFacts() {
+  const values = factValues();
+  const used = new Set();
+  for (const file of FACT_FILES) {
+    const path = join(REPO, file);
+    const text = readFileSync(path, "utf8");
+    const next = applyFacts(text, values, used);
+    if (next !== text) writeFileSync(path, next);
+  }
+  const unused = Object.keys(values).filter((name) => !used.has(name));
+  if (unused.length > 0) {
+    throw new Error(`src/render-docs.js generates facts no doc uses: ${unused.join(", ")}`);
+  }
 }
 
 function publishedBenchmarks() {
@@ -141,4 +249,5 @@ export function renderDocs(outDir = RENDERED_DIR) {
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   renderDocs();
+  renderFacts();
 }
