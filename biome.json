@@ -146,7 +146,7 @@
       }
     },
     {
-      "includes": ["core/account-store.js", "core/files-s3.js", "core/s3.js"],
+      "includes": ["core/account-store.js"],
       "linter": {
         "rules": {
           "style": {
@@ -163,6 +163,41 @@
                     "group": ["**/src/**"],
                     "importNamePattern": ".*",
                     "message": "a module in core/ must not import the site Worker's src/. core/ is shared by both Workers, so it imports only core/ (drive#616)."
+                  },
+                  {
+                    "group": ["aws4fetch"],
+                    "message": "a raw storage client is built only in core/account-store.js. Get a store with accountStore(env, account) so the cap and pause checks apply on every path, cron and queue included (drive#485, #591, #593)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["core/files-s3.js", "core/s3.js"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/workers/**"],
+                    "importNamePattern": ".*",
+                    "message": "a module in core/ must not import a Worker directory. Move what is shared into core/ and import it from there (drive#616)."
+                  },
+                  {
+                    "group": ["**/src/**"],
+                    "importNamePattern": ".*",
+                    "message": "a module in core/ must not import the site Worker's src/. core/ is shared by both Workers, so it imports only core/ (drive#616)."
+                  },
+                  {
+                    "group": ["**/files-s3.js"],
+                    "importNamePattern": "createS3Store",
+                    "message": "a raw storage client is built only in core/account-store.js. Get a store with accountStore(env, account) so the cap and pause checks apply on every path, cron and queue included (drive#485, #591, #593)."
                   }
                 ]
               }
