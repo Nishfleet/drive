@@ -1,0 +1,16 @@
+name: answer
+# A change request from the reviewer bot on an agent PR goes back to the fleet's worker
+# lane, which lives in fleet-ops. The stub needs its own trigger, because "the github
+# context is always associated with the caller workflow":
+# https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations
+on:
+  pull_request_review:
+    types: [submitted]
+permissions: {}
+jobs:
+  answer:
+    # The lane's job dispatches agent.yml on main with the issue and the PR. A called
+    # workflow can only lower the caller's GITHUB_TOKEN permissions, never raise them.
+    permissions: {actions: write}
+    # @main, not a SHA, the same as the agent stub.
+    uses: Nishfleet/fleet-ops/.github/workflows/answer.yml@main

@@ -4,6 +4,11 @@ name: agent
 on:
   issues:
     types: [labeled]
+  # answer.yml dispatches a review round here with the issue and the PR.
+  workflow_dispatch:
+    inputs:
+      issue: {description: issue number, required: true, type: string}
+      pr: {description: the agent PR whose review to answer, type: string, default: ''}
 permissions: {}
 jobs:
   agent:
@@ -14,4 +19,5 @@ jobs:
     # @main, not a SHA: runner group "agent" admits only agent.yml@refs/heads/main.
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main
     with:
-      issue: ${{ github.event.issue.number }}
+      issue: ${{ github.event.issue.number || inputs.issue }}
+      pr: ${{ inputs.pr }}
