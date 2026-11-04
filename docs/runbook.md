@@ -103,7 +103,7 @@ the ciphertext leaves the runner.
 (fleet-ops#10594): `siterep_payments` (siterep-public), `aiconverter`
 (aiconverter-app) and `0509` (0509). They are dumped from here because the
 export credential is the Cloudflare D1 token on this repository's production
-environment, D1 permissions are account-scoped, and those four repositories
+environment, D1 permissions are account-scoped, and those three repositories
 hold no such token and no `AGE_RECIPIENT`. Each of them moves to its own
 repository's copy of the job when that setup lands (fleet-ops#10829);
 `test/d1-export.test.mjs` fails while one of the three is out of the matrix,
@@ -122,12 +122,29 @@ which "matches the output of the `sqlite3 .dump` command, including virtual
 tables such as FTS5"
 (https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/).
 That dump loads with plain `sqlite3 -bail`, not with `-safe`, because it
-writes the FTS5 table through `PRAGMA writable_schema`. It does not load
-straight back into D1. To put it back in D1: load it with `sqlite3 -bail`,
-drop the triggers `file_index_fts_ai`, `file_index_fts_au` and
-`file_index_fts_ad` and the table `file_index_fts`, `.dump` that file, import
-it, then run `0039_file_index_fts.sql` again to rebuild the index. The FTS
-table is a copy of `file_index`, so nothing is lost.
+writes the FTS5 table through `PRAGMA writable_schema`. As downloaded, it is
+a local SQLite restore and does not load straight back into D1. To put it back
+in D1, follow Cloudflare's own workaround for virtual tables (delete them,
+move the data, recreate them,
+https://developers.cloudflare.com/d1/best-practices/import-export-data/):
+
+1. `sqlite3 -bail restore.db < drive.sql`.
+2. In `restore.db`, drop the triggers `file_index_fts_ai`, `file_index_fts_au`
+   and `file_index_fts_ad`, then `DROP TABLE file_index_fts`. SQLite drops the
+   five `file_index_fts_*` shadow tables with it.
+3. `sqlite3 restore.db .dump > d1.sql`. Remove `BEGIN TRANSACTION`, `COMMIT;`
+   and any `CREATE TABLE _cf_KV` from `d1.sql`, as the same Cloudflare page
+   says, then import it the way "Restore from a dump" steps 4 and 5 say.
+4. Run the migration file itself as a query:
+   `npx cf d1 query <database-id> --sql "$(cat migrations/drive/0039_file_index_fts.sql)"`.
+   Do not use `cf d1 migrations apply`, because the imported `d1_migrations`
+   table already lists 0039, so `apply` would skip it. The file creates
+   `file_index_fts`, fills it from `file_index` (its backfill), and adds the
+   three triggers.
+
+The search index holds only `file_index`'s `name`, `account_id` and `path`
+under the same rowid, and the triggers keep it in step, so step 4 rebuilds
+every search name. The nightly reconciler (`src/search.js`) rewrites it again.
 
 **One-time setup (Nish):** run `age-keygen -o d1-backup-key.txt` on a
 machine you keep keys on, and put the public key line it prints (`age1…`)
@@ -139,10 +156,11 @@ nothing, is the invisibility drive#520 exists to end.
 
 Restore from a dump:
 
-1. Download the artifact for that database from the run's summary page. While
-   the drive job is red there is no drive dump to download (see above), so a
-   drive restore goes through the Time Travel restore in the previous
-   section.
+1. Download the artifact for that database from the run's summary page. The
+   drive dump is in `sqlite3` format, so a D1 restore of it takes the four
+   steps under "The drive database is dumped in `sqlite3` format" above.
+   Until the first green drive job there is no drive dump yet, and a drive
+   restore goes through the Time Travel restore in the previous section.
 2. The monthly restore drill does exactly this for every database in the
    matrix, on the fleet host where the private key already lives: it takes the
    newest artifact, decrypts it into a local SQLite file, counts the rows and
