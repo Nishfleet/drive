@@ -10,3 +10,5 @@ jobs:
   review:
     uses: Nishfleet/fleet-ops/.github/workflows/review.yml@main # zizmor: ignore[unpinned-uses] the owner's own paved road, like agent.yml
     permissions: {contents: read, pull-requests: read}
+    secrets:
+      APPROVER_TOKEN: ${{ secrets.APPROVER_TOKEN }}
