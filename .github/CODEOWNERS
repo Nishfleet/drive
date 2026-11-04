@@ -44,6 +44,13 @@
 /core/meter-*.js            @nish3451
 /core/history-addon.js      @nish3451
 /public/billing.html        @nish3451
+/core/topup.js              @nish3451
+/core/prepaid.js            @nish3451
+/core/ledger.js             @nish3451
+/core/receipts.js           @nish3451
+/core/meter.js              @nish3451
+/src/portal.js              @nish3451
+/public/refunds.html        @nish3451
 # Sign-in (Better Auth, passkeys, two-factor, CLI login).
 /core/auth.js               @nish3451
 /core/auth-d1-adapter.js    @nish3451
@@ -51,6 +58,9 @@
 /core/auth-two-factor.js    @nish3451
 /cmd/drive/login.go         @nish3451
 /internal/login/            @nish3451
+/core/device-signin.js      @nish3451
+/src/signin.js              @nish3451
+/public/signin.html         @nish3451
 # Data deletion and privacy promises.
 /core/devices-close.js      @nish3451
 /core/legal.js              @nish3451
