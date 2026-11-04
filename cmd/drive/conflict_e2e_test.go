@@ -441,9 +441,13 @@ func logMountLogsOnFailure(t *testing.T, homes ...string) {
 			return
 		}
 		for _, h := range homes {
-			if log, err := os.ReadFile(filepath.Join(h, ".config", "drive", "mount.log")); err == nil {
-				t.Logf("%s mount log:\n%s", filepath.Base(h), tailLines(string(log), 60))
+			path := filepath.Join(DefaultConfigDir(h), "mount.log")
+			log, err := os.ReadFile(path)
+			if err != nil {
+				t.Errorf("%s mount log unreadable: %v", filepath.Base(h), err)
+				continue
 			}
+			t.Logf("%s mount log:\n%s", filepath.Base(h), tailLines(string(log), 60))
 		}
 	})
 }
