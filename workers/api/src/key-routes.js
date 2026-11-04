@@ -2,7 +2,7 @@ import { UPLOAD_FILE_MAX_BYTES } from "../../../core/files.js";
 import { fairUseRefuseResponse } from "../../../core/files-handlers.js";
 import { errorResponse, json, readJsonObject } from "../../../core/http.js";
 import { authorizePath, KeyCountCapError } from "../../../core/keystore.js";
-import { failureMessage } from "../../../core/messages.js";
+import { failureMessage, failureWords } from "../../../core/messages.js";
 import { enforceEdgeLimits } from "../../../core/rate-limit.js";
 
 export const KEYS_LIMIT = "KEYS_RATE_LIMITER";
@@ -105,7 +105,7 @@ export async function mintKeyRoute(request, ctx) {
       return errorResponse(409, failureMessage("key-count-cap"));
     }
     if (error instanceof TypeError || error instanceof Error) {
-      return errorResponse(400, error.message);
+      return errorResponse(400, failureWords(error, "key-mint-refused"));
     }
     throw error;
   }

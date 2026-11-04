@@ -897,9 +897,10 @@ test("POST /api/cap parses with parseCapUsd and persists cap_cents", async () =>
     capStore,
   );
   assert.equal(bad.status, 400);
-  const err = await bad.json();
-  assert.match(err.error, /A spending cap is a dollar amount like 20 or 12\.50/);
-  assert.match(err.error, /Type a number like that again/);
+  assert.deepEqual(await bad.json(), {
+    error:
+      'A spending cap is a dollar amount like 20 or 12.50, got "abc". Type a number like that again.',
+  });
 
   const mangled = await handleCapRequest(
     new Request("https://drive.test/api/cap", {

@@ -32,6 +32,7 @@ export function accessConfig(env) {
 const KEY_TTL_MS = 10 * 60 * 1000;
 
 /** @type {Map<string, {at: number, keys: JsonWebKey[]}>} */
+// biome-ignore lint/plugin: JWKS cache: a per-isolate miss only refetches the keys
 const KEY_SETS = new Map();
 
 /**

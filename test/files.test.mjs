@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import vm from "node:vm";
 import {
   CONTROL_OR_BACKSLASH,
@@ -613,7 +614,7 @@ test("a row rendered in the browser's own zone shows the local day", () => {
 // ---------------------------------------------------------------- the rewind tab
 
 /** One turn of the event loop, so a page handler that awaited a fetch finishes. */
-const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+const settled = () => nextTurn();
 
 // The rewind screen's own words (drive#774). The screen is a static asset and
 // no module owns these sentences, so the page is where they live and this test

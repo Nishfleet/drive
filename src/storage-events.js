@@ -1,6 +1,7 @@
 import { drivePathFromKey } from "../core/files-scope.js";
 import { BodyTooLargeError, json, readLimitedBody } from "../core/http.js";
 import { bucketForAccount } from "../core/keyprovider.js";
+import { failureMessage } from "../core/messages.js";
 import { recordEvent, validateEvent } from "../core/meter-events.js";
 import {
   looksLikeNotificationRecord,
@@ -180,7 +181,7 @@ export async function handleSignedStorageEventRequest(request, deps) {
     );
   } catch (error) {
     if (error instanceof TypeError) {
-      return json({ error: error.message }, 400);
+      return json({ error: failureMessage("event-shape") }, 400);
     }
     throw error;
   }
