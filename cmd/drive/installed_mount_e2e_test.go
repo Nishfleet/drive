@@ -111,7 +111,6 @@ func TestTwoDevicesKeepBothSavesThroughTheInstalledUnit(t *testing.T) {
 		}
 	}
 
-	t.Fatal("forced failure: prove the mount log reaches the test output")
 	const name = "report.txt"
 	const bodyA = "A: this save was made first, on the device named mac\n"
 	const bodyB = "B: this save was made second, on the device named linux\n"
