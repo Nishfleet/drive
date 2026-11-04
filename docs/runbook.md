@@ -51,13 +51,13 @@ wrong: copy it from the run page as an ISO 8601 UTC time, for example
 
 **Warning: a restore rewrites the live database back to that moment, and
 writes made since are gone.** It is destructive and it is Nish's call, on a
-fresh export first (see the next section).
+fresh export first (see "The weekly backup").
 
 1. Download the newest weekly artifact for the database you are restoring
    (`d1-backup-waitlist` or `d1-backup-drive`) so the pre-restore state is also
-   saved. The drive database has no dump in its artifact while the weekly run
-   is red on it (see "The weekly backup"), so a drive restore has no copy
-   beyond Time Travel itself.
+   saved. The drive dump is in `sqlite3` format (see "The weekly backup").
+   Until the first green drive job there is no drive dump yet, so a drive
+   restore then has no copy beyond Time Travel itself.
 2. Preview the restore (harmless):
 
    ```sh
@@ -99,38 +99,55 @@ nothing. The dumps are sealed with `age` before upload: anyone with read
 access to this public repository can download its workflow artifacts, so only
 the ciphertext leaves the runner.
 
-**The matrix also carries the fleet's four other product databases**
-(fleet-ops#10594): `siterep_payments` (siterep-public),
-`tinystudio_email_signups` (TinyStudio.io-public), `aiconverter`
+**The matrix also carries the fleet's three other product databases**
+(fleet-ops#10594): `siterep_payments` (siterep-public), `aiconverter`
 (aiconverter-app) and `0509` (0509). They are dumped from here because the
 export credential is the Cloudflare D1 token on this repository's production
-environment, D1 permissions are account-scoped, and those four repositories
+environment, D1 permissions are account-scoped, and those three repositories
 hold no such token and no `AGE_RECIPIENT`. Each of them moves to its own
 repository's copy of the job when that setup lands (fleet-ops#10829);
-`test/d1-export.test.mjs` fails while one of the four is out of the matrix,
+`test/d1-export.test.mjs` fails while one of the three is out of the matrix,
 because that would end the only backup it has. Their artifacts are named
 after the database, so `d1-backup-0509` and `d1-backup-aiconverter` sit
 beside `d1-backup-waitlist` on the run's summary page.
 
-Three of the four dump clean. `tinystudio_email_signups` does not, and its
-job is red on purpose: the export API answers HTTP 404 for the database id
-its own deploy config declares, and for the preview id beside it, so that
-database is not in the account this token names (fleet-ops#10830). The row
-stays in the matrix so the fix is one line and the missing backup stays
-visible on the run.
+The TinyStudio signups database was deleted (fleet-ops incident
+2026-10-29), so its row left the matrix (drive#1027).
 
-**The drive database has no dump in its artifact, and its job is red on
-purpose.** The stock D1 export API does not take a database that holds
-virtual tables, and the FTS5 index on `file_index` (migration
-`0039_file_index_fts.sql`) is live production schema, so the drive database
-is the dump the export step records and fails on. Every Monday its job names
-it in an `::error::` annotation and exits red, while the waitlist job stays
-green and ships its own dump. The drive database's only recovery point is
-then D1 Time Travel, which keeps 30 days and lives on Cloudflare: for that
-database a restore further back than 30 days, a deleted database, or a loss
-on Cloudflare's side is not recoverable. The gap closes by itself — its job
-goes green and `drive-<date>.sql.age` appears in its artifact — when a
-mechanism lands (fleet-ops#10745); drive#1027 stays open until then.
+**The drive database is dumped in `sqlite3` format.** The stock D1 export
+refuses a database that holds a virtual table, and the FTS5 index on
+`file_index` (migration `0039_file_index_fts.sql`) is one. Its matrix row
+sets the export API's own `dump_options.compatibility: sqlite3_cli_only`,
+which "matches the output of the `sqlite3 .dump` command, including virtual
+tables such as FTS5"
+(https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/).
+That dump loads with plain `sqlite3 -bail`, not with `-safe`, because it
+writes the FTS5 table through `PRAGMA writable_schema`. As downloaded, it is
+a local SQLite restore and does not load straight back into D1. To put it back
+in D1, follow Cloudflare's own workaround for virtual tables (delete them,
+move the data, recreate them,
+https://developers.cloudflare.com/d1/best-practices/import-export-data/):
+
+1. `sqlite3 -bail restore.db < drive.sql`.
+2. In `restore.db`, drop the triggers `file_index_fts_ai`, `file_index_fts_au`
+   and `file_index_fts_ad`, then `DROP TABLE file_index_fts`. SQLite drops the
+   five `file_index_fts_*` shadow tables with it.
+3. `sqlite3 restore.db .dump > d1.sql`. Remove `BEGIN TRANSACTION`, `COMMIT;`
+   and any `CREATE TABLE _cf_KV` from `d1.sql`, as the same Cloudflare page
+   says, then import it the way "Restore from a dump" steps 4 and 5 say.
+4. Run the migration file itself as a query:
+   `npx cf d1 query <database-id> --sql="$(cat migrations/drive/0039_file_index_fts.sql)"`.
+   Keep the `=`: the file starts with `--`, so `--sql "…"` with a space
+   reads it as a new flag and stops with "Unknown argument".
+   `test/d1-export.test.mjs` runs every `cf d1` command here with
+   `--dry-run`. Do not use `cf d1 migrations apply`, because the imported
+   `d1_migrations` table already lists 0039, so `apply` would skip it. The file creates
+   `file_index_fts`, fills it from `file_index` (its backfill), and adds the
+   three triggers.
+
+The search index holds only `file_index`'s `name`, `account_id` and `path`
+under the same rowid, and the triggers keep it in step, so step 4 rebuilds
+every search name. The nightly reconciler (`src/search.js`) rewrites it again.
 
 **One-time setup (Nish):** run `age-keygen -o d1-backup-key.txt` on a
 machine you keep keys on, and put the public key line it prints (`age1…`)
@@ -142,10 +159,12 @@ nothing, is the invisibility drive#520 exists to end.
 
 Restore from a dump:
 
-1. Download the artifact for that database from the run's summary page. While
-   the drive job is red there is no drive dump to download (see above), so a
-   drive restore goes through the Time Travel restore in the previous
-   section.
+1. Download the artifact for that database from the run's summary page. The
+   drive dump is in `sqlite3` format, so after you decrypt it (step 3) a D1
+   restore of it takes the four steps under "The drive database is dumped in
+   `sqlite3` format" above. Until the first green drive job there is no drive
+   dump yet, and a drive restore goes through "Restore a database to the
+   moment before a deploy" above.
 2. The monthly restore drill does exactly this for every database in the
    matrix, on the fleet host where the private key already lives: it takes the
    newest artifact, decrypts it into a local SQLite file, counts the rows and
@@ -163,7 +182,7 @@ Restore from a dump:
 4. Small dumps, or a table at a time, go back through the CLI:
 
    ```sh
-   npx cf d1 query <database-id> --sql "$(cat dump.sql)"
+   npx cf d1 query <database-id> --sql="$(cat dump.sql)"
    ```
 
    `--sql` carries the statements in the command line, so split a large dump

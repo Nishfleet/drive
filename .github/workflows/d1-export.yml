@@ -25,9 +25,8 @@ jobs:
       matrix:
         database:
           - { name: waitlist, id: 93c9f523-159c-4261-8541-d4c059906df3 }
-          - { name: drive, id: 0f636b57-4a2e-482a-bf40-8aa315e2403e }
+          - { name: drive, id: 0f636b57-4a2e-482a-bf40-8aa315e2403e, compatibility: sqlite3_cli_only }
           - { name: siterep_payments, id: ec176fc4-b4f2-44c0-a925-b36ec067cff5 }
-          - { name: tinystudio_email_signups, id: ff360a55-14fc-468c-895f-893c89e0db79 }
           - { name: aiconverter, id: 376080eb-60f1-4bb8-aabb-06622acabb63 }
           - { name: 0509, id: 746c6e3d-782e-443a-82d6-28ca93a16294 }
     env:
@@ -36,6 +35,7 @@ jobs:
       AGE_RECIPIENT: ${{ vars.AGE_RECIPIENT }}
       DB_NAME: ${{ matrix.database.name }}
       DB_ID: ${{ matrix.database.id }}
+      DUMP_COMPATIBILITY: ${{ matrix.database.compatibility }}
     steps:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -57,10 +57,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/d1-export"; file="$RUNNER_TEMP/d1-export/$DB_NAME-$(date -u +%Y%m%d).sql"
           headers="$RUNNER_TEMP/d1-headers"; trap 'rm -f "$headers"' EXIT
           (umask 077 && printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN" > "$headers")
-          bookmark="" url=""
+          bookmark="" url="" options=""
+          [ -n "$DUMP_COMPATIBILITY" ] && options=",\"dump_options\":{\"compatibility\":\"$DUMP_COMPATIBILITY\"}"
           for attempt in $(seq 1 20); do
             echo "poll $attempt for $DB_NAME"
-            body='{"output_format":"polling"}'; [ -n "$bookmark" ] && body="{\"output_format\":\"polling\",\"current_bookmark\":\"$bookmark\"}"
+            body="{\"output_format\":\"polling\"$options}"; [ -n "$bookmark" ] && body="{\"output_format\":\"polling\",\"current_bookmark\":\"$bookmark\"$options}"
             resp=$(curl -sS --fail --retry 5 --retry-delay 5 --retry-all-errors \
               -H "@$headers" -H 'content-type: application/json' -d "$body" \
               "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$DB_ID/export") \
