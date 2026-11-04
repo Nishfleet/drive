@@ -248,6 +248,11 @@ export function renderDocs(outDir = RENDERED_DIR) {
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  renderDocs();
-  renderFacts();
+  // The facts blocks are written only on request (`npm run docs:facts`), never
+  // by the docs build, so test/docs-drift.test.mjs sees a hand edit.
+  if (process.argv.includes("--facts")) {
+    renderFacts();
+  } else {
+    renderDocs();
+  }
 }

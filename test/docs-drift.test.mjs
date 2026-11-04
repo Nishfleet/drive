@@ -104,7 +104,7 @@ test("the generated binding, secret and route lists in the docs match the config
     assert.equal(
       applyFacts(text, values, used),
       text,
-      `${file} has a generated facts block that differs from cloudflare.config.ts or src/index-app.js; run \`npm run docs:render\` and commit the result, and do not hand-edit a block`,
+      `${file} has a generated facts block that differs from cloudflare.config.ts or src/index-app.js; run \`npm run docs:facts\` and commit the result, and do not hand-edit a block`,
     );
   }
   assert.deepEqual(

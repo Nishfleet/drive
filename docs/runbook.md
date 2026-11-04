@@ -221,7 +221,7 @@ storage notifications" below.
 
 ## Worker facts
 
-Generated from `cloudflare.config.ts` and the route table in `src/index-app.js` by `npm run docs:render` (`src/render-docs.js`). `test/docs-drift.test.mjs` fails when a block differs. Edit the config or the routes, not these lists.
+Generated from `cloudflare.config.ts` and the route table in `src/index-app.js` by `npm run docs:facts` (`src/render-docs.js`). `test/docs-drift.test.mjs` fails when a block differs. Edit the config or the routes, not these lists.
 
 Bindings:
 <!-- facts:BINDINGS -->
