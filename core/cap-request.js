@@ -20,7 +20,7 @@ export function parseCapUsd(input) {
     return checkedCap(input, input);
   }
   if (typeof input !== "string") {
-    throw new TypeError(capShapeError(String(input)));
+    throw new TypeError(capShapeError(input));
   }
   const amount = input.trim().replace(/^\$/, "").trim();
   if (!CAP_DOLLARS.test(amount)) {
@@ -35,7 +35,8 @@ export function parseCapUsd(input) {
  */
 function capShapeError(given) {
   const { what, next } = FAILURE_MESSAGES["cap-shape"];
-  return `${what.slice(0, -1)}, got ${JSON.stringify(given)}. ${next}`;
+  const typed = typeof given === "number" ? given : String(given);
+  return `${what.slice(0, -1)}, got ${JSON.stringify(typed)}. ${next}`;
 }
 
 /**
@@ -171,7 +172,7 @@ export async function handleCapRequest(request, account, capStore, mail = null) 
     usd = parseCapUsd(amount);
   } catch (error) {
     if (error instanceof TypeError) {
-      return jsonCapError(failureMessage("cap-shape"), 400);
+      return jsonCapError(capShapeError(amount), 400);
     }
     throw error;
   }
