@@ -120,6 +120,7 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 
 	listings := map[string]map[string]bool{}
 	hashes := 0
+	var baselined []string
 	for _, e := range queue {
 		if e.Name == "" || !inFlight[e.Name] {
 			continue
@@ -179,7 +180,11 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		if skip.Reason != "" {
 			res.Skipped = append(res.Skipped, skip)
 		}
+		if save.previous != "" {
+			baselined = append(baselined, e.Name)
+		}
 	}
+	g.forgetBaselinesReadAfterUpload(ctx, b, baselined)
 
 	finished := make([]string, 0, 4)
 	polled := 0
@@ -235,6 +240,24 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		}
 	}
 	return res, nil
+}
+
+func (g *conflictGuard) forgetBaselinesReadAfterUpload(ctx context.Context, b conflictBackend, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	stillQueued := map[string]bool{}
+	// A failed queue read forgets every baseline: that can only add an extra conflict copy, never lose a save.
+	if queue, err := b.queue(ctx); err == nil {
+		for _, e := range queue {
+			stillQueued[e.Name] = true
+		}
+	}
+	for _, name := range names {
+		if !stillQueued[name] {
+			g.seen[name].previous = ""
+		}
+	}
 }
 
 func retireFinished(order, finished []string, next int) ([]string, int) {
