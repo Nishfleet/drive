@@ -13,15 +13,16 @@ description: "Model-check the drive CLI's conflict guard (cmd/drive/conflict_gua
 
 ## Run it
 
-Needs Java 11 or later and `tla2tools.jar` v1.8.0 (https://github.com/tlaplus/tlaplus/releases/tag/v1.8.0, sha256 `e20447644bfabd29d6bd0fc2c0eb1473fb301c1a0e4dfe1961938ce5a191edbf`). From this folder:
+Needs Java 11 or later and `tla2tools.jar` v1.7.4 (https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4, sha256 `936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88`), the version `/statechart` pins. From this folder:
 
 ```sh
 java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC -config ConflictGuard.cfg -metadir "$(mktemp -d)" ConflictGuard.tla
 ```
 
-- `ConflictGuard.cfg` is the code as it is now. It must print `Model checking completed. No error has been found.` (about 50 distinct states, under 2 seconds).
-- `Before1143.cfg` is the code before #1143 (no queue re-check after the baseline read). It must print `Invariant SaveNeverDropped is violated` with a 7-state trace.
+- `ConflictGuard.cfg` is the code as it is now. It must print `Model checking completed. No error has been found.` (51 distinct states, under 2 seconds). It checks `SightedSaveNeverDropped`.
+- `Before1143.cfg` is the code before #1143 (no queue re-check after the baseline read). It must print `Invariant SightedSaveNeverDropped is violated` with a 7-state trace.
 - `Before1057.cfg` is today's code with the pre-#1057 baseline re-learn put back. It must print the same violation with a 9-state trace.
+- `Unwatched.cfg` is the code now, checked against the full `SaveNeverDropped`. It fails today with a 4-state trace: this device's upload lands, the other device's upload overwrites it, and the guard never saw the save, so nothing keeps a copy. This is an open finding (#869), not a model error. When the code fixes it, this config must pass, and then `ConflictGuard.cfg` should check `SaveNeverDropped` too.
 - Delete the `ConflictGuard_TTrace_*` files TLC writes here on a violation.
 - If a `Before*` config stops failing, the model has lost the power to see the bug. Fix the model, not the config.
 
@@ -42,20 +43,20 @@ One file, two writers: this device (`mine`) and another device (`theirs`). Stora
 | `GuardKeepsUpload` | `decide`, `case landed == save.hash` |
 | `GuardGivesUp` | `decide`, `case landed == "" \|\| landed == save.previous` after `conflictClaimPolls`: the save is dropped with no copy |
 | `GuardKeepsConflictCopy` | `decide`, `default` -> `claim` writes the conflict copy |
-| `GuardMissesSave` | the upload finished before any pass saw it in the queue |
+| `GuardMissesSave` | the upload finished before any pass saw it in the queue (`pass` only sights names in `b.queue`). The outcome is `lost` when storage no longer holds this save |
 
-Invariant `SaveNeverDropped`: the guard never takes `GuardGivesUp`.
+Invariants: `SightedSaveNeverDropped` says the guard never takes `GuardGivesUp` for a save it saw. `SaveNeverDropped` adds that no save ends `lost`.
 
 ## Scope and assumptions
 
 - One file, one save on this device, one write from another device, one guard. Uploads always succeed in the end (rclone retries).
 - Timing is abstract: the claim window (`conflictClaimPolls`) and the win window (`conflictWinPolls`) can end at any step. So `GuardKeepsUpload` ends the check when storage holds this save, and a later overwrite is a later edit, out of scope.
 - Not modeled: files over `conflictProtectMax` (compared by size and time), the hash of a file that changes while it is hashed, `claim` name collisions, and the `synced` map across passes.
-- Known gap, by design: a save whose upload finishes before any pass sees it (`GuardMissesSave`, a 500 ms tick) is not watched. The invariant covers saves the guard saw.
+- Open finding: a save whose upload finishes before any pass sees it (one 500 ms tick) is not watched, so a later overwrite by another device leaves no copy (`Unwatched.cfg`). Only this device's guard is modeled. The other device's guard cannot tell that its save replaced this one, so it does not keep a copy either.
 
 ## When you change the guard
 
-1. If your diff touches a function in the table, rerun all three configs.
+1. If your diff touches a function in the table, rerun all four configs.
 2. If the code's steps change, change the matching action first, then rerun. Each action must stay one atomic step in the code. Never weaken `SaveNeverDropped` to make a run pass.
 3. A violation on `ConflictGuard.cfg`: tell the trace as steps in the table's words. If the steps can happen in the code, it is a real bug: report it. If a step cannot happen in the code, the model is wrong: fix the action and say why.
 4. The Go test `TestConflictGuardKeepsASaveWhoseBaselineReadOutlastedItsUpload` drives the #1143 order on the real code. Keep it beside this model.

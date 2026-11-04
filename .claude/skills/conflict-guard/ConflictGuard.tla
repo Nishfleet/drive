@@ -33,7 +33,7 @@ GuardMissesSave ==
     /\ phase = "unseen"
     /\ ~queued
     /\ phase' = "done"
-    /\ outcome' = "unwatched"
+    /\ outcome' = IF remote = "mine" THEN "unwatched" ELSE "lost"
     /\ UNCHANGED <<remote, queued, theirsDone, previous>>
 
 GuardSightsSave ==
@@ -135,8 +135,10 @@ TypeOK ==
     /\ theirsDone \in BOOLEAN
     /\ phase \in {"unseen", "readingBaseline", "sighted", "watching", "relearning", "done"}
     /\ previous \in {"old", "mine", "theirs", Unknown}
-    /\ outcome \in {"pending", "uploaded", "conflictCopy", "dropped", "unwatched"}
+    /\ outcome \in {"pending", "uploaded", "conflictCopy", "dropped", "unwatched", "lost"}
 
-SaveNeverDropped == outcome # "dropped"
+SightedSaveNeverDropped == outcome # "dropped"
+
+SaveNeverDropped == outcome \notin {"dropped", "lost"}
 
 =============================================================================
