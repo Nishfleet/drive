@@ -6,9 +6,9 @@ Expected answers are the anonymous local ones, observed with `npx cf dev` on a f
 
 | Route | Gate | How to reach it | Expected answer | Evidence |
 | --- | --- | --- | --- | --- |
-| `ALL /api/keys/revoke` | forwarded to `drive-api` | `curl -X POST $B/api/keys/revoke -d '{}'` | 500 `That did not work` locally: the declared `API` binding hands back a reply whose headers cannot change, `secureHeaders` then throws `Can't modify immutable headers` (dev log, drive#1169). The 503 in `forwardToApi` is only for an undeclared binding | status+body |
+| `ALL /api/keys/revoke` | forwarded to `drive-api` | `curl -X POST $B/api/keys/revoke -d '{}'` | 503 `The drive is not configured on this deployment...` locally: the forward crosses the binding to the local `drive-api` Worker, which has no key provider or storage endpoint and answers its own closed door (dev log, drive#1169). Before the fix the same request answered 500 `That did not work` because `secureHeaders` set headers on the binding's reply, whose headers cannot change | status+body |
 | `GET,POST /api/auth/*` | public | `curl $B/api/auth/get-session` | 503 `Signing in is not open yet`; `/api/auth/nope` 404 `Not found.` | status+body |
-| `ALL /v1/*` | forwarded to `drive-api` | `curl $B/v1/anything` | 500 `That did not work` locally (same as `/api/keys/revoke`) | status+body |
+| `ALL /v1/*` | forwarded to `drive-api` | `curl $B/v1/anything` | 503 `The drive is not configured on this deployment...` locally (same as `/api/keys/revoke`) | status+body |
 | `GET /api/first-run-status` | gated | `curl $B/api/first-run-status` | 401 | status+body |
 | `GET /api/search` | gated | `curl $B/api/search` | 401 | status+body |
 | `GET,POST /api/files` and `/api/files/*` | gated | `curl $B/api/files` | 401 | status+body, span |

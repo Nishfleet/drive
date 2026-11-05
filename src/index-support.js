@@ -202,13 +202,21 @@ function apiBinding(env) {
  * until drive-api is deployed and the binding is declared, both routes say so
  * in the message table's words rather than falling through to the asset layer
  * and serving a 404 page to a CLI mid sign-in.
+ *
+ * The answer comes back as a new Response, not as the binding's own object:
+ * a Response that crossed a `fetch` has immutable headers, and secureHeaders
+ * (src/index-app.js) sets headers on every answer, so passing that reply on
+ * as it is throws "Can't modify immutable headers" and every forwarded call
+ * answers a 500. Building a fresh Response over the same body, status and
+ * headers gives the same reply with headers that can change.
+ * https://developers.cloudflare.com/workers/examples/alter-headers/
  * @param {DriveContext} c
  * @returns {Response | Promise<Response>}
  */
 export function forwardToApi(c) {
   const api = apiBinding(c.env).API;
   if (!api) return errorResponse(503, failureMessage("unexpected"));
-  return api.fetch(c.req.raw);
+  return api.fetch(c.req.raw).then((reply) => new Response(reply.body, reply));
 }
 
 /**
