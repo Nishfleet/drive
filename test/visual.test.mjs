@@ -19,6 +19,9 @@ import {
 const CHROME = process.env.DRIVE_CHROME ?? "/usr/bin/google-chrome";
 const UPDATE = process.env.UPDATE_SCREENSHOTS === "1";
 const BASELINES = new URL("./visual/", import.meta.url);
+// The upload page's own read (upload.html's REQUEST_INFO_ENDPOINT);
+// test/a11y-pages.test.mjs names the same path for its identical stub.
+const REQUEST_INFO_PATH = "/api/request/info";
 const MAX_DIFFERENT_SHARE = 0.01;
 const FROZEN_NOW = Date.parse("2026-10-14T12:00:00.000Z");
 
@@ -31,8 +34,12 @@ const MIME = {
   ".png": "image/png",
 };
 
-/** @type {ReadonlyArray<{name: string, file: string, ready: string, settle?: "load" | "networkidle0", scheme?: "dark"}>} */
-const PAGES = Object.freeze([
+/**
+ * The account pages, shot for their own settled state. The account is signed
+ * in, so every one of them is a page the customer looks at.
+ * @type {ReadonlyArray<{name: string, file: string, ready: string, settle?: "load" | "networkidle0", query?: string, root?: boolean}>}
+ */
+const ACCOUNT_PAGES = Object.freeze([
   { name: "home", file: "home.html", ready: "#next-step:not([hidden])" },
   { name: "files", file: "files.html", ready: "#file-list li:not(.is-shell)" },
   { name: "usage", file: "usage.html", ready: "#usage-body:not([hidden])" },
@@ -42,22 +49,52 @@ const PAGES = Object.freeze([
     file: "billing.html",
     ready: "main:has(#balance-body:not([hidden])):has(#peak-body:not([hidden]))",
   },
-  { name: "home-dark", file: "home.html", ready: "#next-step:not([hidden])", scheme: "dark" },
-  {
-    name: "files-dark",
-    file: "files.html",
-    ready: "#file-list li:not(.is-shell)",
-    scheme: "dark",
-  },
-  { name: "usage-dark", file: "usage.html", ready: "#usage-body:not([hidden])", scheme: "dark" },
-  {
-    name: "billing-dark",
-    file: "billing.html",
-    ready: "main:has(#balance-body:not([hidden])):has(#peak-body:not([hidden]))",
-    scheme: "dark",
-  },
   { name: "index", file: "index.html", ready: ".hero .chips" },
-  { name: "index-dark", file: "index.html", ready: ".hero .chips", scheme: "dark" },
+  // The share-uploader with a live link. The link's own read is stubbed in
+  // serve() below, the way test/a11y-pages.test.mjs stubs it, so the page
+  // shows the drop zone an owner's link answers rather than an error page.
+  { name: "upload", file: "upload.html", ready: "#drop:not([hidden])", query: "?k=visual" },
+  // get-started.html ships from the repo root (Vite builds it to /get-started).
+  { name: "get-started", file: "get-started.html", ready: "#steps-heading", root: true },
+  { name: "starter", file: "starter.html", ready: "#starter-actions:not([hidden])" },
+  { name: "status", file: "status.html", ready: "#status-line" },
+  {
+    name: "devices",
+    file: "devices.html",
+    ready: "#devices-empty:not([hidden]), #keys:not([hidden])",
+  },
+  {
+    name: "webhooks",
+    file: "webhooks.html",
+    ready: "#hooks-empty:not([hidden]), #hooks:not([hidden])",
+  },
+  { name: "terms", file: "terms.html", ready: "#policy-heading" },
+  { name: "privacy", file: "privacy.html", ready: "#policy-heading" },
+  { name: "refunds", file: "refunds.html", ready: "#policy-heading" },
+  { name: "acceptable-use", file: "acceptable-use.html", ready: "#policy-heading" },
+  { name: "support", file: "support.html", ready: "#policy-heading" },
+  { name: "accessibility", file: "accessibility.html", ready: "#policy-heading" },
+  { name: "404", file: "404.html", ready: "#missing-heading" },
+  { name: "500", file: "500.html", ready: "#error-heading" },
+]);
+
+/**
+ * Every page above again in the dark scheme, so polish gap 3's colours are
+ * not only axe-checked but seen. og-card.html is left out: it is the fixed
+ * 1200x630 share-card source, not a page anyone browses.
+ * @type {ReadonlyArray<{name: string, file: string, ready: string, settle?: "load" | "networkidle0", scheme?: "dark", query?: string, root?: boolean}>}
+ */
+const PAGES = Object.freeze([
+  ...ACCOUNT_PAGES,
+  ...ACCOUNT_PAGES.map((page) => ({
+    name: `${page.name}-dark`,
+    file: page.file,
+    ready: page.ready,
+    settle: page.settle,
+    query: page.query,
+    root: page.root,
+    scheme: /** @type {"dark"} */ ("dark"),
+  })),
 ]);
 const SIZES = Object.freeze([
   { name: "desktop", width: 1280, height: 900 },
@@ -93,6 +130,15 @@ function serve(page, workerFetch, env, ctx, cookie) {
     if (url.pathname === "/") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(page);
+      return;
+    }
+    // The share-uploader's own read, stubbed the way a real live link answers
+    // (REQUEST_INFO_PATH from src/share-routes.js, the same stub the a11y
+    // pages test serves): the visual test proves the page's look, not the
+    // endpoint's behaviour, and the stub keeps the shot of the drop zone.
+    if (url.pathname === REQUEST_INFO_PATH) {
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ open: true, folder: "Photos", expiresAtIso: null }));
       return;
     }
     const asset = new URL(`.${url.pathname}`, PUBLIC);
@@ -207,8 +253,8 @@ test("the comparison tells a changed page from the same page", {
   assert.equal((await compare(chrome, plain, resized)).sameSize, false);
 });
 
-test("Home, Files and Usage look the way their baselines say", {
-  timeout: 300_000,
+test("Every page in both schemes and both sizes looks the way its baselines say", {
+  timeout: 600_000,
   skip,
 }, async (t) => {
   const made = createTestAuth({ migrations: DRIVE_SCHEMA_MIGRATIONS });
@@ -249,8 +295,11 @@ test("Home, Files and Usage look the way their baselines say", {
   const judge = await browser.newPage();
   mkdirSync(BASELINES, { recursive: true });
 
-  for (const { name, file, ready, settle, scheme } of PAGES) {
-    const html = readFileSync(new URL(`../public/${file}`, import.meta.url), "utf8");
+  for (const { name, file, ready, settle, scheme, query, root } of PAGES) {
+    const html = readFileSync(
+      new URL(root ? `../${file}` : `../public/${file}`, import.meta.url),
+      "utf8",
+    );
     const server = serve(html, workerFetch, env, ctx, cookie);
     await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
     const address = /** @type {import("node:net").AddressInfo} */ (server.address());
@@ -265,7 +314,7 @@ test("Home, Files and Usage look the way their baselines say", {
             { name: "prefers-color-scheme", value: scheme ?? "light" },
             { name: "prefers-reduced-motion", value: "reduce" },
           ]);
-          await chrome.goto(`http://127.0.0.1:${address.port}/`, {
+          await chrome.goto(`http://127.0.0.1:${address.port}/${query ?? ""}`, {
             waitUntil: settle ?? "networkidle0",
           });
           await chrome.waitForSelector(ready);
