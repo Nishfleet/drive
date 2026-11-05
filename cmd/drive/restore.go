@@ -9,12 +9,6 @@ import (
 	"time"
 )
 
-// `drive restore` (delight item 1): put back a file that was saved over or
-// deleted. The Worker keeps the earlier copy for 3 days, free; this command
-// lists the copies of one file and restores one. It is two calls to the
-// account routes the Files page uses (core/files-history.js):
-// GET /api/files/versions and POST /api/files/restore-version.
-
 const (
 	versionsPath       = "/api/files/versions"
 	restoreVersionPath = "/api/files/restore-version"
@@ -34,10 +28,6 @@ type versionsAnswer struct {
 	Versions []EarlierCopy `json:"versions"`
 }
 
-// runRestore is `drive restore <file>`: with no flag it lists the earlier
-// copies, newest first; --latest restores the newest one; --copy N restores
-// the Nth line of the list. Restoring is a save, so the copy it replaces
-// becomes an earlier copy and the undo can be undone.
 func runRestore(args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
 	common := addCommonFlags(fs)
@@ -104,8 +94,6 @@ func runRestore(args []string) error {
 	})
 }
 
-// printEarlierCopies lists the copies newest first, each with the day it is
-// removed for good.
 func printEarlierCopies(path string, copies []EarlierCopy) {
 	fmt.Printf("earlier copies of %s:\n", path)
 	for i, c := range copies {
@@ -114,8 +102,6 @@ func printEarlierCopies(path string, copies []EarlierCopy) {
 	}
 }
 
-// shortTime renders the Worker's ISO time as a date and minute, or the raw
-// text when it does not parse.
 func shortTime(iso string) string {
 	t, err := time.Parse(time.RFC3339, iso)
 	if err != nil {

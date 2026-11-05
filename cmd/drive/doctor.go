@@ -99,7 +99,6 @@ func printDoctorMount(w io.Writer, goos, home string) {
 	}
 }
 
-// A FUSE mount whose backing store has gone away blocks a ReadDir.
 func folderAnswers(mountDir string) bool {
 	_, err := countEntries(mountDir, 2*time.Second)
 	return err == nil

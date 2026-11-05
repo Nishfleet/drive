@@ -143,7 +143,6 @@ func (t *accessTransport) token(path, app string) string {
 		return ""
 	}
 	token := strings.TrimSpace(out)
-	// cloudflared prints a sentence, not a token, when it has none.
 	if token == "" || strings.ContainsAny(token, " \n\t") {
 		return ""
 	}

@@ -12,7 +12,7 @@ import (
 
 var renameFile = os.Rename
 
-// rclone refuses to mount a non-empty folder.
+// upstream: https://rclone.org/commands/rclone_mount/ — rclone refuses to mount a non-empty folder, so the mount point must be empty.
 func strayHoldingDir(mountDir string) string {
 	return mountDir + ".drive-local"
 }

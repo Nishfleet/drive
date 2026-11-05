@@ -121,7 +121,6 @@ func CheckSecretFileMode(path string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file (mode %s), so it is not the drive config", path, info.Mode())
 	}
-	// On Windows FileMode.Perm() reports 0666/0444 for every file; mode bits are a POSIX concept.
 	if runtime.GOOS == "windows" {
 		return nil
 	}
