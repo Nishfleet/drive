@@ -25,3 +25,8 @@ jobs:
     with:
       issue: ${{ github.event.issue.number || inputs.issue }}
       pr: ${{ inputs.pr }}
+    # A called workflow gets only the secrets its caller passes, even one that lives in
+    # the `agent` environment the lane's jobs use.
+    # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow
+    secrets:
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
