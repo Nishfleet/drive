@@ -337,12 +337,15 @@ export async function recentLedger(db, accountId, limit = 10, kind = null) {
  * #532/#536) and saves the provider's customer id when the account has none
  * yet (#503), both with COALESCE so a replay changes nothing.
  *
- * The same verified event is also the only writer of the card fingerprint
- * (#503): the browser no longer supplies one, so the provider's payment
- * method id is the whole record of which card an account holds, and it is
- * claimed here, in the verified path. A second live account already holding
- * that card is refused, which is reported in the result and logged, and never
- * stops the credit: money that moved is credited whatever the guard says.
+ * The same verified event is also where a real card is recorded (#503): the
+ * browser no longer supplies one, so the provider's payment method id is the
+ * whole record of which card an account holds, and it is claimed here, in the
+ * verified path. The sign-in verify claims the same fingerprint from the
+ * provider's saved cards once the Dodo key is set (#829), which is the other
+ * writer and the only one that can refuse a sign-in. A second live account
+ * already holding that card is refused, which is reported in the result and
+ * logged, and never stops the credit: money that moved is credited whatever
+ * the guard says.
  *
  * A payment for an account that no longer exists is not credited: money
  * under an id nobody can sign in as is lost to everyone. The caller logs it,

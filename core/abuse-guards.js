@@ -89,7 +89,9 @@ export async function cardFingerprintTaken(db, fingerprint, exceptAccountId) {
  *
  * No fingerprint and no `card_added_at`: an account that has not paid has no
  * card, which is what `cardAdded` and `monthUsage` read (both fail closed), so
- * key minting stays shut until the payment webhook claims the real card. An
+ * key minting stays shut until the payment webhook claims the real card, or
+ * the sign-in verify does the same from the provider's saved cards once the
+ * Dodo key is set (drive#829). An
  * existing row keeps its card, card_added_at, cap and closed state; only the
  * email mirror is refreshed from the current session, which keeps a changed
  * mailbox current for the card-holder notice (core/ledger.js reads it).
@@ -129,10 +131,13 @@ export async function ensureBillingAccount(db, options) {
  * table's words and writes nothing.
  *
  * The fingerprint comes from the provider, through the verified webhook
- * (paymentCardFingerprint), so this is the only path that writes one for a
- * real card. A refusal here is not a dropped payment: the caller credits the
- * money either way and reports why the account was not stamped, because a
- * top-up is never held hostage by the one-account-per-card rule.
+ * (paymentCardFingerprint) or the sign-in verify reading the provider's saved
+ * cards once the Dodo key is set (drive#829), so nothing a browser posts can
+ * write one. A refusal here is not a dropped payment: the webhook's caller
+ * credits the money either way and reports why the account was not stamped,
+ * because a top-up is never held hostage by the one-account-per-card rule;
+ * the verify treats the same refusal as no sign-in, so the person is told the
+ * card is already on another account.
  * @param {D1Database} db
  * @param {{accountId: string, email: string, fingerprint: string, now?: number}} options
  * @returns {Promise<{error: string}|{fingerprint: string}>}
