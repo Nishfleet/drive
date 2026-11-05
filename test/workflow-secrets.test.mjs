@@ -39,6 +39,10 @@ const OTHER_SECRETS = new Set([
   // The approver bot's token: review.yml passes it by name to the fleet-ops
   // review workflow, which reads it to approve. Not a deploy credential.
   "APPROVER_TOKEN",
+  // The fleet App key: agent.yml passes it by name to the fleet-ops agent
+  // lane, whose token jobs read it from this repo's `agent` environment
+  // (only main may deploy there). Not a deploy credential.
+  "APP_PRIVATE_KEY",
 ]);
 
 /**
