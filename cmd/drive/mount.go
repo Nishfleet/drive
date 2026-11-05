@@ -54,7 +54,7 @@ func VFSArgs(cacheMax string) []string {
 		"--vfs-write-back", vfsWriteBackValue,
 		"--vfs-cache-max-size", cacheMax,
 		"--vfs-cache-min-free-space", vfsCacheMinFreeSpaceValue,
-		// rclone re-lists when the directory cache is older than this and returns the error on failure, with no stale-on-error (https://github.com/rclone/rclone/blob/v1.75.2/vfs/dir.go#L526-L540).
+		// upstream: https://github.com/rclone/rclone/blob/v1.75.2/vfs/dir.go#L526-L540 — rclone re-lists when the directory cache is older than this and returns the error on failure, with no stale-on-error.
 		"--dir-cache-time", vfsDirCacheTimeValue,
 		"--vfs-read-chunk-size", tunedVFSValue("VFS_READ_CHUNK_SIZE", vfsReadChunkSizeValue),
 		"--vfs-read-chunk-streams", tunedVFSValue("VFS_READ_CHUNK_STREAMS", vfsReadChunkStreamsValue),
@@ -835,7 +835,6 @@ func mountForeground(p MountPlan, home string) error {
 	}
 	fillCtx, cancelFill := context.WithCancel(context.Background())
 	go func() {
-		// rclone's remote control is not listening for the first moments of the mount.
 		_, _ = MountedDir(p.GOOS, p.MountDir)
 		c := rcClientForMount(p)
 		for err := range RunFillLoop(fillCtx, c, home, p.MountDir) {
@@ -940,7 +939,7 @@ func mountSystemctlActions() []string {
 	return []string{"daemon-reload", "enable", "restart"}
 }
 
-// launchctl `load` and `unload -w` are deprecated and not idempotent.
+// upstream: https://keith.github.io/xcode-man-pages/launchctl.1.html#LEGACY_SUBCOMMANDS — launchctl `load` and `unload` are legacy and not idempotent.
 func bootstrapLaunchd(itemPath string) error {
 	return bootstrapLaunchdLabel(LaunchdLabel, itemPath)
 }
@@ -1119,7 +1118,6 @@ func Mounted(goos, home string) (bool, error) {
 
 // MountedDir is Mounted for a mount point that is not <home>/Drive, so a caller holding the mount point itself (the proofs, whose dir may be a second mount on the same host) asks the same platform question.
 func MountedDir(goos, mountDir string) (bool, error) {
-	// A FUSE mount whose backing store has gone away can block findmnt the same way it blocks ReadDir.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	switch goos {

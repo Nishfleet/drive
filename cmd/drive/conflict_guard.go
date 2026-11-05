@@ -58,7 +58,7 @@ type conflictBackend interface {
 	parentContents(ctx context.Context, dir string) (map[string]bool, error)
 	copyLocalToRemote(ctx context.Context, srcRoot, srcRemote, dstRemote string) error
 	refresh(ctx context.Context, recursive bool) error
-	// vfs/refresh marks the directory cache stale before re-listing, so refreshing while storage is down fails later opens (https://github.com/rclone/rclone/blob/v1.75.2/vfs/dir.go#L809-L815, then https://github.com/rclone/rclone/blob/v1.75.2/vfs/dir.go#L526-L540).
+	// upstream: https://github.com/rclone/rclone/blob/v1.75.2/vfs/dir.go#L809-L815 — vfs/refresh marks the directory cache stale before re-listing, and #L526-L540 is the re-list whose error a refresh while storage is down fails later opens with.
 	reachable(ctx context.Context) error
 }
 
@@ -247,7 +247,6 @@ func (g *conflictGuard) forgetBaselinesReadAfterUpload(ctx context.Context, b co
 		return
 	}
 	stillQueued := map[string]bool{}
-	// A failed queue read forgets every baseline: that can only add an extra conflict copy, never lose a save.
 	if queue, err := b.queue(ctx); err == nil {
 		for _, e := range queue {
 			stillQueued[e.Name] = true
