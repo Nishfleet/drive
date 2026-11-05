@@ -66,12 +66,19 @@ test("the backup walks every database the fleet owns, not only the deploy's", ()
   for (const id of deployIds)
     assert.ok(backupIds.includes(id), `the deploy migrates ${id} and the backup must dump it`);
   assert.ok(deployIds.length >= 2, "both databases are exported");
-  const PRODUCT_DATABASES = [
-    ["siterep_payments", "ec176fc4-b4f2-44c0-a925-b36ec067cff5"],
-    ["aiconverter", "376080eb-60f1-4bb8-aabb-06622acabb63"],
-    ["0509", "746c6e3d-782e-443a-82d6-28ca93a16294"],
-  ];
+  const PRODUCT_DATABASES = [["0509", "746c6e3d-782e-443a-82d6-28ca93a16294"]];
   const entries = matrixRows(matrix);
+  // One owner per database: these two are exported by their own
+  // repositories' d1-export.yml on the same cron, and a second export of the
+  // same database here only doubles the work and the artifacts.
+  for (const [name, owner] of [
+    ["siterep_payments", "siterep-public"],
+    ["aiconverter", "aiconverter-app"],
+  ])
+    assert.ok(
+      !entries.some(([entryName]) => entryName === name),
+      `${name} is backed up by ${owner}'s own d1-export.yml; drive must not export it a second time`,
+    );
   for (const [name, id] of PRODUCT_DATABASES) {
     const row = entries.find(([entryName]) => entryName === name);
     assert.ok(row, `${name} is a product database and must be in the weekly backup matrix`);

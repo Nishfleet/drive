@@ -13,7 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  # The only off-Cloudflare backup of drive's and four other products' databases (drive#520, fleet-ops#10594).
+  # The only off-Cloudflare backup of drive's databases and 0509's (drive#520, fleet-ops#10594).
+  # siterep_payments and aiconverter are exported by their own repositories' d1-export.yml (fleet-ops#10829).
   export:
     name: export ${{ matrix.database.name }}
     runs-on: ubuntu-latest
@@ -26,8 +27,6 @@ jobs:
         database:
           - { name: waitlist, id: 93c9f523-159c-4261-8541-d4c059906df3 }
           - { name: drive, id: 0f636b57-4a2e-482a-bf40-8aa315e2403e, compatibility: sqlite3_cli_only }
-          - { name: siterep_payments, id: ec176fc4-b4f2-44c0-a925-b36ec067cff5 }
-          - { name: aiconverter, id: 376080eb-60f1-4bb8-aabb-06622acabb63 }
           - { name: "0509", id: 746c6e3d-782e-443a-82d6-28ca93a16294 }
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
