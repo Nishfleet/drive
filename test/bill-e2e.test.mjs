@@ -199,7 +199,11 @@ function monthGbMinutes(meteredDb, monthLabel) {
  * @param {{peak: {peakBytes: number}, gbMinutes: number, monthMinutes: number}} month
  */
 function billThroughTheMeter(month) {
-  return monthBillCents({ size30Bytes: month.peak.peakBytes });
+  return monthBillCents({
+    size30Bytes: month.peak.peakBytes,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
 }
 
 /**
@@ -606,11 +610,13 @@ test("a version replaced inside an hour is marked once, however many saves it to
   // minimum (drive#104), so the hour bills 400 GB x 50 minutes.
   assert.equal(rolled.gbMinutes, 20_000, "the hour bills the one file's fifty minutes");
   assert.equal(
-    monthBillCents({ size30Bytes: peak.peakBytes }).storageCents,
+    monthBillCents({ size30Bytes: peak.peakBytes, downloadBytes: 0, config: BILLING_CONFIG })
+      .storageCents,
     800,
     "the bill reads size30 (the mark), not the hour's average",
   );
   assert.throws(
+    // @ts-expect-error a retired field is refused by name at runtime, and by the type
     () => monthBillCents({ size30Bytes: peak.peakBytes, peakBytes: peak.peakBytes }),
     /peakBytes/,
     "a caller that still hands over the peak field is refused by name",
@@ -651,7 +657,11 @@ test("two versions still live at the hour's end are marked together, which is wh
   assert.equal(peak.peakBytes, 800 * GB, "the month's peak carries both versions");
   // The rule's own min(): a month that metered nothing bills nothing, whatever
   // the peak says - the maximum is a cap on the meter, never a floor.
-  const bill = monthBillCents({ size30Bytes: peak.peakBytes });
+  const bill = monthBillCents({
+    size30Bytes: peak.peakBytes,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
   assert.equal(
     rolled.gbMinutes,
     36_000,
@@ -664,7 +674,7 @@ test("two versions still live at the hour's end are marked together, which is wh
     "and even 800 GB held all month would stop at the $15 maximum",
   );
   assert.equal(
-    monthBillCents({ size30Bytes: 0 }).storageCents,
+    monthBillCents({ size30Bytes: 0, downloadBytes: 0, config: BILLING_CONFIG }).storageCents,
     0,
     "a month that metered nothing bills nothing",
   );
@@ -725,7 +735,8 @@ test("a file deleted inside an hour leaves the month with nothing at any hour's 
     "the month reads 0 rather than failing, because a version deleted before an hour's end is not a measurement the meter missed",
   );
   assert.equal(
-    monthBillCents({ size30Bytes: peak.peakBytes }).storageCents,
+    monthBillCents({ size30Bytes: peak.peakBytes, downloadBytes: 0, config: BILLING_CONFIG })
+      .storageCents,
     0,
     "size30 is the hour-end mark: a delete before the hour ends bills nothing extra",
   );

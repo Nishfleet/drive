@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { monthBillCents, USAGE_ENDPOINT } from "../core/billing.js";
+import { BILLING_CONFIG, monthBillCents, USAGE_ENDPOINT } from "../core/billing.js";
 import { FILES_ENDPOINT } from "../core/files.js";
 import { handleFilesRequest } from "../core/files-handlers.js";
 import { createMemoryStore, storageBucketForKey } from "../core/files-memory.js";
@@ -833,16 +833,24 @@ test("gate 5: the bill is whole cents out of the one billing function", () => {
   //   the same month plus 400 GB downloaded on a 100 GB average: 300 GB free,
   //   100 GB billable → +100¢ → $9.00
   //   2 TB all month: 4000¢ metered, held to $10 × 2 TB = $20 → 2000¢
+  /** @type {[import("../core/billing.js").BillMonth, Record<string, number>][]} */
   const cases = [
-    [{ size30Bytes: 400 * 1e9 }, { storageCents: 800, downloadCents: 0, totalCents: 800 }],
+    [
+      { size30Bytes: 400 * 1e9, downloadBytes: 0, config: BILLING_CONFIG },
+      { storageCents: 800, downloadCents: 0, totalCents: 800 },
+    ],
     [
       {
         size30Bytes: 400 * 1e9,
         downloadBytes: 1300e9,
+        config: BILLING_CONFIG,
       },
       { storageCents: 800, downloadCents: 100, totalCents: 900 },
     ],
-    [{ size30Bytes: 2000 * 1e9 }, { storageCents: 3000, downloadCents: 0, totalCents: 3000 }],
+    [
+      { size30Bytes: 2000 * 1e9, downloadBytes: 0, config: BILLING_CONFIG },
+      { storageCents: 3000, downloadCents: 0, totalCents: 3000 },
+    ],
   ];
   for (const [input, expected] of cases) {
     const bill = monthBillCents(input);

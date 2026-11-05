@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import fc from "fast-check";
 import {
+  BILLING_CONFIG,
   centsFromDrawnMillicents,
   DRAW_DAYS,
   dailyDrawMillicents,
@@ -37,7 +38,7 @@ function drawOneDay(monthlyMillicents, state) {
 
 /** The month's price for a stored size, in millicents. */
 const monthMillis = (/** @type {number} */ bytes) =>
-  monthBillCents({ size30Bytes: bytes }).totalMillicents;
+  monthBillCents({ size30Bytes: bytes, downloadBytes: 0, config: BILLING_CONFIG }).totalMillicents;
 
 /**
  * A stored size in bytes: from an empty drive through the maximum's 750 GB and
@@ -89,7 +90,11 @@ test("a 30-day total never passes the monthly price of the biggest size in that 
         return;
       }
       const biggestInSpan = Math.max(...span);
-      const monthOfBiggest = monthBillCents({ size30Bytes: biggestInSpan });
+      const monthOfBiggest = monthBillCents({
+        size30Bytes: biggestInSpan,
+        downloadBytes: 0,
+        config: BILLING_CONFIG,
+      });
       const shareOfBiggest = monthOfBiggest.totalMillicents;
       assert.ok(
         state.drawnCents <= monthOfBiggest.totalCents,
@@ -111,7 +116,11 @@ test("a 30-day total never passes the monthly price of the biggest size in that 
 test("thirty daily draws at a constant size equal that month's price exactly", () => {
   fc.assert(
     fc.property(sizeBytes, (bytes) => {
-      const month = monthBillCents({ size30Bytes: bytes });
+      const month = monthBillCents({
+        size30Bytes: bytes,
+        downloadBytes: 0,
+        config: BILLING_CONFIG,
+      });
       const state = freshDrawState();
       for (let day = 0; day < DRAW_DAYS; day += 1) {
         drawOneDay(monthMillis(bytes), state);

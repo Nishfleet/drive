@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { minutesInMonth, monthBillCents } from "../core/billing.js";
+import { BILLING_CONFIG, minutesInMonth, monthBillCents } from "../core/billing.js";
 import {
   BILLING_PUSH_GAP_HOURS,
   billingEventId,
@@ -218,7 +218,11 @@ test("the event id is the account and hour, so a retry is the same id", () => {
 test("a day of stored GB pushes the bill, with storage and downloads as dollar lines", async () => {
   const day = await storedHours(400, 24);
   const recorder = recordingFetch();
-  const bill = monthBillCents({ size30Bytes: 400 * BYTES_PER_GB });
+  const bill = monthBillCents({
+    size30Bytes: 400 * BYTES_PER_GB,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
   const result = await pushBillingHours(day.db, day.hours, {
     apiKey: KEY,
     fetch: recorder.fetch,
@@ -383,7 +387,11 @@ test("an October hour does not count September's GB-minutes", async () => {
   });
   const metadata = recorder.calls[0].payload.events[0].metadata;
   // size30 is trailing 30 days, so October still bills September's 800 GB peak.
-  const octoberBill = monthBillCents({ size30Bytes: 800 * BYTES_PER_GB });
+  const octoberBill = monthBillCents({
+    size30Bytes: 800 * BYTES_PER_GB,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
   assert.equal(metadata.storage_cents, octoberBill.storageCents);
   assert.equal(octoberBill.storageCents, 1500);
   assert.notEqual(metadata.storage_cents, throughSeptember.gbMinutes);
@@ -407,8 +415,16 @@ test("a push that spans the month boundary bills each month on its own", async (
     2000 * BYTES_PER_GB,
     october + HOUR_MS,
   );
-  const septemberBill = monthBillCents({ size30Bytes: 2000 * BYTES_PER_GB });
-  const octoberBill = monthBillCents({ size30Bytes: 2000 * BYTES_PER_GB });
+  const septemberBill = monthBillCents({
+    size30Bytes: 2000 * BYTES_PER_GB,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
+  const octoberBill = monthBillCents({
+    size30Bytes: 2000 * BYTES_PER_GB,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
   assert.equal(septemberBill.totalCents, 3000);
   assert.equal(octoberBill.totalCents, 3000, "both months still hold the 2 TB size30");
   const recorder = recordingFetch();
@@ -470,7 +486,11 @@ test("Dodo receives the bill held to the maximum, never the uncapped meter", asy
   const monthMinutes = minutesInMonth(hour);
   const gbMinutes = 2000 * monthMinutes;
   await recordUsage(db, ACCOUNT, hour, gbMinutes, 2000 * BYTES_PER_GB, hour + HOUR_MS);
-  const bill = monthBillCents({ size30Bytes: 2000 * BYTES_PER_GB });
+  const bill = monthBillCents({
+    size30Bytes: 2000 * BYTES_PER_GB,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
   assert.equal(bill.storageCents, 3000);
   assert.equal(bill.totalCents, 3000);
   const recorder = recordingFetch();
