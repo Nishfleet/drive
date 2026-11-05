@@ -97,17 +97,20 @@ nothing. The dumps are sealed with `age` before upload: anyone with read
 access to this public repository can download its workflow artifacts, so only
 the ciphertext leaves the runner.
 
-**The matrix also carries the fleet's three other product databases**
-(fleet-ops#10594): `siterep_payments` (siterep-public), `aiconverter`
-(aiconverter-app) and `0509` (0509). They are dumped from here because the
-export credential is the Cloudflare D1 token on this repository's production
-environment, D1 permissions are account-scoped, and those three repositories
-hold no such token and no `AGE_RECIPIENT`. Each of them moves to its own
-repository's copy of the job when that setup lands (fleet-ops#10829);
-`test/d1-export.test.mjs` fails while one of the three is out of the matrix,
-because that would end the only backup it has. Their artifacts are named
-after the database, so `d1-backup-0509` and `d1-backup-aiconverter` sit
-beside `d1-backup-waitlist` on the run's summary page.
+**The matrix also carries the `0509` database** (fleet-ops#10594). It is
+dumped from here because the export credential is the Cloudflare D1 token on
+this repository's production environment, D1 permissions are account-scoped,
+and the 0509 repository holds no such token and no `AGE_RECIPIENT`. It moves
+to its own repository's copy of the job when that setup lands
+(fleet-ops#10829); `test/d1-export.test.mjs` fails while it is out of the
+matrix, because that would end the only backup it has. Its artifact is named
+after the database, so `d1-backup-0509` sits beside `d1-backup-waitlist` on
+the run's summary page.
+
+`siterep_payments` and `aiconverter` are backed up by their own
+repositories' `d1-export.yml` (siterep-public and aiconverter-app), so they
+are not in this matrix: one owner per database. The test fails if either
+comes back here.
 
 The TinyStudio signups database was deleted (fleet-ops incident
 2026-10-29), so its row left the matrix (drive#1027).
