@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { BYTES_PER_GB, HOUR_MS } from "../core/meter.js";
+import { recordUsage } from "../core/meter-usage.js";
+import { drawUsageHours } from "../core/prepaid.js";
 import { handleWebhookRequest } from "../core/webhook-routes.js";
 import {
   createEndpoint,
@@ -143,6 +146,49 @@ test("a server that cannot be reached never throws out of emitEvent", async () =
   assert.equal(log?.[0].ok, false);
   assert.equal(log?.[0].statusCode, null);
   assert.match(log?.[0].error ?? "", /could not be reached/);
+});
+
+test("usage.threshold is sent once per whole 100 GB step the 30-day biggest size passes", async () => {
+  const db = createTestD1();
+  const made = await createEndpoint(db, "a1", { url: URL_OK, events: ["usage.threshold"] });
+  assert.ok("endpoint" in made);
+  const { calls, fetch } = recorder(200);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = fetch;
+  const DAY_MS = 24 * HOUR_MS;
+  const first = Date.parse("2026-10-05T00:00:00.000Z");
+  /** @param {number} offset @param {number} gb */
+  const drawDay = async (offset, gb) => {
+    const at = first + offset * DAY_MS;
+    await recordUsage(db, "a1", at, gb * 60, Math.round(gb * BYTES_PER_GB), at + HOUR_MS);
+    await drawUsageHours(db, [at], { now: at + HOUR_MS });
+  };
+  try {
+    await drawDay(0, 50);
+    assert.equal(calls.length, 0, "below the first step");
+
+    await drawDay(1, 100);
+    assert.equal(calls.length, 1, "crossing 100 GB emits one");
+    assert.equal(JSON.parse(String(calls[0].init.body)).type, "usage.threshold");
+    assert.deepEqual(JSON.parse(String(calls[0].init.body)).data, {
+      bytes: 100 * BYTES_PER_GB,
+      threshold_bytes: 100 * BYTES_PER_GB,
+    });
+
+    await drawDay(2, 120);
+    assert.equal(calls.length, 1, "staying above the step emits none");
+
+    await drawDay(3, 200);
+    assert.equal(calls.length, 2, "crossing 200 GB emits one more");
+    assert.deepEqual(JSON.parse(String(calls[1].init.body)).data, {
+      bytes: 200 * BYTES_PER_GB,
+      threshold_bytes: 200 * BYTES_PER_GB,
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const log = await listDeliveries(db, "a1", made.endpoint.id);
+  assert.equal(log?.length, 2);
 });
 
 test("another account's endpoint is a 404 on every route, and a stranger is a 401", async () => {
