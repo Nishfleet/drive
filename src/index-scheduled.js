@@ -94,6 +94,7 @@ export async function runScheduled(event, env, context, store) {
             store: createD1DeviceStore(env.DRIVE_DB, {
               keyProvider: keyProviderFor(env) ?? undefined,
             }),
+            db: env.DRIVE_DB,
             now: event.scheduledTime,
             email: env.EMAIL,
             mailFrom: secrets.MAIL_FROM ?? "",

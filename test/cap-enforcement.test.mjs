@@ -77,6 +77,7 @@ async function seeded(capCents) {
   const walk = () =>
     runCapEnforcement({
       store: createD1DeviceStore(made.db),
+      db: made.db,
       email,
       mailFrom: "drive@drive.test",
     });
@@ -118,7 +119,7 @@ test("a month of downloads over the cap: the walk saves read_only and mails once
   assert.equal(mail.length, 1, "the notice went out twice for one state change");
 });
 
-test("at 80% of the cap the warning goes out once, and re-arms after it falls back", async () => {
+test("at 80% of the cap the warning goes out once a month, and a re-cross mails nothing again", async () => {
   const { made, account, mail, walk, state } = await seeded(600);
   const first = await walk();
   assert.equal(await state(), "active", "$5.00 of a $6.00 cap is still writable");
@@ -127,13 +128,27 @@ test("at 80% of the cap the warning goes out once, and re-arms after it falls ba
   await walk();
   assert.equal(mail.length, 1, "the warning went out twice for one crossing");
 
-  // A cap raise to $10 puts the month at 50%: no mail, and the stamp clears,
-  // so a later crossing is a new state change that is mailed again.
+  // A cap raise to $10 puts the month at 50%: no mail, and the stamp clears.
+  // A re-cross in the same month mails nothing: the send ledger
+  // (migrations/drive/0060_email_sends.sql) already holds this account's
+  // cap-warning claim for the month, and the send function -- not this walk's
+  // own bookkeeping -- is what refuses the second mail (drive#1206). The
+  // next month is a new period and mails again; test/d1-sqlite.test.mjs
+  // proves that on the real schema.
   await createD1DeviceStore(made.db).setCapCents(account, 1000);
   assert.equal((await walk()).mailed, 0);
   await createD1DeviceStore(made.db).setCapCents(account, 600);
-  assert.equal((await walk()).warned, 1);
-  assert.equal(mail.length, 2);
+  assert.equal((await walk()).warned, 0);
+  assert.equal(mail.length, 1);
+  const rows = await made.db
+    .prepare("SELECT period FROM email_sends WHERE account_id = ?1")
+    .bind(account.id)
+    .all();
+  assert.deepEqual(
+    rows.results.map((row) => row.period),
+    [new Date().toISOString().slice(0, 7)],
+    "the ledger holds one claim, for the month the warning went out in",
+  );
 });
 
 test("a closed account is never re-opened or mailed by the walk", async () => {
