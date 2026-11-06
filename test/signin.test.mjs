@@ -259,6 +259,31 @@ test("the start step answers the same for a known address and an unknown one (dr
   assert.deepEqual(await known.json(), await unknown.json());
 });
 
+test("an address at a throwaway domain is answered like a live one and mails nothing", async () => {
+  // A mailinator.com address is on the stock disposable-email-domains list,
+  // so no link will ever land there. The caller hears none of that: the
+  // answer is body-byte-equal to the one a normal address gets (the same
+  // move the known/unknown test above makes, drive#538), and the mail
+  // sender goes un-touched for it.
+  const made = dispatchEnv();
+  const live = await workerFetch(
+    post({ step: "start", method: "email", email: "someone@example.com" }),
+    made.env,
+  );
+  const throwaway = await workerFetch(
+    post({ step: "start", method: "email", email: "someone@mailinator.com" }),
+    made.env,
+  );
+  assert.equal(throwaway.status, live.status, "the same status a live address is answered with");
+  assert.equal(
+    await throwaway.text(),
+    await live.text(),
+    "the body a byte-equal copy of the live address's body",
+  );
+  assert.equal(made.sent.length, 1, "exactly one link left, and not to the throwaway");
+  assert.equal(made.sent[0]?.to, "someone@example.com");
+});
+
 test("a returning address signs in with no card field (drive#538)", async () => {
   const made = dispatchEnv();
   await signIn(made, "back@example.com");

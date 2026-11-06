@@ -1,3 +1,4 @@
+import disposableDomains from "disposable-email-domains/index.json" with { type: "json" };
 import isEmail from "validator/lib/isEmail.js";
 import { isSameOriginRequest } from "../core/email-send.js";
 import { BodyTooLargeError, json, readLimitedBody } from "../core/http.js";
@@ -11,6 +12,20 @@ export const SOURCES = ["pricing-page", "business"];
 const MAX_EMAIL_LENGTH = 254;
 const MAX_BODY_BYTES = 4096;
 
+/** The stock list's exact domain matches, lowercase (disposable-email-domains). */
+const DISPOSABLE_DOMAINS = new Set(disposableDomains);
+
+/**
+ * Whether the address's domain is on the stock disposable list. The local
+ * part never matters: the domain is the whole check, read case-insensitively.
+ * @param {string} email
+ * @returns {boolean}
+ */
+function isDisposableEmail(email) {
+  const at = email.lastIndexOf("@");
+  return at !== -1 && DISPOSABLE_DOMAINS.has(email.slice(at + 1).toLowerCase());
+}
+
 /**
  * Returns { email, source } or { error }.
  * `input` is the parsed body, which is `unknown`: the guard this function is
@@ -19,7 +34,7 @@ const MAX_BODY_BYTES = 4096;
  * value is bound to one local so each property read below is a plain object
  * read (drive #162).
  * @param {unknown} input
- * @returns {{email: string, source: string, error?: undefined}|{error: string, email?: undefined, source?: undefined}}
+ * @returns {{email: string, source: string, refused?: boolean, error?: undefined}|{error: string, email?: undefined, source?: undefined}}
  */
 export function validateSignup(input) {
   if (typeof input !== "object" || input === null) {
@@ -38,6 +53,13 @@ export function validateSignup(input) {
   }
   if (!isEmail(email)) {
     return { error: "That does not look like an email address." };
+  }
+  if (isDisposableEmail(email)) {
+    // A throwaway domain never makes the waitlist, but the form must not say
+    // so: the { ok: true } the handler returns for it is the very answer a
+    // recorded signup gets, so the rule stays invisible and no address is
+    // enumerated (drive#538, the same move the sign-in start makes).
+    return { email, source: SOURCES[0], refused: true };
   }
   const requested = typeof signup.source === "string" ? signup.source.trim() : "";
   const source = SOURCES.includes(requested) ? requested : SOURCES[0];
@@ -162,7 +184,13 @@ export async function handleWaitlistRequest(request, db, rateLimiter) {
   if (signup.error) {
     return json({ error: signup.error }, 400);
   }
-  const accepted = /** @type {{email: string, source: string}} */ (signup);
+  const accepted = /** @type {{email: string, source: string, refused?: boolean}} */ (signup);
+  if (accepted.refused === true) {
+    // Nothing is stored for a throwaway domain, and the form is answered
+    // exactly as a recorded signup is: the same { ok: true }, so which
+    // addresses the drive refuses never leaves the room (drive#538).
+    return json({ ok: true }, 200);
+  }
 
   try {
     await recordSignup(db, accepted);
