@@ -179,7 +179,16 @@ export async function handleMeterJobs(batch, handlers) {
 export async function runHourlyAccountJob(deps, job) {
   if (deps.capStore) {
     await enforceAccountCap(
-      { store: deps.capStore, now: job.at, email: deps.email, mailFrom: deps.mailFrom },
+      // searchDb is the drive database, the one the send ledger lives in
+      // (migrations/drive/0060_email_sends.sql), so the queue's cap warning is
+      // held to once per month by the same ledger the cron's walk uses.
+      {
+        store: deps.capStore,
+        db: deps.searchDb,
+        now: job.at,
+        email: deps.email,
+        mailFrom: deps.mailFrom,
+      },
       job.accountId,
     );
   }

@@ -361,15 +361,22 @@ const CAP_WARNING_RATIO = 0.8;
  *      the rows here;
  *   3. the state is saved with the guarded write that cannot un-close a closed
  *      account, so a closed drive is never made active again by its own cap;
- *   4. the two emails go out ONCE per state change, not once per hour. The
- *      record of that is the account row itself (`cap_warned_at` and
- *      `read_only_sent_at`, migrations/drive/0024_cap_notices.sql), the same
+ *   4. the two emails go out once per state change, not once per hour. The
+ *      cap warning is held to once per month by the send function itself
+ *      (core/email-send.js's ledger, migrations/drive/0060_email_sends.sql):
+ *      the walk asks for the mail every trip that is over 80%, and the send
+ *      function claims the account's (account, kind, month) row first, so a
+ *      second trip -- or a queue job racing the cron -- cannot mail twice in
+ *      one month. The read-only notice still reads the account row's stamp
+ *      (`read_only_sent_at`, migrations/drive/0024_cap_notices.sql), the same
  *      way src/account-close.js records a sent close notice: a stamp is
  *      written after the send, so a run that is retried mails nothing the
  *      first run already sent, and a run whose send failed leaves the stamp
  *      unset and the notice goes out on the next trip. A cap raise clears
  *      both stamps, because a raise is the one event that can bring the
- *      counted bill back under a threshold it has already crossed.
+ *      counted bill back under a threshold it has already crossed; the
+ *      ledger's period rolls over by itself, so a warning is mailed again
+ *      the next month with no clearing.
  *
  * An account with no email on file is reported, not mailed, and still gets
  * its state saved and its keys swapped: the cap is the product's promise and
@@ -383,6 +390,9 @@ const CAP_WARNING_RATIO = 0.8;
  *
  * @param {object} input
  * @param {ReturnType<typeof import("./devices.js").createD1DeviceStore>} input.store
+ * @param {D1Database} [input.db] the drive database the send ledger lives in
+ *   (migrations/drive/0060_email_sends.sql); without one the notices go out
+ *   ungated by the ledger, as the tests' fake stores do
  * @param {number} [input.now] the instant the walk reads the month at
  * @param {{send: Function}} [input.email] the Email Sending binding; without
  *   one the states are still saved and the keys still swapped, and the notices
@@ -442,7 +452,7 @@ export async function runCapEnforcement(input) {
  * (src/meter-jobs.js, drive#519): the same decision runCapEnforcement makes
  * for each account in its loop, for the one account a message names. Throws
  * on failure, so the message is retried.
- * @param {{store: any, now?: number, email?: {send: Function}, mailFrom?: string}} input
+ * @param {{store: any, db?: D1Database, now?: number, email?: {send: Function}, mailFrom?: string}} input
  * @param {string} id
  */
 export async function enforceAccountCap(input, id) {
@@ -458,7 +468,7 @@ export async function enforceAccountCap(input, id) {
  * state and the notice. Null for a closed account, which the walk leaves alone.
  * @param {any} store
  * @param {string} id
- * @param {{email?: {send: Function}, mailFrom?: string}} input
+ * @param {{db?: D1Database, email?: {send: Function}, mailFrom?: string}} input
  * @param {number} atSeconds
  */
 async function enforceOneAccount(store, id, input, atSeconds) {
@@ -484,7 +494,10 @@ async function enforceOneAccount(store, id, input, atSeconds) {
   if (state === "active" && notices.readOnlySentAt !== null) {
     await store.clearCapNotice(id, "read-only");
   }
-  const warning = state === "active" && overWarning && notices.warnedAt === null;
+  // No "already warned" gate here: the send function owns the once-per-month
+  // decision (drive#1206), so every trip over 80% asks for the mail and the
+  // ledger's claim decides whether it goes out.
+  const warning = state === "active" && overWarning;
   const readOnlyMail = state === "read_only" && notices.readOnlySentAt === null;
   const kind = readOnlyMail ? "read-only" : warning ? "cap-warning" : null;
   const sent =
@@ -494,6 +507,7 @@ async function enforceOneAccount(store, id, input, atSeconds) {
       id,
       kind,
       capUsd: summary.cap.capUsd,
+      db: input.db,
       email: input.email,
       from: input.mailFrom,
       atSeconds,
@@ -519,14 +533,18 @@ async function enforceOneAccount(store, id, input, atSeconds) {
  * that it went, and a send that throws leaves it unset so the next hourly
  * trip tries again. A send failure is raised, not swallowed, because a cap
  * that was enforced and whose notice never reached the person is a state the
- * operator has to see; the next run re-sends it rather than losing it.
+ * operator has to see; the next run re-sends it rather than losing it. The
+ * send function hands its ledger claim back on that failure too, so the
+ * retry is not blocked by the claim of a mail that never left.
  *
- * Delivery is at least once: two overlapping runs can both read the stamp as
- * null and both send. The stamp is written with `markCapNoticeSent`, whose
- * guard (the column is still null) keeps the first stamp, so the next hour
- * sends nothing either way.
+ * The warning is held to once per month by the ledger itself
+ * (migrations/drive/0060_email_sends.sql, drive#1206): this caller asks for
+ * the mail every trip that is over 80% and no longer keeps its own "already
+ * warned" state, so a second caller cannot learn a different answer. A send
+ * the ledger deduped is a not-sent, and the stamp stays as the earlier send
+ * left it.
  *
- * @param {{store: {capNotices: Function, markCapNoticeSent: Function}, id: string, kind: "cap-warning"|"read-only", capUsd: number, email: {send: Function}|undefined, from: string|undefined, atSeconds: number}} input
+ * @param {{store: {capNotices: Function, markCapNoticeSent: Function}, db?: D1Database, id: string, kind: "cap-warning"|"read-only", capUsd: number, email: {send: Function}|undefined, from: string|undefined, atSeconds: number}} input
  * @returns {Promise<boolean>} whether the notice went out and was stamped
  */
 async function sendCapNotice(input) {
@@ -540,12 +558,21 @@ async function sendCapNotice(input) {
     console.error(`cap: no email binding on this deployment, so no ${kind} notice went out`);
     return false;
   }
-  await sendEmail(/** @type {import("./email-send.js").EmailBinding} */ (input.email), {
-    to: notices.email,
-    from: input.from,
-    kind,
-    data: { capUsd },
-  });
+  const sent = await sendEmail(
+    /** @type {import("./email-send.js").EmailBinding} */ (input.email),
+    {
+      to: notices.email,
+      from: input.from,
+      kind,
+      data: { capUsd },
+      ...(input.db === undefined
+        ? {}
+        : { ledger: { db: input.db, accountId: id, now: atSeconds * 1000 } }),
+    },
+  );
+  if (!sent.sent) {
+    return false;
+  }
   await store.markCapNoticeSent(id, kind, atSeconds);
   return true;
 }
