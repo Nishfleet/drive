@@ -269,7 +269,11 @@ func TestSpeedRatchet(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	time.Sleep(6 * time.Second)
+	for _, name := range []string{openName, videoName, getName, editName} {
+		if !waitPath(filepath.Join(h.mountDir, name), 20*time.Second, func(err error) bool { return err == nil }) {
+			t.Fatalf("the seeded %s never appeared through the mount", name)
+		}
+	}
 
 	specs := []spec{
 		{"file-open", func() {

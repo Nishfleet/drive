@@ -6,7 +6,6 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { createMemoryStore } from "../core/files-memory.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
 import {
@@ -21,6 +20,7 @@ import {
   starterFiles,
 } from "../src/starter.js";
 import { killTracked, spawnTracked } from "./minio-standin.mjs";
+import { waitUntil } from "./wait-for.mjs";
 
 /**
  * An empty store: reads find nothing, so a create writes every file. The
@@ -396,22 +396,27 @@ test("the starter writes real files into a real S3 drive, read off the disk", as
   server.stderr?.on("data", (chunk) => {
     stderr += chunk;
   });
-  const deadline = Date.now() + 20_000;
-  for (;;) {
-    if (server.exitCode !== null) {
-      throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
-    }
-    try {
-      await runBash(`exec 3<>/dev/tcp/127.0.0.1/${port}`);
-      break;
-    } catch {
-      if (Date.now() > deadline) {
-        killTracked(server);
-        throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
-      }
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      await sleep(300);
-    }
+  try {
+    await waitUntil(
+      async () => {
+        if (server.exitCode !== null) {
+          throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
+        }
+        try {
+          await runBash(`exec 3<>/dev/tcp/127.0.0.1/${port}`);
+          return true;
+        } catch {
+          // Not listening yet.
+          return false;
+        }
+      },
+      20_000,
+      "rclone serve s3 to listen",
+      () => stderr,
+    );
+  } catch (error) {
+    killTracked(server);
+    throw error;
   }
 
   // The real S3 store over the real server, scoped the way src/index.js's

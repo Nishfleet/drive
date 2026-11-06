@@ -20,14 +20,10 @@ func TestStandinInterruptUpload(t *testing.T) {
 	env.startMount()
 	rc := rcClientForTestHome(t, env.home, env.rcAddr, "")
 	var limitErr error
-	for i := 0; i < 20; i++ {
+	if !waitFor(t, 5*time.Second, func() bool {
 		limitErr = rc.SetBwLimit(context.Background(), "10M:off")
-		if limitErr == nil {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if limitErr != nil {
+		return limitErr == nil
+	}) {
 		t.Fatalf("set a measurable rate so the upload can be cut mid-flight: %v", limitErr)
 	}
 	if err := writePatternFile(filepath.Join(env.mountDir, name), size); err != nil {
@@ -39,18 +35,14 @@ func TestStandinInterruptUpload(t *testing.T) {
 	}
 	deadline := time.Now().Add(45 * time.Second)
 	var started int64
-	for time.Now().Before(deadline) {
+	if !waitUntil(deadline, func() bool {
 		stats, err := rc.ReadStats(context.Background())
 		if err != nil {
 			t.Fatalf("rc core/stats: %v", err)
 		}
-		if stats.Bytes > 0 {
-			started = stats.Bytes
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	if started == 0 {
+		started = stats.Bytes
+		return started > 0
+	}) {
 		t.Fatal("the upload never started, so there is nothing to interrupt")
 	}
 	if started >= size {
@@ -60,7 +52,23 @@ func TestStandinInterruptUpload(t *testing.T) {
 	if err := env.restart.stop(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(2 * time.Second)
+	// Wait for rclone to have tried the upload and failed, so the restart below
+	// is a real interruption rather than a race with a transfer that never
+	// noticed storage went away.
+	if !waitFor(t, 30*time.Second, func() bool {
+		q, err := rc.ReadQueue(context.Background())
+		if err != nil {
+			t.Fatalf("rc vfs/queue after cutting storage: %v", err)
+		}
+		for _, item := range q.Queue {
+			if item.Name == name && item.Tries > 0 {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatal("rclone never retried the cut-off upload while storage was down")
+	}
 	if err := env.restart.start(t); err != nil {
 		t.Fatal(err)
 	}
@@ -96,15 +104,11 @@ func TestStandinCrash(t *testing.T) {
 	}
 	deadline := time.Now().Add(15 * time.Second)
 	var queued Pending
-	for time.Now().Before(deadline) {
+	if !waitUntil(deadline, func() bool {
 		q, err := PendingUploads(DefaultCacheDir(env.home))
-		if err == nil && q.Files > 0 {
-			queued = q
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	if queued.Files == 0 {
+		queued = q
+		return err == nil && q.Files > 0
+	}) {
 		t.Fatal("nothing was waiting in the VFS cache, so a crash would prove nothing")
 	}
 
@@ -259,9 +263,9 @@ func (e *transferEnv) objectPath(name string) string {
 
 func waitForFile(t *testing.T, path string, size int64, d time.Duration) error {
 	t.Helper()
-	deadline := time.Now().Add(d)
+	deadline := testUntil(t, d)
 	var last error
-	for time.Now().Before(deadline) {
+	for {
 		st, err := os.Stat(path)
 		if err == nil && st.Size() == size {
 			return nil
@@ -271,7 +275,10 @@ func waitForFile(t *testing.T, path string, size int64, d time.Duration) error {
 		} else {
 			last = fmt.Errorf("%s is %d bytes, want %d", path, st.Size(), size)
 		}
-		time.Sleep(500 * time.Millisecond)
+		if time.Now().After(deadline) {
+			break
+		}
+		pause(200 * time.Millisecond)
 	}
 	if last == nil {
 		last = errors.New("timed out")

@@ -134,7 +134,14 @@ func TestStandinMountProof(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mountDir, "written-through.txt"), []byte("saved through the mount\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(8 * time.Second)
+	if !waitFor(t, 20*time.Second, func() bool {
+		cat := exec.Command("rclone", "cat", RemoteFor(cfg)+"/written-through.txt")
+		cat.Env = seedEnv
+		out, err := cat.Output()
+		return err == nil && string(out) == "saved through the mount\n"
+	}) {
+		t.Fatal("written-through.txt never reached storage before the mount stopped")
+	}
 	stopStandinProcess(cmd, mountDir)
 
 	cmd = mount()
@@ -210,17 +217,12 @@ func TestStandinMountProofStrayFile(t *testing.T) {
 			"NFS mount", mountDir, mountSkipReason())
 	}
 
-	copiedDeadline := testUntil(t, 15*time.Second)
 	var got []byte
 	var err error
-	for time.Now().Before(copiedDeadline) {
+	if !waitFor(t, 15*time.Second, func() bool {
 		got, err = os.ReadFile(filepath.Join(mountDir, "notes.txt"))
-		if err == nil && string(got) == strayBody {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if string(got) != strayBody {
+		return err == nil && string(got) == strayBody
+	}) {
 		log, _ := os.ReadFile(filepath.Join(DefaultConfigDir(home), "mount.log"))
 		t.Fatalf("drive notes.txt = %q, %v, want the parked bytes copied into the mount\nstderr:\n%s\nmount.log:\n%s",
 			got, err, note.Bytes(), log)
@@ -234,9 +236,8 @@ func TestStandinMountProofStrayFile(t *testing.T) {
 		t.Errorf("stderr does not name the holding folder the files were parked in:\n%s", logged)
 	}
 
-	holdingDeadline := testUntil(t, 5*time.Second)
 	var leftover []string
-	for time.Now().Before(holdingDeadline) {
+	if !waitFor(t, 5*time.Second, func() bool {
 		leftover = nil
 		matches, globErr := filepath.Glob(strayHoldingDir(mountDir) + "*")
 		if globErr != nil {
@@ -248,12 +249,8 @@ func TestStandinMountProofStrayFile(t *testing.T) {
 				leftover = append(leftover, holding+":"+strings.Join(namesOf(entries), ","))
 			}
 		}
-		if leftover == nil {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if leftover != nil {
+		return leftover == nil
+	}) {
 		t.Errorf("holding folders still have files after the copy into the drive: %v", leftover)
 	}
 
@@ -261,18 +258,14 @@ func TestStandinMountProofStrayFile(t *testing.T) {
 		"RCLONE_CONFIG="+RcloneConfigPath(home),
 		rcloneSecretEnv+"="+cfg.SecretKey,
 	)
-	storageDeadline := testUntil(t, 20*time.Second)
 	var stored []byte
 	var storeErr error
-	for time.Now().Before(storageDeadline) {
+	waitFor(t, 20*time.Second, func() bool {
 		cat := exec.Command("rclone", "cat", RemoteFor(cfg)+"/notes.txt")
 		cat.Env = seedEnv
 		stored, storeErr = cat.Output()
-		if storeErr == nil && string(stored) == strayBody {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+		return storeErr == nil && string(stored) == strayBody
+	})
 	if string(stored) != strayBody {
 		t.Fatalf("storage notes.txt = %q, %v, want the stray file to have uploaded", stored, storeErr)
 	}
@@ -321,6 +314,38 @@ func testUntil(t *testing.T, d time.Duration) time.Time {
 		}
 	}
 	return at
+}
+
+// tick is how often a wait re-checks its condition. A wait never decides
+// anything by elapsing: it asks the real condition until it is true or the
+// deadline passes (drive#1166).
+const tick = 20 * time.Millisecond
+
+// pause waits one poll interval.
+func pause(d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	<-timer.C
+}
+
+// waitUntil polls cond until it is true or the deadline passes, and reports
+// which of the two happened.
+func waitUntil(deadline time.Time, cond func() bool) bool {
+	for {
+		if cond() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		pause(tick)
+	}
+}
+
+// waitFor is waitUntil with a timeout that never outlives the test.
+func waitFor(t *testing.T, d time.Duration, cond func() bool) bool {
+	t.Helper()
+	return waitUntil(testUntil(t, d), cond)
 }
 
 func TestStandinPauseProof(t *testing.T) {
@@ -438,17 +463,13 @@ func TestStandinPauseProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(45 * time.Second)
-	for time.Now().Before(deadline) {
+	if !waitUntil(deadline, func() bool {
 		stats, err := rc().ReadStats(context.Background())
 		if err != nil {
 			t.Fatalf("rc core/stats: %v", err)
 		}
-		if stats.Bytes > 0 && len(stats.Transferring) > 0 {
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	if b := readBytes(t); b == 0 {
+		return stats.Bytes > 0 && len(stats.Transferring) > 0
+	}) {
 		t.Fatalf("the upload never started, so there is nothing to pause")
 	}
 
@@ -458,13 +479,11 @@ func TestStandinPauseProof(t *testing.T) {
 	if on, err := Mounted(CurrentGOOS(), home); err != nil || !on {
 		t.Fatalf("mount disappeared: on=%v err=%v", on, err)
 	}
-	time.Sleep(5 * time.Second)
 	b1 := readBytes(t)
-	time.Sleep(6 * time.Second)
-	b2 := readBytes(t)
-	if b2 != b1 {
-		t.Errorf("pause did not stop the bytes: %d then %d after six seconds", b1, b2)
+	if waitFor(t, 6*time.Second, func() bool { return readBytes(t) != b1 }) {
+		t.Errorf("pause did not stop the bytes: %d then %d six seconds later", b1, readBytes(t))
 	}
+	b2 := readBytes(t)
 	if b2 >= size {
 		t.Fatalf("the upload finished at %d bytes despite the pause, so the pause never applied", b2)
 	}
@@ -476,11 +495,8 @@ func TestStandinPauseProof(t *testing.T) {
 		t.Errorf("drive resume said %q, want the Resumed word", out)
 	}
 	deadline = time.Now().Add(2 * time.Minute)
-	for time.Now().Before(deadline) {
-		if readBytes(t) == size {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
+	if !waitUntil(deadline, func() bool { return readBytes(t) == size }) {
+		t.Fatalf("after resume the transfer never reached %d bytes", size)
 	}
 	stats, err := rc().ReadStats(context.Background())
 	if err != nil {
@@ -492,19 +508,15 @@ func TestStandinPauseProof(t *testing.T) {
 	if stats.TotalTransfers != 1 {
 		t.Errorf("transfers = %d, want exactly 1: a resumed file must not be sent twice", stats.TotalTransfers)
 	}
-	queueDeadline := time.Now().Add(15 * time.Second)
 	var queue Queue
-	for {
+	if !waitFor(t, 15*time.Second, func() bool {
+		var err error
 		queue, err = rc().ReadQueue(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(queue.Queue) == 0 || time.Now().After(queueDeadline) {
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	if len(queue.Queue) != 0 {
+		return len(queue.Queue) == 0
+	}) {
 		t.Errorf("queue = %+v, want empty once the upload finished", queue.Queue)
 	}
 	listing := exec.Command("rclone", "lsl", "drive:"+cfg.Bucket+"/"+cfg.Prefix+"/pause-proof.bin")
@@ -531,9 +543,11 @@ func TestStandinPauseProof(t *testing.T) {
 	if err := writePatternFile(filepath.Join(mountDir, "after-restart.bin"), 32<<20); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(9 * time.Second)
-	if b := readBytes(t); b > 64*1024 {
-		t.Errorf("a paused mount sent %d bytes after a restart, want at most 64 KiB at 1 KiB/s", b)
+	// At 1 KiB/s the paused mount can send at most 9 KiB in nine seconds. Wait
+	// for the failure rather than sleeping: the check ends as soon as the mount
+	// sends more than 64 KiB, and the full window only passes when it stays quiet.
+	if waitFor(t, 9*time.Second, func() bool { return readBytes(t) > 64*1024 }) {
+		t.Errorf("a paused mount sent %d bytes after a restart, want at most 64 KiB at 1 KiB/s", readBytes(t))
 	}
 }
 
@@ -589,16 +603,16 @@ func freePort(t testing.TB) string {
 
 func waitForPort(t testing.TB, port string) {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
+	if !waitUntil(time.Now().Add(20*time.Second), func() bool {
 		c, err := net.DialTimeout("tcp", "127.0.0.1:"+port, time.Second)
 		if err == nil {
 			c.Close()
-			return
+			return true
 		}
-		time.Sleep(100 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("stand-in never listened on %s", port)
 	}
-	t.Fatalf("stand-in never listened on %s", port)
 }
 
 var testProcesses sync.Map
@@ -656,17 +670,12 @@ func startRcloneServe(tb testing.TB, dir, port string, args ...string) *exec.Cmd
 
 func waitForMount(t testing.TB, cmd *exec.Cmd, dir string) bool {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	return waitUntil(time.Now().Add(30*time.Second), func() bool {
 		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 			t.Fatalf("rclone exited before mounting %s: %v (see its log above)", dir, err)
 		}
-		if mountIsLive(dir) {
-			return true
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return false
+		return mountIsLive(dir)
+	})
 }
 
 func mountIsLive(dir string) bool {
@@ -1174,10 +1183,9 @@ func TestCacheCapHoldsThroughAReadPastIt(t *testing.T) {
 			t.Fatalf("read %s through the mount: %v", name, err)
 		}
 	}
-	deadline := time.Now().Add(2 * time.Minute)
 	var used, capBytes int64
 	var files int
-	for {
+	if !waitFor(t, 2*time.Minute, func() bool {
 		used, files, err = CacheUse(DefaultCacheDir(home))
 		if err != nil {
 			t.Fatal(err)
@@ -1186,13 +1194,9 @@ func TestCacheCapHoldsThroughAReadPastIt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if used <= wantCap {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the cache is %s, still over the %s cap, two minutes after the read", FormatBytes(used), capSize)
-		}
-		time.Sleep(2 * time.Second)
+		return used <= wantCap
+	}) {
+		t.Fatalf("the cache is %s, still over the %s cap, two minutes after the read", FormatBytes(used), capSize)
 	}
 	t.Logf("read 6 x 6 MiB through the mount with a %s cap: cache on disk %s in %d files (rclone's own count %s), storage=stand-in, repeat: go test ./cmd/drive -run TestCacheCapHoldsThroughAReadPastIt -v",
 		capSize, FormatBytes(used), files, FormatBytes(capBytes))
