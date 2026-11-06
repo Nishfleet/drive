@@ -4,13 +4,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { FILES_ENDPOINT } from "../core/files.js";
 import { handleFilesRequest } from "../core/files-handlers.js";
 import { createS3Store } from "../core/files-s3.js";
 import { scopeStore } from "../core/files-scope.js";
 import { killTracked, spawnTracked } from "./minio-standin.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
+import { waitUntil } from "./wait-for.mjs";
 
 // The two ways in, so the skip and the startup read the same values: real
 // storage when the environment names an endpoint, a local `rclone serve s3`
@@ -65,32 +65,32 @@ async function startLocalRclone(t, dir) {
     stderr += chunk;
   });
   t.after(() => killTracked(server));
-  const deadline = Date.now() + 20_000;
-  for (;;) {
-    if (server.exitCode !== null) {
-      throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
-    }
-    const logged = stderr.match(/http:\/\/127\.0\.0\.1:(\d+)/);
-    if (logged) {
-      const port = Number(logged[1]);
-      try {
-        const response = await fetch(
-          `http://127.0.0.1:${port}/${BUCKET}?list-type=2&prefix=u%2F1%2F&delimiter=%2F`,
-        );
-        if (response.ok) {
-          await response.text();
-          return `http://127.0.0.1:${port}`;
-        }
-      } catch {
-        // The port is logged a moment before the listener is accepting.
+  return waitUntil(
+    async () => {
+      if (server.exitCode !== null) {
+        throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
       }
-    }
-    if (Date.now() > deadline) {
-      throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
-    }
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(250);
-  }
+      const logged = stderr.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+      if (logged) {
+        const port = Number(logged[1]);
+        try {
+          const response = await fetch(
+            `http://127.0.0.1:${port}/${BUCKET}?list-type=2&prefix=u%2F1%2F&delimiter=%2F`,
+          );
+          if (response.ok) {
+            await response.text();
+            return `http://127.0.0.1:${port}`;
+          }
+        } catch {
+          // The port is logged a moment before the listener is accepting.
+        }
+      }
+      return null;
+    },
+    20_000,
+    "rclone serve s3 to listen",
+    () => stderr,
+  );
 }
 
 // A stand-in that keys its objects exactly as rclone does: `u/<id>/a/b.txt` is

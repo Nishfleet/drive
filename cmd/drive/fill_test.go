@@ -696,7 +696,7 @@ func TestFillReadStopsWithinOneChunkOfTheDeadline(t *testing.T) {
 			if err != nil {
 				return
 			}
-			time.Sleep(20 * time.Millisecond)
+			pause(20 * time.Millisecond)
 		}
 	}()
 
@@ -709,7 +709,9 @@ func TestFillReadStopsWithinOneChunkOfTheDeadline(t *testing.T) {
 		n, err := readCtxChunked(ctx, r)
 		done <- outcome{n, err}
 	}()
-	time.Sleep(100 * time.Millisecond)
+	// Feed the pipe until the writer has produced bytes, then take the deadline:
+	// the assertion is that the bytes written before it were not lost.
+	waitFor(t, 2*time.Second, func() bool { return written.Load() > 0 })
 	cancel()
 	atDeadline := written.Load()
 	if atDeadline == 0 {
@@ -829,7 +831,7 @@ func (r *cancelAfterReader) Read(p []byte) (int, error) {
 	if r.reads == r.cancelOn {
 		r.cancel()
 	}
-	time.Sleep(time.Millisecond)
+	pause(time.Millisecond)
 	return len(p), nil
 }
 

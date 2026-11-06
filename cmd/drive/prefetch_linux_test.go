@@ -29,7 +29,6 @@ func TestPrefetchWatcherSeesDirectoryOpen(t *testing.T) {
 		}
 		got <- ev
 	}()
-	time.Sleep(20 * time.Millisecond)
 	f, err := os.Open(dir)
 	if err != nil {
 		t.Fatal(err)

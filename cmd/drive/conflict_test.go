@@ -1649,15 +1649,10 @@ func TestRunConflictLoopWritesTheBacklogStateFile(t *testing.T) {
 		}
 	}()
 	want := total - conflictSightMax
-	deadline := time.Now().Add(4 * time.Second)
-	for {
-		if got := conflictGuardBehind(statePath, time.Now()); got == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the state file never said behind=%d", want)
-		}
-		time.Sleep(50 * time.Millisecond)
+	if !waitFor(t, 4*time.Second, func() bool {
+		return conflictGuardBehind(statePath, time.Now()) == want
+	}) {
+		t.Fatalf("the state file never said behind=%d", want)
 	}
 }
 

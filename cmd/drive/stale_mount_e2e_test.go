@@ -85,7 +85,12 @@ func TestStandinMountProofKillNineRecoversQueuedSave(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	if !waitFor(t, 20*time.Second, func() bool {
+		pending, err := PendingUploads(DefaultCacheDir(home))
+		return err == nil && pending.Files > 0
+	}) {
+		t.Fatal("the queued save never became a pending upload in the cache")
+	}
 
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill -9: %v", err)
@@ -98,14 +103,12 @@ func TestStandinMountProofKillNineRecoversQueuedSave(t *testing.T) {
 	}
 
 	cmd = start()
-	deadline := time.Now().Add(45 * time.Second)
 	var uploaded []byte
-	for time.Now().Before(deadline) {
+	if waitFor(t, 45*time.Second, func() bool {
 		uploaded, err = os.ReadFile(storagePath)
-		if err == nil && string(uploaded) == queuedBody {
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
+		return err == nil && string(uploaded) == queuedBody
+	}) {
+		return
 	}
 	through, _ := os.ReadFile(queuedPath)
 	t.Fatalf("queued save did not upload after remount: storage %q (%v); through mount %q\ncache:\n%s\ndata:\n%s",
@@ -114,17 +117,12 @@ func TestStandinMountProofKillNineRecoversQueuedSave(t *testing.T) {
 
 func waitForAnsweringMount(t testing.TB, cmd *exec.Cmd, dir string) bool {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	return waitUntil(time.Now().Add(30*time.Second), func() bool {
 		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 			t.Fatalf("rclone exited before mounting %s: %v (see its log above)", dir, err)
 		}
-		if mountIsLive(dir) && mountDirAnswers(dir) {
-			return true
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return false
+		return mountIsLive(dir) && mountDirAnswers(dir)
+	})
 }
 
 func dirTree(t *testing.T, root string) string {
