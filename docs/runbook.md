@@ -196,6 +196,88 @@ only when Time Travel cannot help: a deleted database, a moment older than
    init/upload/ingest protocol; prefer the Time Travel restore for point-in-
    time recovery and keep the dump for reading and surgical repairs.
 
+## Turn off a reported link
+
+A share link (`/s/<token>`) or an upload request (`/upload.html?k=<token>`) is
+reported — someone says it should not be open. Support turns it off in the
+drive database, in one step, without a deploy and without the owner's
+password. A turned-off link keeps its row with `revoked_at` set
+(`migrations/drive/0006_share_links.sql`, tables `shares` and
+`upload_requests`), so the owner's list still says "Revoked" and the row is
+the proof of the turn-off. The route answers the same `404` for a revoked
+link as for one that never existed, so nobody holding the link can tell the
+difference.
+
+Both statements below run against the drive database
+`0f636b57-4a2e-482a-bf40-8aa315e2403e` (the `DRIVE_DB` binding). `cf d1 raw`
+is this repository's `wrangler d1 execute`: it is the command that runs a
+write statement against a D1 database, and it is the one that takes
+`--local`, so the same statement runs against a local copy and against the
+live database.
+
+**Find the account and the links first.** Read-only, and the account id is
+what the second statement names. A token is in one table or the other, so
+read both:
+
+```sh
+npx cf d1 raw 0f636b57-4a2e-482a-bf40-8aa315e2403e --sql "SELECT token, account_id, path, name, created_at, expires_at, revoked_at FROM shares WHERE token = '<token>'"
+```
+
+```sh
+npx cf d1 raw 0f636b57-4a2e-482a-bf40-8aa315e2403e --sql "SELECT token, account_id, folder, created_at, expires_at, revoked_at FROM upload_requests WHERE token = '<token>'"
+```
+
+**Turn off one link.** Run the statement for the table the token is in — a
+share link is in `shares`, an upload request is in `upload_requests`. The
+`revoked_at` value is epoch milliseconds, the same unit as `created_at` and
+`expires_at` in those tables, and SQLite's own clock writes it:
+
+```sh
+npx cf d1 raw 0f636b57-4a2e-482a-bf40-8aa315e2403e --sql "UPDATE shares SET revoked_at = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE token = '<token>' AND revoked_at IS NULL"
+```
+
+```sh
+npx cf d1 raw 0f636b57-4a2e-482a-bf40-8aa315e2403e --sql "UPDATE upload_requests SET revoked_at = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE token = '<token>' AND revoked_at IS NULL"
+```
+
+`AND revoked_at IS NULL` keeps the first turn-off's timestamp, so a second
+run does not re-date the row and the owner still sees when the link was
+turned off. The row is not deleted: the owner's list reads "Revoked" from it.
+
+**Turn off every public link of one account.** One statement per table, both
+of them, so a share link and an upload request of that account go off
+together:
+
+```sh
+npx cf d1 raw 0f636b57-4a2e-482a-bf40-8aa315e2403e --sql "UPDATE shares SET revoked_at = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE account_id = '<account-id>' AND revoked_at IS NULL"
+```
+
+```sh
+npx cf d1 raw 0f636b57-4a2e-482a-bf40-8aa315e2403e --sql "UPDATE upload_requests SET revoked_at = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE account_id = '<account-id>' AND revoked_at IS NULL"
+```
+
+`account_id` is the whole filter, so one account's links go off and no other
+account's rows are touched. A link that is already off is not re-dated: the
+`revoked_at IS NULL` guard leaves the first turn-off's timestamp on it. A
+link that had already expired also gets a `revoked_at`, so the owner's list
+reads "Revoked" for it rather than "Expired" — it was dead either way.
+
+**Rehearse it locally first.** The same statements run against a local D1,
+which is how this section was checked: apply the migrations to a local copy,
+put one link in it, run the statement, and the link answers `404` where it
+answered `200` before.
+
+```sh
+npx cf d1 migrations apply 0f636b57-4a2e-482a-bf40-8aa315e2403e --dir migrations/drive --local --persist-to /tmp/drive-local
+npx cf d1 raw 0f636b57-4a2e-482a-bf40-8aa315e2403e --local --persist-to /tmp/drive-local --sql "SELECT token, account_id, revoked_at FROM shares"
+npx cf d1 raw 0f636b57-4a2e-482a-bf40-8aa315e2403e --local --persist-to /tmp/drive-local --sql "UPDATE shares SET revoked_at = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE token = '<token>' AND revoked_at IS NULL"
+```
+
+The local copy is a SQLite file under the state directory
+(`--persist-to`), so a row can be read back with `sqlite3` after the
+statement. `cf d1 query` runs the same SQL against the live database but has
+no local equivalent and refuses the `--local` flag.
+
 ## Pause the scheduled jobs
 
 The triggers live in `cloudflare.config.ts` (`triggers.scheduled`). Comment
