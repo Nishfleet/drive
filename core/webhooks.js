@@ -1,6 +1,11 @@
 import { all, first, newId, nowSeconds, run } from "./db.js";
 
-export const WEBHOOK_EVENTS = Object.freeze(["balance.topped_up", "balance.low", "webhook.test"]);
+export const WEBHOOK_EVENTS = Object.freeze([
+  "balance.topped_up",
+  "balance.low",
+  "usage.threshold",
+  "webhook.test",
+]);
 
 export const MAX_ENDPOINTS = 5;
 
