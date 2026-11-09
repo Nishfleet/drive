@@ -50,6 +50,15 @@ test("the backup reads only the deploy credentials, behind the production enviro
 });
 
 test("the backup walks every database the fleet owns, not only the deploy's", () => {
+  const runbook = readFileSync(new URL("../docs/runbook.md", import.meta.url), "utf8");
+  // The runbook's weekly-backup section is the source of record for the rows
+  // the deploy does not migrate: it names each hand-dumped database with its
+  // id and who exports it (0509's own repository holds no D1 token).
+  const BACKUP = runbook.slice(
+    runbook.indexOf("## The weekly backup"),
+    runbook.indexOf("## Pause the scheduled jobs"),
+  );
+  assert.ok(BACKUP.length > 0, "the runbook records the weekly backup in its own section");
   const deployIds = [
     ...DEPLOY.matchAll(
       /migrations apply ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g,
@@ -60,34 +69,34 @@ test("the backup walks every database the fleet owns, not only the deploy's", ()
   const backupIds = [
     ...matrix.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
   ].map((m) => m[0]);
+  const entries = matrixRows(matrix);
   // drive's own two stay in the matrix whatever else joins it: the deploy
   // migrates them, so a dump that stopped covering them would be a backup
   // that silently lost a database.
   for (const id of deployIds)
     assert.ok(backupIds.includes(id), `the deploy migrates ${id} and the backup must dump it`);
   assert.ok(deployIds.length >= 2, "both databases are exported");
-  const PRODUCT_DATABASES = [["0509", "746c6e3d-782e-443a-82d6-28ca93a16294"]];
-  const entries = matrixRows(matrix);
-  // One owner per database: these two are exported by their own
-  // repositories' d1-export.yml on the same cron, and a second export of the
-  // same database here only doubles the work and the artifacts.
-  for (const [name, owner] of [
-    ["siterep_payments", "siterep-public"],
-    ["aiconverter", "aiconverter-app"],
-  ])
+  // No row the sources of record do not vouch for. A matrix row whose id is
+  // in neither source is how a deleted database keeps answering 404 each
+  // Monday (TinyStudio, drive#1027) and how a database another repository
+  // exports got dumped twice (fleet-ops#10829): the row enters on a hand
+  // edit, so the test reads the same sources the owner would and fails on
+  // the travel instead of trusting a hand list of good and bad names.
+  for (const [name, id] of entries)
     assert.ok(
-      !entries.some(([entryName]) => entryName === name),
-      `${name} is backed up by ${owner}'s own d1-export.yml; drive must not export it a second time`,
+      deployIds.includes(id) || BACKUP.includes(id),
+      `the ${name} row (${id}) is justified by neither the deploy's migrations apply nor an id recorded in docs/runbook.md's weekly-backup section: record it there with who exports it, or drop the row`,
     );
-  for (const [name, id] of PRODUCT_DATABASES) {
-    const row = entries.find(([entryName]) => entryName === name);
-    assert.ok(row, `${name} is a product database and must be in the weekly backup matrix`);
-    assert.equal(row[1], id, `${name} is exported under id ${id}`);
-  }
-  assert.ok(
-    backupIds.length >= deployIds.length + PRODUCT_DATABASES.length,
-    "the matrix covers drive's own databases and the fleet's product databases",
-  );
+  // And the other way: a database the runbook's backup section records has
+  // its dump in the matrix, or the weekly job quietly stopped covering it
+  // (0509's only backup would end, runbook, fleet-ops#10594).
+  for (const id of [
+    ...BACKUP.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
+  ].map((m) => m[0]))
+    assert.ok(
+      entries.some(([, rowId]) => rowId === id),
+      `docs/runbook.md's weekly-backup section records ${id} as dumped here, and the matrix must dump it`,
+    );
 });
 
 test("a database that cannot be dumped fails its own job, and the others still ship", () => {
