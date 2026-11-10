@@ -554,5 +554,4 @@ func TestFormatRCProgressShowsNamePercentAndTotalLeft(t *testing.T) {
 	}
 }
 
-// rclone's eta is a pointer because it answers null when it cannot know.
 func ptrFloat(v float64) *float64 { return &v }

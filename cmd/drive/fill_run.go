@@ -36,7 +36,7 @@ type fillBackend interface {
 	stats(ctx context.Context) (vfsStats, error)
 	refresh(ctx context.Context, recursive bool) error
 	refreshDirs(ctx context.Context, dirs []string) error
-	// vfs/refresh marks the directory cache stale before re-listing, so refreshing while storage is down fails later opens (https://github.com/rclone/rclone/blob/v1.75.2/vfs/dir.go#L809-L815, then https://github.com/rclone/rclone/blob/v1.75.2/vfs/dir.go#L526-L540).
+	// upstream: https://github.com/rclone/rclone/blob/v1.75.2/vfs/dir.go#L809-L815 — vfs/refresh marks the directory cache stale before re-listing, and #L526-L540 is the re-list whose error a refresh while storage is down fails later opens with.
 	reachable(ctx context.Context) error
 	remote() string
 }
@@ -146,7 +146,6 @@ func listingDirs(targets fillTargets) []string {
 	return dirs
 }
 
-// vfs/stats diskCache.bytesUsed is only refreshed on rclone's cache poll, so it reads 0 right after a fill.
 func liveCacheBytes(path string, reported int64) (int64, error) {
 	if path == "" {
 		return reported, nil
@@ -180,7 +179,6 @@ func liveCacheBytes(path string, reported int64) (int64, error) {
 
 func readLoadAverages() (float64, float64, error) {
 	if runtime.GOOS == "darwin" {
-		// macOS has no /proc; `sysctl vm.loadavg` gives the same numbers.
 		out, err := exec.Command("sysctl", "-n", "vm.loadavg").Output()
 		if err != nil {
 			return 0, 0, fmt.Errorf("read vm.loadavg: %w", err)

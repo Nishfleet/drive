@@ -727,9 +727,6 @@ func startStandinMount(t *testing.T, home, mountDir string, cfg StorageConfig) (
 	stop := func() { stopStandinProcess(cmd, mountDir) }
 	if !waitForMount(t, cmd, mountDir) {
 		stop()
-		// The mount's own log is the real reason, not a guess: a reader of
-		// this skip needs to know whether the host refused FUSE or the mount
-		// had a bad argument (the same tail the conflict proof logs).
 		if log, err := os.ReadFile(filepath.Join(home, ".config", "drive", "mount.log")); err == nil {
 			t.Logf("mount log:\n%s", tailLines(string(log), 6))
 		}

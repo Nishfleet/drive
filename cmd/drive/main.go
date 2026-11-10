@@ -354,7 +354,6 @@ func runUnmount(args []string) error {
 	return nil
 }
 
-// A FUSE mount whose backing store has gone away can block a plain ReadDir forever.
 func countEntries(dir string, wait time.Duration) (int, error) {
 	type result struct {
 		n   int

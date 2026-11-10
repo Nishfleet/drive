@@ -198,7 +198,6 @@ func stopMount(goos, home string) error {
 		return nil
 	}
 	stale := err != nil || mountDirNotConnected(goos, mountDir)
-	// fusermount3 ships with current FUSE; fusermount is the older name.
 	if goos == "darwin" {
 		if stale {
 			if err := runUmountFlag(mountDir, "-f"); err != nil {
@@ -233,7 +232,6 @@ func runUmountFlag(mountDir, umountFlag string) error {
 	return unmountError("umount", err, out)
 }
 
-// -uz is lazy so a dead FUSE entry (ENOTCONN) comes down even when a plain -u would block.
 func runFusermount(mountDir string) error {
 	if err := runFusermountFlag(mountDir, "-u"); err == nil {
 		return nil
