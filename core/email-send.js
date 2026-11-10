@@ -2,6 +2,15 @@ import { EMAIL_KINDS, FROM_NAME, REPLY_TO_LOCAL, renderEmail } from "./emails.js
 import { json } from "./http.js";
 
 /**
+ * One send-ledger claim (migrations/drive/0060_email_sends.sql): the account
+ * the mail is about, the drive database the ledger table lives in, and the
+ * instant the period is read at. A request that carries one is a
+ * once-per-period mail: sendEmail() claims the (account, kind, period) row
+ * first and sends only when the claim is the one that added it.
+ * @typedef {{db: D1Database, accountId: string, now?: number}} SendLedger
+ */
+
+/**
  * The Email Sending binding as this module uses it: `send()` and nothing
  * else. The message shape is the binding's own; this module fills every field
  * it sends.
@@ -105,13 +114,73 @@ export function replyToFor(from) {
 }
 
 /**
- * Sends one rendered email. Resolves with {messageId}, or throws with the
- * binding's own error: a failed send is never reported as sent, because the
- * caller decides whether to retry and a false "sent" would silently drop a
- * customer's receipt.
+ * The period a once-per-period mail is once per, read in UTC so a send is in
+ * the month its instant is in no matter where the Worker runs.
+ * @param {number} now
+ * @returns {string} "YYYY-MM"
+ */
+function periodOf(now) {
+  return new Date(now).toISOString().slice(0, 7);
+}
+
+/**
+ * Claims this account's row for one (kind, period) in the send ledger, and
+ * answers with the period claimed or null when the row was already there. The
+ * whole decision is the database's own: the INSERT adds a row only for the
+ * first caller of this period, and `meta.changes` says whether it did
+ * (https://sqlite.org/lang_upsert.html), so two overlapping runs cannot both
+ * read "not sent" and both mail.
+ * @param {SendLedger} ledger
+ * @param {string} kind
+ * @returns {Promise<{accountId: string, kind: string, period: string}|null>}
+ */
+async function claimSendPeriod(ledger, kind) {
+  if (typeof ledger.accountId !== "string" || ledger.accountId.length === 0) {
+    throw new TypeError(`sendEmail needs a ledger accountId, got ${String(ledger.accountId)}`);
+  }
+  const now =
+    typeof ledger.now === "number" && Number.isFinite(ledger.now) ? ledger.now : Date.now();
+  const period = periodOf(now);
+  const result = await ledger.db
+    .prepare(
+      "INSERT INTO email_sends (account_id, kind, period, sent_at) VALUES (?1, ?2, ?3, ?4) " +
+        "ON CONFLICT (account_id, kind, period) DO NOTHING",
+    )
+    .bind(ledger.accountId, kind, period, Math.floor(now / 1000))
+    .run();
+  const changes = /** @type {{meta?: {changes?: unknown}}} */ (result).meta?.changes;
+  return Number(changes) === 1 ? { accountId: ledger.accountId, kind, period } : null;
+}
+
+/**
+ * Hands one claim back: a send that threw must not keep the row it added, or
+ * the notice is lost for the whole period instead of retried on the next trip.
+ * Deletes only this claim -- the primary key is the three columns, so an
+ * account's own failed send can never release another account's or period's.
+ * @param {D1Database} db
+ * @param {{accountId: string, kind: string, period: string}} claim
+ */
+async function releaseSendPeriod(db, claim) {
+  await db
+    .prepare("DELETE FROM email_sends WHERE account_id = ?1 AND kind = ?2 AND period = ?3")
+    .bind(claim.accountId, claim.kind, claim.period)
+    .run();
+}
+
+/**
+ * Sends one rendered email. Resolves with {sent: true, messageId, subject}, or
+ * throws with the binding's own error: a failed send is never reported as
+ * sent, because the caller decides whether to retry and a false "sent" would
+ * silently drop a customer's receipt. A request that carries `ledger` is a
+ * once-per-period mail (drive#1206): the send function claims the period in
+ * the email_sends table first and answers {sent: false, subject} without
+ * mailing when this account's row for this kind and month is already there,
+ * so a second caller -- or a second hourly walk -- cannot mail it again. A
+ * send that throws hands its claim back, so the notice retries next trip
+ * rather than being lost for the month.
  * @param {unknown} emailBinding the EMAIL binding
  * @param {unknown} request
- * @returns {Promise<{messageId: string, subject: string}>}
+ * @returns {Promise<{sent: boolean, messageId?: string, subject: string}>}
  */
 export async function sendEmail(emailBinding, request) {
   const binding = requireBinding(emailBinding);
@@ -119,10 +188,10 @@ export async function sendEmail(emailBinding, request) {
     throw new TypeError(`sendEmail needs a request object, got ${String(request)}`);
   }
   const fields =
-    /** @type {{to?: unknown, kind?: unknown, data?: Record<string, unknown>, from?: unknown, fromName?: unknown, rendered?: {subject: string, text: string, html: string, saved: string|null}}} */ (
+    /** @type {{to?: unknown, kind?: unknown, data?: Record<string, unknown>, from?: unknown, fromName?: unknown, rendered?: {subject: string, text: string, html: string, saved: string|null}, ledger?: import("./email-send.js").SendLedger}} */ (
       request
     );
-  const { to, kind, data = {}, from, fromName = FROM_NAME, rendered } = fields;
+  const { to, kind, data = {}, from, fromName = FROM_NAME, rendered, ledger } = fields;
   if (typeof to !== "string" || to.trim().length === 0) {
     throw new TypeError(`sendEmail needs a recipient address, got ${to}`);
   }
@@ -132,25 +201,36 @@ export async function sendEmail(emailBinding, request) {
   const senderName = typeof fromName === "string" ? fromName : FROM_NAME;
   const replyTo = replyToFor(from.trim());
   const { subject, text, html } = rendered ?? renderEmail(kind, { ...data, replyTo });
-  const message = await binding.send({
-    to: to.trim(),
-    from: { email: from.trim(), name: senderName },
-    replyTo,
-    subject,
-    text,
-    html,
-  });
-  if (
-    typeof message !== "object" ||
-    message === null ||
-    typeof message.messageId !== "string" ||
-    message.messageId.trim().length === 0
-  ) {
-    throw new Error(
-      `Cloudflare Email Sending returned no message id for the ${kind} email; a send with no id cannot be retried safely`,
-    );
+  const claim = ledger === undefined ? null : await claimSendPeriod(ledger, String(kind));
+  if (ledger !== undefined && claim === null) {
+    return { sent: false, subject };
   }
-  return { messageId: message.messageId, subject };
+  try {
+    const message = await binding.send({
+      to: to.trim(),
+      from: { email: from.trim(), name: senderName },
+      replyTo,
+      subject,
+      text,
+      html,
+    });
+    if (
+      typeof message !== "object" ||
+      message === null ||
+      typeof message.messageId !== "string" ||
+      message.messageId.trim().length === 0
+    ) {
+      throw new Error(
+        `Cloudflare Email Sending returned no message id for the ${kind} email; a send with no id cannot be retried safely`,
+      );
+    }
+    return { sent: true, messageId: message.messageId, subject };
+  } catch (error) {
+    if (ledger !== undefined && claim !== null) {
+      await releaseSendPeriod(ledger.db, claim);
+    }
+    throw error;
+  }
 }
 
 /**
