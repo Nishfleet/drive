@@ -392,7 +392,8 @@ const CAP_WARNING_RATIO = 0.8;
  * @param {ReturnType<typeof import("./devices.js").createD1DeviceStore>} input.store
  * @param {D1Database} [input.db] the drive database the send ledger lives in
  *   (migrations/drive/0060_email_sends.sql); without one the notices go out
- *   ungated by the ledger, as the tests' fake stores do
+ *   ungated by the ledger and the warning is held to once by the account row's
+ *   `cap_warned_at` stamp instead, as before the ledger
  * @param {number} [input.now] the instant the walk reads the month at
  * @param {{send: Function}} [input.email] the Email Sending binding; without
  *   one the states are still saved and the keys still swapped, and the notices
@@ -494,10 +495,12 @@ async function enforceOneAccount(store, id, input, atSeconds) {
   if (state === "active" && notices.readOnlySentAt !== null) {
     await store.clearCapNotice(id, "read-only");
   }
-  // No "already warned" gate here: the send function owns the once-per-month
-  // decision (drive#1206), so every trip over 80% asks for the mail and the
-  // ledger's claim decides whether it goes out.
-  const warning = state === "active" && overWarning;
+  // With a db the send function owns the once-per-month decision (drive#1206),
+  // so every trip over 80% asks for the mail and the ledger's claim decides
+  // whether it goes out. Without one there is no ledger, so the account row's
+  // "already warned" stamp still gates it, or every hourly trip would mail.
+  const warning =
+    state === "active" && overWarning && (input.db !== undefined || notices.warnedAt === null);
   const readOnlyMail = state === "read_only" && notices.readOnlySentAt === null;
   const kind = readOnlyMail ? "read-only" : warning ? "cap-warning" : null;
   const sent =

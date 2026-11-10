@@ -151,6 +151,21 @@ test("at 80% of the cap the warning goes out once a month, and a re-cross mails 
   );
 });
 
+test("a walk given no db still mails the warning once, by the account row's stamp", async () => {
+  const { made, mail, email } = await seeded(600);
+  const walk = () =>
+    runCapEnforcement({
+      store: createD1DeviceStore(made.db),
+      email,
+      mailFrom: "drive@drive.test",
+    });
+  assert.equal((await walk()).warned, 1);
+  assert.equal(mail.length, 1);
+  assert.equal((await walk()).warned, 0);
+  await walk();
+  assert.equal(mail.length, 1, "with no send ledger the warning went out on every trip");
+});
+
 test("a closed account is never re-opened or mailed by the walk", async () => {
   const { made, account, mail, walk, state } = await seeded(400);
   await made.db
