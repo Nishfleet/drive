@@ -2,13 +2,13 @@
 # goreleaser action. Signing and notarize are blocks in this file and in
 # .goreleaser.yaml; they stay off until their secrets exist, so a pre-release
 # tag still publishes GitHub release assets. A public stable release waits
-# for Nish. Hosted macOS minutes are refused (drive#486), so this job is the
+# for the owner. Hosted macOS minutes are refused (drive#486), so this job is the
 # same self-hosted Linux runner CI uses; goreleaser cross-compiles darwin.
 #
-# This file is the one copy a worker token can land (drive#509, fleet-ops#105).
-# GitHub refuses an App without `workflows` permission from creating
-# `.github/workflows/release.yml`. A coordinator copies this file there;
-# test/packaging.test.mjs fails if that copy drifts from this one.
+# installer/release.yml and .github/workflows/release.yml are byte-identical
+# (drive#509, fleet-ops#105). A worker token can land the installer copy, a
+# coordinator copies it to .github/workflows/, and test/packaging.test.mjs
+# fails if they drift.
 #
 # GPG import and the MACOS_* env vars are the signing and notarize blocks.
 # `--skip=sign` runs when the GPG import step is skipped. NOTARIZE stays
