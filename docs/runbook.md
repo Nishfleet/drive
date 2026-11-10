@@ -98,26 +98,23 @@ access to this public repository can download its workflow artifacts, so only
 the ciphertext leaves the runner.
 
 **The matrix also carries the `0509` database**
-(`746c6e3d-782e-443a-82d6-28ca93a16294`) (fleet-ops#10594). It is dumped
-from here because the export credential is the Cloudflare D1 token on this
-repository's production environment, D1 permissions are account-scoped, and
-the 0509 repository holds no such token and no `AGE_RECIPIENT`. It moves
+(`746c6e3d-782e-443a-82d6-28ca93a16294`, fleet-ops#10594). It is
+dumped from here because the export credential is the Cloudflare D1 token on
+this repository's production environment, D1 permissions are account-scoped,
+and the 0509 repository holds no such token and no `AGE_RECIPIENT`. It moves
 to its own repository's copy of the job when that setup lands
 (fleet-ops#10829); `test/d1-export.test.mjs` fails while it is out of the
 matrix, because that would end the only backup it has. Its artifact is named
 after the database, so `d1-backup-0509` sits beside `d1-backup-waitlist` on
 the run's summary page.
 
-One owner per database: `siterep_payments` and `aiconverter` are backed up
-by their own repositories' `d1-export.yml` (siterep-public and
-aiconverter-app), and the TinyStudio signups database was deleted
-(fleet-ops incident 2026-10-29) — none of them takes a row here.
-`test/d1-export.test.mjs` holds the matrix to that shape two ways, not by
-naming rows: every row's id must be justified by the deploy's `migrations
-apply` or by an id recorded in this section, and every id this section
-records must stay in the matrix. A row for a deleted database or one another
-repository exports answers neither, so it fails instead of shipping (a
-TinyStudio row once answered 404 every Monday, drive#1027).
+`siterep_payments` and `aiconverter` are backed up by their own
+repositories' `d1-export.yml` (siterep-public and aiconverter-app), so they
+are not in this matrix: one owner per database. The test fails if either
+comes back here.
+
+The TinyStudio signups database was deleted (fleet-ops incident
+2026-10-29), so its row left the matrix (drive#1027).
 
 **The drive database is dumped in `sqlite3` format.** The stock D1 export
 refuses a database that holds a virtual table, and the FTS5 index on
