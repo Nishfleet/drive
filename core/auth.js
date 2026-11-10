@@ -61,6 +61,19 @@ export function safeAfterSigninPath(raw) {
   return url.pathname + url.search;
 }
 
+/**
+ * The library's own ceiling on magic-link starts from one client IP, in a
+ * 60-second window (drive#876). Its numbers are the shipped per-IP edge
+ * binding's (`SIGNIN_RATE_LIMITER` in cloudflare.config.ts), and
+ * test/signin-rate-traffic.test.mjs pins them equal, so within a location the
+ * library never refuses a start the edge would have served, and across
+ * locations one address still draws from a single counter. A shared office is
+ * served because the mail's real bounds live underneath this rule: the
+ * per-address and account-wide D1 guards (src/signin-send-limit.js) run before
+ * the send and key on nothing a caller chooses.
+ */
+export const SIGNIN_MAGIC_LINK_LIMIT = Object.freeze({ window: 60, max: 500 });
+
 export const SIGNIN_RETURN_TTL_SECONDS = 15 * 60;
 
 const EMPTY_SIGNIN_RETURN = Object.freeze({
@@ -200,12 +213,26 @@ export function createAuth(options) {
     basePath: "/api/auth",
     emailAndPassword: { enabled: false },
     socialProviders: {},
-    // Better Auth's built-in rate limiter keeps its counters in memory, one set per Worker instance.
+    // Better Auth's rate limiter keeps its counters in the customer database,
+    // so one counter per client IP and path is shared by every isolate and
+    // counted across every Cloudflare location, unlike the edge bindings,
+    // which each location counts on its own.
     rateLimit: {
       storage: "database",
       enabled: true,
       customRules: {
-        "/sign-in/magic-link": { window: 60, max: 3 },
+        // One client IP is not one person: an office, a campus or a carrier
+        // NAT shares one address, and a small bucket there locks out everyone
+        // behind it (drive#876). The ceiling is the shipped edge per-IP figure
+        // (cloudflare.config.ts; test/signin-rate-traffic.test.mjs pins the two
+        // equal), so a shared office is served the way the edge already serves
+        // it, while one address walking many locations still draws from one
+        // counter. The mail itself is bounded under this rule by the two D1
+        // guards the route runs first: signinSendOutcome per address (5 an
+        // hour, 20 a day) and signinAccountSendOutcome account-wide (5000 a
+        // minute) in src/signin-send-limit.js, neither keyed on anything a
+        // caller chooses.
+        "/sign-in/magic-link": SIGNIN_MAGIC_LINK_LIMIT,
       },
     },
     session: {
@@ -217,6 +244,11 @@ export function createAuth(options) {
       useSecureCookies: true,
       ipAddress: {
         ipAddressHeaders: ["cf-connecting-ip"],
+        // Pinned to the library's own default: a rate-limit key buckets IPv6
+        // to a /64, so one device holding a whole allocation cannot split
+        // itself into many buckets now that the magic-link ceiling is wide
+        // enough to serve a shared office (drive#876).
+        ipv6Subnet: 64,
       },
     },
     plugins: [
