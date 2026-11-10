@@ -1,3 +1,4 @@
+import disposableDomains from "disposable-email-domains/index.json" with { type: "json" };
 import { ensureBillingAccount, pendingCardAccountId } from "../core/abuse-guards.js";
 import {
   AFTER_SIGNIN_COOKIE,
@@ -25,6 +26,20 @@ import { createWelcomeStore, sendWelcomeOnce } from "./welcome.js";
 /** @typedef {import("../core/auth.js").Auth} Auth */
 
 const BAD_ADDRESS_MESSAGE = "Enter an email address we can send the link to.";
+
+/** The stock list's exact domain matches, lowercase (disposable-email-domains). */
+const DISPOSABLE_DOMAINS = new Set(disposableDomains);
+
+/**
+ * Whether the address's domain is on the stock disposable list. The local
+ * part never matters: the domain is the whole check, read case-insensitively.
+ * @param {string} email
+ * @returns {boolean}
+ */
+function isDisposableEmail(email) {
+  const at = email.lastIndexOf("@");
+  return at !== -1 && DISPOSABLE_DOMAINS.has(email.slice(at + 1).toLowerCase());
+}
 
 export const SIGNIN_PATH = "/signin";
 export const SIGNIN_ENDPOINT = "/api/signin";
@@ -90,7 +105,7 @@ export const SIGNIN_STEPS = Object.freeze(["start", "signout", "signout-all"]);
  * sentence the route returns as a 400. The steps carry a `step` literal so
  * the route's `step === "signout"` narrows; the error arm is told apart with
  * `"error" in read` rather than a property read, because it has no `step`.
- * @typedef {{step: "start", method: string, email?: string, age?: boolean, next?: string}
+ * @typedef {{step: "start", method: string, email?: string, age?: boolean, next?: string, refused?: boolean}
  *   | {step: "signout"}
  *   | {step: "signout-all"}
  *   | {error: string}} SigninRequest
@@ -138,7 +153,7 @@ function isTick(value) {
  * claiming a card from an unauthenticated start is how a stranger locked
  * an address out.
  * @param {Record<string, unknown>} body
- * @returns {{step: "start", method: string, email?: string, age?: boolean, next?: string}|{error: string}}
+ * @returns {{step: "start", method: string, email?: string, age?: boolean, next?: string, refused?: boolean}|{error: string}}
  */
 function readStart(body) {
   const method = typeof body.method === "string" ? body.method : "";
@@ -151,6 +166,20 @@ function readStart(body) {
   const email = typeof body.email === "string" ? body.email.trim() : "";
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { error: BAD_ADDRESS_MESSAGE };
+  }
+  if (isDisposableEmail(email)) {
+    // The address sits on a throwaway domain, so no link will land there.
+    // The read is marked, not errored: the route answers it with the very
+    // body it answers a sent link with, so the rule stays invisible and no
+    // address is enumerated (#538).
+    return {
+      step: "start",
+      method,
+      email,
+      age: isTick(body.age),
+      next: safeAfterSigninPath(body.next),
+      refused: true,
+    };
   }
   return {
     step: "start",
@@ -297,6 +326,16 @@ export async function handleSigninRequest(request, env) {
   const email = read.email;
   if (typeof email !== "string") {
     return json({ error: BAD_ADDRESS_MESSAGE }, 400);
+  }
+  if (read.refused === true) {
+    // A throwaway-domain address is never mailed, and it is never told so:
+    // the answer is the same 202 body a link that was sent gets (drive#538).
+    // It reaches nothing first — no address counter is spent, no hold is
+    // written — because the read marked it before the route touched any.
+    return json(
+      { ok: true, step: "start", method: read.method, expiresIn: SIGNIN_LINK_TTL_SECONDS },
+      202,
+    );
   }
   const sendOutcome = await signinSendOutcome(env.DRIVE_DB, email.toLowerCase());
   if (sendOutcome === "broken") {
