@@ -1,4 +1,9 @@
-import { ensureBillingAccount, pendingCardAccountId } from "../core/abuse-guards.js";
+import {
+  claimCardFingerprint,
+  ensureBillingAccount,
+  paymentCardFingerprint,
+  pendingCardAccountId,
+} from "../core/abuse-guards.js";
 import {
   AFTER_SIGNIN_COOKIE,
   AFTER_SIGNIN_PATH,
@@ -11,6 +16,7 @@ import {
 } from "../core/auth.js";
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
+import { savedPaymentMethodId } from "../core/dodo.js";
 import { provisionAccountBucket } from "../core/files-memory.js";
 import { historyDaysFor } from "../core/history-addon.js";
 import { json } from "../core/http.js";
@@ -166,7 +172,7 @@ function readStart(body) {
  * Better Auth settings (core/auth.js) and the test seam that stands in for the
  * email binding (SIGNIN_MAIL). Widened here the way src/index.js widens it, so
  * a test can drive the real dispatch.
- * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit}} SigninEnv
+ * @typedef {Env & {DRIVE_DB?: unknown, BETTER_AUTH_SECRET?: string, BETTER_AUTH_URL?: string, EMAIL?: unknown, MAIL_FROM?: string, SIGNIN_MAIL?: (link: {to: string, url: string}) => Promise<unknown>, SIGNIN_RATE_LIMITER?: RateLimit, SIGNIN_GLOBAL_RATE_LIMITER?: RateLimit, DODO_PAYMENTS_API_KEY?: string, DODO_BASE_URL?: string, DODO_FETCH?: typeof fetch}} SigninEnv
  */
 
 /**
@@ -446,6 +452,40 @@ export async function handleSigninLinkVerify(request, env) {
       } catch (cause) {
         console.error(`billing row for account ${account.id} did not write: ${String(cause)}`);
       }
+      // drive#829: once the Dodo key is set, the provider's own saved card
+      // for this account is claimed here, at the verify — the claim the card
+      // step used to write as a `test:<email>` stand-in. A card another live
+      // account already holds is refused in the customer's words: the
+      // redirect below names the table's `card-in-use` entry, the browser
+      // gets no session cookie, and the person lands on the sign-in screen
+      // with the answer's own next step — sign in to the account that holds
+      // the card, or use a different one.
+      /** @type {boolean} */
+      let cardRefused = false;
+      try {
+        const fingerprint = await providerSavedCardFingerprint(
+          /** @type {D1Database} */ (driveDb),
+          account,
+          env,
+        );
+        if (fingerprint !== null) {
+          const claimed = await claimCardFingerprint(/** @type {D1Database} */ (driveDb), {
+            accountId: account.id,
+            email: account.email,
+            fingerprint,
+          });
+          cardRefused = "error" in claimed;
+        }
+      } catch (cause) {
+        // A claim that cannot finish is not a refusal: the person still
+        // signs in, the saved-card read is the caller's to decide what it
+        // means (core/dodo.js), and the verified webhook still records the
+        // card from its own event (drive#503).
+        console.error(`card claim for account ${account.id} did not finish: ${String(cause)}`);
+      }
+      if (cardRefused) {
+        return redirect(`${SIGNIN_PATH}?error=card-in-use`);
+      }
       try {
         await provisionAccountBucket(env, account.id, {
           hiddenVersionDays: env.DRIVE_DB
@@ -487,6 +527,61 @@ export async function handleSigninLinkVerify(request, env) {
   const returnTo = mailedReturn || safeAfterSigninPath(cookieValue(request, AFTER_SIGNIN_COOKIE));
   cookies.push(`${AFTER_SIGNIN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
   return redirect(returnTo || AFTER_SIGNIN_PATH, { "set-cookie": cookies });
+}
+
+/**
+ * The provider's own fingerprint for the card this account pays with, or null
+ * when nothing is claimed. Nothing is read until the Dodo key is set
+ * (drive#325: no key is no provider call and no charge), and an account with
+ * no Dodo customer id has no card to name at all — only the verified payment
+ * webhook writes that (drive#503) — so a first sign-in reaches no provider.
+ * An account that already records a card keeps it: the webhook's fingerprint
+ * is the record of the money that moved, and a verify does not replace it. An
+ * account the provider cannot list, or a saved-card list that does not read,
+ * claims nothing rather than guessing, and the person still signs in: a
+ * refused sign-in is for a card a live account already holds (drive#829),
+ * not for a provider hiccup.
+ * @param {D1Database} db
+ * @param {{id: string, email: string}} account
+ * @param {SigninEnv} env
+ * @returns {Promise<string|null>}
+ */
+async function providerSavedCardFingerprint(db, account, env) {
+  const apiKey = env.DODO_PAYMENTS_API_KEY;
+  if (typeof apiKey !== "string" || apiKey === "") {
+    return null;
+  }
+  const row = await db
+    .prepare("SELECT dodo_customer_id, card_fingerprint FROM accounts WHERE id = ?1")
+    .bind(account.id)
+    .first();
+  if (row === null || row === undefined) {
+    return null;
+  }
+  const fields = /** @type {{dodo_customer_id?: unknown, card_fingerprint?: unknown}} */ (row);
+  if (typeof fields.card_fingerprint === "string" && fields.card_fingerprint !== "") {
+    return null;
+  }
+  const customerId = fields.dodo_customer_id;
+  if (typeof customerId !== "string" || customerId === "") {
+    return null;
+  }
+  const saved = await savedPaymentMethodId({
+    apiKey,
+    baseUrl: env.DODO_BASE_URL,
+    customerId,
+    fetch: env.DODO_FETCH,
+  });
+  if (!saved.ok) {
+    console.error(
+      `signin: the saved cards for account ${account.id} did not list: status ${saved.status}`,
+    );
+    return null;
+  }
+  if (saved.paymentMethodId === null) {
+    return null;
+  }
+  return paymentCardFingerprint(saved.paymentMethodId);
 }
 
 /**

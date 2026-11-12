@@ -274,6 +274,7 @@ const NEED_AGE_MESSAGE = "You must be 18 or older to open an account.";
 const OFFLINE_MESSAGE = "You look offline. Check your connection and try again.";
 const UNEXPECTED_MESSAGE = "That did not work. Try again in a moment.";
 const CLOSED_MESSAGE = "Signing in is not open yet. Join the waitlist, and your first email will carry a sign-in link.";
+const CARD_IN_USE_MESSAGE = "That card is already on another account. Sign in to the account that uses it, or use a different card.";
 
 const LINK_FAILED_MESSAGE = "That link did not work. Ask for a new one from the sign-in page.";
 const errorParam = new URLSearchParams(window.location.search).get("error");
@@ -283,6 +284,8 @@ if (errorParam === "invalid-link" || errorParam === "no-token") {
   say(CLOSED_MESSAGE, "error");
 } else if (errorParam === "need-age") {
   say(NEED_AGE_MESSAGE, "error");
+} else if (errorParam === "card-in-use") {
+  say(CARD_IN_USE_MESSAGE, "error");
 } else if (errorParam !== null) {
   say(UNEXPECTED_MESSAGE, "error");
 }

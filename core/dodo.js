@@ -255,6 +255,51 @@ export function isDodoUrl(value) {
 }
 
 /**
+ * The provider's own id for the card one of its customers has saved, or null
+ * when the customer has none. The call is a GET, so it charges nothing
+ * (drive#325): it answers which card an account pays with, and that is what
+ * the sign-in claims (drive#829) and what the auto top-up charges
+ * (core/prepaid.js). Both read the same list the same way, so the first saved
+ * card is the card an account holds, and the provider, never a posted field,
+ * is the one that names it (drive#503).
+ *
+ * A response that is not ok comes back as `{ok: false, status}` rather than a
+ * throw, so each caller decides what a provider hiccup means for its own
+ * answer; a request that never completes still throws, and the caller catches
+ * it.
+ * @param {{apiKey: string, baseUrl?: string, customerId: string, fetch?: typeof fetch}} options
+ * @returns {Promise<{ok: true, paymentMethodId: string|null}|{ok: false, status: number}>}
+ */
+export async function savedPaymentMethodId(options) {
+  if (typeof options.apiKey !== "string" || options.apiKey === "") {
+    throw new TypeError(`savedPaymentMethodId needs an API key, got ${String(options.apiKey)}`);
+  }
+  if (typeof options.customerId !== "string" || options.customerId === "") {
+    throw new TypeError(
+      `savedPaymentMethodId needs a customer id, got ${String(options.customerId)}`,
+    );
+  }
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const response = await fetchImpl(
+    resolveDodoUrl(
+      options.baseUrl,
+      `/customers/${encodeURIComponent(options.customerId)}/payment-methods`,
+    ),
+    { headers: { authorization: `Bearer ${options.apiKey}` } },
+  );
+  if (!response.ok) {
+    return { ok: false, status: response.status };
+  }
+  const list = /** @type {{items?: Array<{payment_method_id?: unknown}>}} */ (
+    await response.json()
+  );
+  const id = list.items?.find(
+    (item) => typeof item.payment_method_id === "string" && item.payment_method_id !== "",
+  )?.payment_method_id;
+  return { ok: true, paymentMethodId: typeof id === "string" ? id : null };
+}
+
+/**
  * Dodo's idempotency key for one account-hour. The same hour always mints
  * the same id, so a retried push is ignored on Dodo's side as well as in
  * billing_pushes. Dodo's ingest docs: "Event Id acts as an idempotency key.

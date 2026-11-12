@@ -8,7 +8,7 @@ import {
   size30Window,
   unpackDrawRemainder,
 } from "./billing.js";
-import { resolveDodoUrl } from "./dodo.js";
+import { resolveDodoUrl, savedPaymentMethodId } from "./dodo.js";
 import { sendEmail } from "./email-send.js";
 import {
   appendLedgerEntry,
@@ -689,21 +689,20 @@ async function startAutoTopUp(db, accountId, cents, deps, now) {
     authorization: `Bearer ${deps.apiKey}`,
     "content-type": "application/json",
   };
-  const methods = await fetchImpl(
-    resolveDodoUrl(deps.baseUrl, `/customers/${encodeURIComponent(customerId)}/payment-methods`),
-    { headers },
-  );
-  if (!methods.ok) {
-    throw new Error(`auto top-up: listing saved cards failed with status ${methods.status}`);
+  const saved = await savedPaymentMethodId({
+    apiKey: deps.apiKey,
+    baseUrl: deps.baseUrl,
+    customerId,
+    fetch: deps.fetch,
+  });
+  if (!saved.ok) {
+    throw new Error(`auto top-up: listing saved cards failed with status ${saved.status}`);
   }
-  const list = /** @type {{items?: Array<{payment_method_id?: unknown}>}} */ (await methods.json());
-  const paymentMethodId = list.items?.find(
-    (item) => typeof item.payment_method_id === "string" && item.payment_method_id !== "",
-  )?.payment_method_id;
-  if (typeof paymentMethodId !== "string") {
+  if (saved.paymentMethodId === null) {
     console.error("prepaid: auto top-up is on but there is no saved card", `account=${accountId}`);
     return false;
   }
+  const paymentMethodId = saved.paymentMethodId;
   const charged = await fetchImpl(resolveDodoUrl(deps.baseUrl, "/checkouts"), {
     method: "POST",
     headers,
