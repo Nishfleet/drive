@@ -201,6 +201,18 @@ test("a device-code request takes the closed door when a declared limiter is mis
   assert.deepEqual(await response.json(), { error: failureMessage("unexpected") });
 });
 
-// drive#342: the live wiring is checked by the deploy itself — a site Worker
-// bound to a Worker that was not shipped first fails the deploy, and an api
-// Worker with a public address would answer /v1/health without Access.
+// drive#342: the live wiring. drive-api has no workers.dev address of its own
+// (it is reached only through the site Worker, which sits behind Cloudflare
+// Access), the site Worker binds it as `API`, and the deploy job ships it
+// before the site Worker, because a binding with no target fails the deploy.
+test("drive-api has no public address and the site binds it as API", () => {
+  assert.equal(apiConfig.workersDev, false, "drive-api must not have a workers.dev address");
+  assert.equal(apiConfig.previewUrls, false);
+  const site = read("cloudflare.config.ts");
+  assert.match(site, /^\s*API: bindings\.worker\(\{ worker: "drive-api" \}\),/m);
+});
+
+// drive#342: the deploy itself catches a site Worker bound to a Worker that
+// was not shipped first, but its wall check looks only at the site's /v1
+// route — a public workers.dev or preview address on the api Worker would fail
+// nothing, so the test above is the only tripwire for a silent exposure.
