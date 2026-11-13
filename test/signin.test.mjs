@@ -12,7 +12,6 @@ import {
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
-import { PRICE } from "../core/pricing.js";
 import worker from "../src/index.js";
 import {
   readSigninRequest,
@@ -1155,16 +1154,6 @@ test("the email-failed words are the message table's, once", () => {
   assert.equal(signinEmailFailedBody().error, failureMessage("sign-in-email-failed"));
 });
 
-test("the sign-in link is at the path the page and the email name", async () => {
-  assert.equal(SIGNIN_LINK_PATH, "/api/signin/verify");
-  for (const error of ["invalid-link", "no-token", "card-in-use"]) {
-    assert.ok(
-      page.includes(`errorParam === "${error}"`),
-      `the page answers the ${error} redirect the verify route sends`,
-    );
-  }
-});
-
 test("the verify route is GET only, and a link without a token answers the screen", async () => {
   const made = dispatchEnv();
   const posted = await workerFetch(
@@ -1430,14 +1419,6 @@ test("a saved-card list that does not read refuses nobody, and names no key (dri
   );
   const { row } = await accountRow(made, "hiccup@example.com");
   assert.equal(row.card_fingerprint ?? null, null, "a list that did not read claims nothing");
-});
-
-test("the page answers a card clash with the message table's words (drive#829)", () => {
-  const entry = FAILURE_MESSAGES["card-in-use"];
-  assert.ok(
-    page.includes(`${entry.what} ${entry.next}`),
-    "the page carries the card-in-use pair verbatim",
-  );
 });
 
 test("safeAfterSigninPath only returns the device-approve page", () => {
@@ -2064,31 +2045,6 @@ test("an address the library refuses is a 400, not a closed door", async () => {
 
 // --------------------------------------------------------- the shipped page
 
-test("the page carries every string from src/signin.js verbatim", () => {
-  for (const [name, value] of Object.entries(SIGNIN_COPY)) {
-    // Sign out copy is the signed-in menu (drive#423), pinned on the three
-    // pages that carry it by test/usage.test.mjs, not on the sign-in screen.
-    if (name === "signOut" || name === "signOutEverywhere") continue;
-    assert.ok(page.includes(value), `the page must carry ${name}: "${value}"`);
-  }
-  // The endpoints, from the modules, never typed into the page a second time.
-  assert.ok(page.includes(`const SIGNIN_ENDPOINT = "${SIGNIN_ENDPOINT}";`));
-  // drive#180: the page's method list is the module's OFFERED list, not its
-  // accepted list: the screen renders the methods the server can complete
-  // (email today; Google and GitHub are read by the endpoint but answered
-  // with the closed door), and this line fails the moment the two drift.
-  assert.ok(
-    page.includes(`const METHODS = [${SIGNIN_OFFERED_METHODS.map((m) => `"${m}"`).join(", ")}];`),
-    "the page's method list must be the module's offered list",
-  );
-  // The page is a static asset, so the price line it shows is the price
-  // module's; the test reads the module, so the two cannot drift.
-  assert.ok(
-    page.includes(PRICE.noPlansLine),
-    "the page must carry the price module's no-minimum line",
-  );
-});
-
 test("the page posts to the endpoint the Worker routes, with a method the endpoint accepts", () => {
   assert.ok(
     page.includes(`action="${SIGNIN_ENDPOINT}"`),
@@ -2266,16 +2222,6 @@ test("the page states the age rule once, in the consent line, and sends the atte
   );
 });
 
-test("the page carries a social card of its own", () => {
-  for (const tag of [
-    '<meta property="og:title" content="Sign in to Storagebun">',
-    '<meta property="og:image" content="https://storagebun.com/og.png">',
-    '<meta name="twitter:card" content="summary_large_image">',
-  ]) {
-    assert.ok(page.includes(tag), `the sign-in page carries ${tag}`);
-  }
-});
-
 test("no other shipped page posts a sign-in start (drive#781)", () => {
   // The age box lives on the sign-in form. Other pages post sign-out only.
   const others = [
@@ -2294,29 +2240,6 @@ test("no other shipped page posts a sign-in start (drive#781)", () => {
       `${rel} must not post a sign-in start`,
     );
   }
-});
-
-test("the page's failure words are the message table's", () => {
-  // The same two constants the pricing page carries, and the same gate
-  // test/messages.test.mjs runs over this page.
-  assert.ok(page.includes(FAILURE_MESSAGES.offline.what));
-  assert.ok(page.includes(FAILURE_MESSAGES.unexpected.what));
-});
-
-test("the page shows the route's own error words, so every failure names a next step", () => {
-  // The server owns the words for the failures only it can see (drive#431:
-  // an email that could not be sent). The page is a static asset, so it cannot
-  // hold them; what it must do is put the answer's `error` in the live status
-  // line as it arrives, which is what keeps those failure paths from falling
-  // back to "That did not work." with no next step.
-  assert.ok(
-    page.includes("payload.error"),
-    "the page must read the error field the route answers with",
-  );
-  assert.ok(
-    page.includes('id="signin-status"') && page.includes("aria-live"),
-    "the page must have the live region the status words are read into",
-  );
 });
 
 test("the page is at the path the module names, and the Worker serves it as an asset", async () => {

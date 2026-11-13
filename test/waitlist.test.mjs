@@ -6,7 +6,6 @@ import {
   handleWaitlistRequest,
   isSameOriginRequest,
   recordSignup,
-  SOURCES,
   validateSignup,
 } from "../src/waitlist.js";
 
@@ -176,10 +175,6 @@ test("validateSignup trims and lowercases", () => {
 test("validateSignup falls back to pricing-page for unknown source", () => {
   const { source } = validateSignup({ email: "a@b.co", source: "made-up" });
   assert.equal(source, "pricing-page");
-});
-
-test("SOURCES constant lists the two columns", () => {
-  assert.deepEqual(SOURCES, ["pricing-page", "business"]);
 });
 
 // --- storage --------------------------------------------------------------

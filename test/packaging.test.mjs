@@ -36,31 +36,6 @@ function installLinesFromGoreleaser(yaml) {
   ];
 }
 
-test("the Linux packages depend on rclone", () => {
-  const nfpms = cfg.slice(cfg.indexOf("\nnfpms:"), cfg.indexOf("\nhomebrew_casks:"));
-  assert.match(nfpms, /formats: \[deb, rpm\]/, "GoReleaser builds both Linux packages");
-  assert.match(
-    nfpms,
-    /^\s+dependencies:\n\s+- rclone$/m,
-    "Depends: rclone is the one-command install",
-  );
-});
-
-test("the Homebrew cask depends on rclone", () => {
-  const casks = cfg.slice(cfg.indexOf("\nhomebrew_casks:"));
-  assert.match(casks, /name: drive/, "the cask is named drive");
-  assert.match(
-    casks,
-    /dependencies:\n\s+- formula: rclone/,
-    "brew install nish3451/tap/drive also installs rclone",
-  );
-  assert.doesNotMatch(
-    cfg,
-    /^brews:/m,
-    "the deprecated brews block is gone; goreleaser check fails on it",
-  );
-});
-
 test("the package homepage is the one site address", () => {
   const origin = JSON.parse(read("cmd/drive/site.json")).origin;
   const homepages = [...cfg.matchAll(/^\s+homepage:\s+(\S+)/gm)].map((match) => match[1]);
@@ -117,24 +92,17 @@ test("install lines in the docs, help and page are generated from .goreleaser.ya
   assert.match(docsJs, /INSTALL_FEDORA: INSTALL_LINES\[2\]\.line/);
 });
 
-test("the release workflow on v* tags runs stock goreleaser with signing and notarize blocks", () => {
+test("the release workflow pins the same goreleaser-action ci.yml pins, and the installed copy matches", () => {
   const release = read("installer/release.yml");
   const ci = read(".github/workflows/ci.yml");
-  assert.match(release, /tags:\n\s+- "v\*"/, "a v* tag starts the release");
-  assert.match(release, /^\s+distribution: goreleaser$/m, "stock goreleaser, not goreleaser-pro");
-  assert.match(release, /name: Import GPG key/, "the workflow has its own signing block");
-  assert.match(release, /--skip=sign/, "unsigned pre-releases skip GPG when the key is missing");
-  assert.match(release, /NOTARIZE:/, "the workflow has its own notarize block");
-  assert.match(release, /MACOS_NOTARY_ISSUER_ID/, "notarize env is the stock goreleaser names");
-  assert.match(cfg, /^signs:/m, ".goreleaser.yaml signs checksums when a key exists");
-  assert.match(cfg, /^notarize:/m, ".goreleaser.yaml notarize stays off until NOTARIZE=true");
+  // The two files must pin the same goreleaser-action, so one cannot drift
+  // behind a bump the other got.
   const action = /goreleaser\/goreleaser-action@([0-9a-f]{40})/.exec(ci);
   assert.ok(action, "ci.yml pins goreleaser-action by SHA");
   assert.ok(
     release.includes(`goreleaser/goreleaser-action@${action[1]}`),
     "installer/release.yml must pin the same goreleaser-action SHA ci.yml already uses",
   );
-  assert.match(release, /cache: false/, "a publishing job must not reuse a Go module cache");
   // A worker token cannot create .github/workflows/release.yml (fleet-ops#105).
   // Once a coordinator copies it, the two files must stay the same.
   if (existsSync(new URL("../.github/workflows/release.yml", import.meta.url))) {

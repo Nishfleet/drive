@@ -4,11 +4,9 @@ import { failureMessage, INSTALL_COMMAND, SIGN_IN_COMMAND } from "./messages.js"
 
 export { INSTALL_COMMAND };
 
-export const LOGIN_COMMAND = SIGN_IN_COMMAND;
+const STATUS_COMMAND = "drive status";
 
-export const STATUS_COMMAND = "drive status";
-
-export const FIRST_RUN_COMMAND = `${LOGIN_COMMAND}\n${INSTALL_COMMAND}`;
+export const FIRST_RUN_COMMAND = `${SIGN_IN_COMMAND}\n${INSTALL_COMMAND}`;
 
 export { INSTALL_LINES };
 

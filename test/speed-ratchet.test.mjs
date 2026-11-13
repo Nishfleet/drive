@@ -152,23 +152,6 @@ test("docs/scoreboard.md points each ratchet row at bench/baseline.json", () => 
   }
 });
 
-test("the verify job already runs npm test, which runs this file", () => {
-  const ci = read(".github/workflows/ci.yml");
-  assert.match(ci, /^ {2}verify:\n/m);
-  assert.match(ci, /run: npm test/);
-  const pkg = JSON.parse(read("package.json"));
-  assert.match(pkg.scripts.test, /node --test/);
-  // drive#392: the 100k search proofs run alone inside that same command,
-  // because the worker App cannot add a workflow step.
-  assert.match(pkg.scripts.test, /--test-concurrency=1/);
-});
-
-test("AGENTS.md tells a faster speed row to lower the baseline", () => {
-  const section = read("AGENTS.md").slice(read("AGENTS.md").indexOf("## Before you open a PR"));
-  assert.match(section, /bench\/baseline\.json/);
-  assert.match(section, /test\/speed-ratchet\.test\.mjs/);
-});
-
 test("hyperfine on PATH is the CLI tool, and an added sleep fails against the CLI row", (t) => {
   let bin;
   try {

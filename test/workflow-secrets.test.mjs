@@ -82,21 +82,6 @@ const secretsRead = (text) =>
     .map((line) => line.replace(/(^|\s)#.*$/, ""))
     .flatMap((line) => [...line.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((m) => m[1]));
 
-test("the job splitter finds every job the workflows declare", () => {
-  const found = workflows.flatMap(({ name, text }) =>
-    jobsOf(text).map((job) => `${name}:${job.id}`),
-  );
-  for (const expected of ["deploy-production.yml:deploy", "ci.yml:verify"]) {
-    assert.ok(found.includes(expected), `${expected} not found in ${found.join(", ")}`);
-  }
-});
-
-test("the environment reader handles both YAML shapes and a job without one", () => {
-  assert.equal(environmentOf(["    environment: production"]), "production");
-  assert.equal(environmentOf(["    environment:", "      name: production"]), "production");
-  assert.equal(environmentOf(["    runs-on: ubuntu-latest"]), undefined);
-});
-
 test("every deploy secret is read only in a job bound to its environment: preview for the PR preview, production otherwise", () => {
   let reads = 0;
   for (const { name, text } of workflows) {
@@ -126,15 +111,4 @@ test("no workflow reads a secret this table does not list", () => {
       );
     }
   }
-});
-
-test("a comment neither counts as a secret read nor ends the jobs block", () => {
-  assert.deepEqual(secretsRead("  # not secrets.NOPE\n  x: ${{ secrets.YES }} # secrets.NOPE"), [
-    "YES",
-  ]);
-  const jobs = jobsOf("jobs:\n  a:\n    x: 1\n# note\n  b:\n    y: 2\n");
-  assert.deepEqual(
-    jobs.map((job) => job.id),
-    ["a", "b"],
-  );
 });

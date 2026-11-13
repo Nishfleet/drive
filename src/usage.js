@@ -1,6 +1,4 @@
-import { BILLING_CONFIG, MINUTE_MS, USAGE_HISTORY_DAYS } from "../core/billing.js";
-
-export const USAGE_POLL_INTERVAL_MS = MINUTE_MS;
+import { BILLING_CONFIG, USAGE_HISTORY_DAYS } from "../core/billing.js";
 
 export const USAGE_LABELS = Object.freeze({
   chartHeading: `Stored GB, last ${USAGE_HISTORY_DAYS} days`,

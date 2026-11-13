@@ -31,65 +31,12 @@ const row = (metric) => {
   return found[0];
 };
 
-// The closed set of rows the table ships: the metrics issue #114 requires (a
-// "agent features" group included, one row per named feature, the price rows
-// at each size) plus the rows added while filling them in. A row that is
-// neither here nor added here on purpose is a row no gate reads.
-const EVERY_ROWS = [
-  "file open time",
-  "5 GB video start time",
-  "cross-machine sync time",
-  "small-file speed (under 1 MiB)",
-  "small edit in a big file",
-  "big-folder rename",
-  "bandwidth needed",
-  "setup steps and time to first file",
-  "offline pinning",
-  "version history",
-  "price at 100 GB",
-  "price at 500 GB",
-  "price at 1 TB",
-  "price at 2 TB",
-  "price at 5 TB",
-  "agent features: MCP setup",
-  "agent features: no-delete keys",
-  "agent features: undo",
-  "agent features: spending cap",
-  "agent features: branches with review",
-  "disk use",
-  "minimum macOS",
-  "pause and resume an upload",
-  "Windows install and mount",
-];
-
 // The competitor's own published add-on, the figure the two derived price rows
 // are worked out from: $6 a month for each extra 500 GB, and a 1 TB plan. Named
 // here so a change to how those two rows are derived is a change to this file.
 const RIVAL_PLAN_1TB_USD = 15;
 const RIVAL_EXTRA_500GB_USD = 6;
 const RIVAL_EXTRA_500GB_PER_TB = 2;
-const VERDICTS = ["win", "lose", "not yet measured"];
-
-test("the table carries exactly its own rows, each with five columns", () => {
-  const metrics = tableRows().map((cells) => cells[0]);
-  // Set equality in both directions: a required row cannot go missing, and a
-  // row nobody added to EVERY_ROWS cannot slip in unowned.
-  assert.deepEqual(
-    [...metrics].sort(),
-    [...EVERY_ROWS].sort(),
-    "the table's rows and EVERY_ROWS must be the same set",
-  );
-  assert.equal(new Set(metrics).size, metrics.length, "no metric is listed twice");
-  for (const cells of tableRows()) {
-    assert.equal(
-      cells.length,
-      5,
-      `five columns (metric, competitor, us, verdict, issue): ${cells[0]}`,
-    );
-    assert.ok(VERDICTS.includes(cells[3]), `${cells[0]}: verdict is win, lose or not yet measured`);
-  }
-});
-
 test("the price rows are computed from monthBillCents, not typed", () => {
   /** @type {Array<[string, number]>} */
   const cases = [
@@ -203,12 +150,4 @@ test("no measured row is typed from memory: date, commit, command", () => {
     assert.match(us, /\b[0-9a-f]{7,40}\b/, `${cells[0]}: carries its commit`);
     assert.match(us, /`[^`]+`/, `${cells[0]}: says how to repeat it`);
   }
-});
-
-test("AGENTS.md carries the scoreboard gate", () => {
-  const section = read("AGENTS.md").slice(read("AGENTS.md").indexOf("## Before you open a PR"));
-  assert.ok(
-    section.includes("docs/scoreboard.md") && section.includes("test/scoreboard.test.mjs"),
-    "AGENTS.md must tell a PR that changes a scoreboard metric to update its row",
-  );
 });

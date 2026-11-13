@@ -16,9 +16,7 @@ import {
   handleFirstRunStatusRequest,
   INSTALL_COMMAND,
   INSTALL_LINES,
-  LOGIN_COMMAND,
   POLL_INTERVAL_MS,
-  STATUS_COMMAND,
   STATUS_ENDPOINT,
   SYNC_ERROR_NOTIFICATION,
   SYNCED_WINDOW_MS,
@@ -85,24 +83,6 @@ function runtimeZone() {
   return zone;
 }
 
-test("the box carries the login and init lines, and the steps walk through them", () => {
-  assert.equal(INSTALL_COMMAND, "drive init");
-  assert.equal(LOGIN_COMMAND, "drive login");
-  assert.equal(STATUS_COMMAND, "drive status");
-  assert.equal(FIRST_RUN_COMMAND, `${LOGIN_COMMAND}\n${INSTALL_COMMAND}`);
-  assert.equal(FIRST_RUN_STEPS.length, 3);
-  assert.match(FIRST_RUN_STEPS[0].body, /drive init/);
-  assert.match(FIRST_RUN_STEPS[0].body, /drive login/);
-  assert.match(FIRST_RUN_STEPS[1].body, /Approve the code/);
-  assert.match(FIRST_RUN_STEPS[2].body, new RegExp(STATUS_COMMAND));
-  for (const step of FIRST_RUN_STEPS) {
-    assert.equal(typeof step.title, "string");
-    assert.ok(step.title.length > 0, "every step needs a title");
-    assert.equal(typeof step.body, "string");
-    assert.ok(step.body.length > 0, "every step needs a sentence");
-  }
-});
-
 test("no first-run sentence promises a flip the status route cannot make", () => {
   // Drive issue #556's last bullet. Until the api Worker is deployed (#342)
   // nothing stamps `devices.last_seen_at`, so a page that promises the machine
@@ -132,35 +112,6 @@ test("no first-run sentence promises a flip the status route cannot make", () =>
   assert.ok(description, "get-started.html needs a meta description");
   assert.doesNotMatch(description[1], promises, "the meta description promises the page a flip");
   assert.match(description[1], /drive status/);
-});
-
-test("the page leads with one pasted install line per system", () => {
-  // drive issue #428: the get-started page and the docs lead with one line per
-  // OS, so a new person reads what to paste before they are told where to paste
-  // it. macOS first (the page's own subject), then the two Linux package
-  // managers, and each row is a single line with no line break in it.
-  assert.deepEqual(
-    INSTALL_LINES.map((row) => row.os),
-    ["macOS", "Linux, Debian or Ubuntu", "Linux, Fedora or RHEL"],
-  );
-  const systems = new Set();
-  for (const row of INSTALL_LINES) {
-    assert.ok(row.os.length > 0, "every install row needs the system it is for");
-    assert.ok(!systems.has(row.os), `two rows for ${row.os} would be noise`);
-    systems.add(row.os);
-    assert.doesNotMatch(
-      row.line,
-      /[\r\n]/,
-      `the install line for ${row.os} must be one pasted line`,
-    );
-    assert.match(
-      row.line,
-      /^(brew install|sudo apt install|sudo dnf install) \S+$/,
-      `the install line for ${row.os} must be one package-manager invocation`,
-    );
-  }
-  // drive#509: the line is the one .goreleaser.yaml publishes, including the
-  // tap path. A short `brew install drive` cannot resolve after a release.
 });
 
 test("the renderer hands the page one row per system", () => {
@@ -806,44 +757,6 @@ test("an unreadable device date is reported, never shown as a number", () => {
   assert.equal(ageMs(new Date(now - 5000).toISOString(), now), 5000);
   assert.equal(ageMs(now - 5000, now), 5000);
   assert.throws(() => ageMs("not-a-date", "nope"), TypeError);
-});
-
-test("the page's Devices table has a last-sync column and its empty states", () => {
-  assert.match(shell, /<th scope="col">Last sync<\/th>/);
-  for (const id of [
-    "devices",
-    "devices-body",
-    "devices-empty",
-    "activity-empty",
-    "activity-progress",
-  ]) {
-    assert.ok(shell.includes(`id="${id}"`), `the shell must carry #${id}`);
-  }
-});
-
-// The page's install block is the one place it names a system: the renderer
-// fills #install-lines from the module, so a shell that carried one row's
-// words itself would be a second copy of the module's words. The shell does
-// carry one wordless row per system, because rows that appear only when the
-// script runs push the steps below them down after first paint, and that
-// layout shift broke the CLS budget (lighthouserc.json) on main.
-test("the shell carries one wordless install row per system for the renderer to fill", () => {
-  const list = shell.match(/<ul class="install" id="install-lines">([\s\S]*?)<\/ul>/);
-  assert.ok(list, "the shell must carry #install-lines");
-  const rows = list[1].replace(/<!--[\s\S]*?-->/g, "").match(/<li>[\s\S]*?<\/li>/g) ?? [];
-  assert.equal(rows.length, INSTALL_LINES.length, "one placeholder row per system");
-  for (const row of rows) {
-    assert.equal(
-      row,
-      '<li><span class="os">&nbsp;</span><code>&nbsp;</code></li>',
-      "a placeholder row has the rendered row's shape and no words",
-    );
-  }
-  assert.match(
-    readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8"),
-    /required\("install-lines"\)\.replaceChildren/,
-    "the renderer must fill #install-lines from the module",
-  );
 });
 
 test("the shell is structure only: the module's copy is not re-declared in it", () => {

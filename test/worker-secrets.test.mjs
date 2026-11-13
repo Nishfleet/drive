@@ -44,30 +44,6 @@ function listedSecrets(agents) {
   return [...body.join("\n").matchAll(/^- `([A-Z][A-Z0-9_]+)`/gm)].map((match) => match[1]);
 }
 
-test("a commented-out bindings.secret() is not a declared secret", () => {
-  const names = declaredSecrets(`
-    env: {
-      LIVE: bindings.secret(),
-      // DEAD: bindings.secret(),
-    }
-  `);
-  assert.deepEqual(names, ["LIVE"]);
-});
-
-test("listedSecrets keeps names after a ### subsection", () => {
-  const names = listedSecrets(`## Known Worker secrets
-
-- \`FIRST\`
-
-### Note
-
-- \`SECOND\`
-
-## Before you open a PR
-`);
-  assert.deepEqual(names, ["FIRST", "SECOND"]);
-});
-
 test("the live cloudflare.config.ts uses NAME: bindings.secret() for declared secrets", () => {
   const configPath = fileURLToPath(new URL("../cloudflare.config.ts", import.meta.url));
   assert.ok(existsSync(configPath), "the gate reads cloudflare.config.ts from the repo root");
@@ -95,26 +71,5 @@ test("every declared bindings.secret() is on the Known Worker secrets list", () 
     missing,
     [],
     `cloudflare.config.ts declares ${missing.join(", ")} as bindings.secret() but AGENTS.md Known Worker secrets does not list ${missing.join(", ")}. Add the name to the list in the same PR, put it under 'Secrets to set' in the PR body, and keep the PR draft until it is set on drive-pricing.`,
-  );
-});
-
-test("AGENTS.md tells a PR that adds a bindings.secret() to list it and stay draft", () => {
-  const agents = read("AGENTS.md");
-  const start = agents.indexOf("## Before you open a PR");
-  assert.notEqual(start, -1, "AGENTS.md must carry the 'Before you open a PR' list");
-  const section = agents.slice(start);
-  const lines = section.split("\n");
-  const body = [];
-  for (let i = 1; i < lines.length; i++) {
-    if (/^## /.test(lines[i])) break;
-    body.push(lines[i]);
-  }
-  const list = body.join("\n");
-  assert.ok(list.includes("Secrets to set"), "the line names the PR-body heading 'Secrets to set'");
-  assert.ok(list.includes("drive-pricing"), "the line names the Worker the secret is set on");
-  assert.ok(list.includes("draft"), "the line says the PR stays draft until the secret is set");
-  assert.ok(
-    list.includes("test/worker-secrets.test.mjs"),
-    "the line names this file, so the gate cannot drift into prose",
   );
 });

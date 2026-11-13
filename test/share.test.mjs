@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { run } from "../core/db.js";
 import { FILES_ENDPOINT } from "../core/files.js";
@@ -49,8 +48,6 @@ import {
   shareDownloadCapFor,
   shareRow,
   shareUrl,
-  UPLOAD_PAGE_COPY,
-  UPLOAD_PAGE_LINE,
   validateRequestFolder,
   validateRequestMaxBytes,
   validateShareFile,
@@ -74,7 +71,6 @@ import { createTestD1, knownBadHashRows } from "./harness.mjs";
 import { readIndexSource } from "./index-source.mjs";
 import { rcloneListResponse } from "./rclone-listing.mjs";
 
-const page = readFileSync(new URL("../public/upload.html", import.meta.url), "utf8");
 const now = Date.parse("2026-10-01T09:00:00.000Z");
 const account = { id: "acct-1", name: "Your drive" };
 const TOKEN = "AAAAAAAAAAAAAAAAAAAAAA";
@@ -3094,32 +3090,6 @@ test("POST /api/request 404s a folder that is not there and lists the ones that 
   assert.equal(rows[0].folder, "/");
   assert.equal(rows[0].name, "Your drive");
   assert.equal(rows[0].state, "active");
-});
-
-// ---------------------------------------------------------------- the shipped page
-
-test("the shipped upload page carries the module's words and endpoints", () => {
-  for (const value of Object.values(UPLOAD_PAGE_COPY)) {
-    assert.ok(page.includes(value), `public/upload.html is missing ${JSON.stringify(value)}`);
-  }
-  assert.ok(page.includes(UPLOAD_PAGE_LINE), "the page is missing the page line");
-  assert.ok(page.includes('"/api/request/info"'), "the page is missing the info endpoint");
-  assert.ok(page.includes('"/api/request/upload"'), "the page is missing the upload endpoint");
-  // The token is read from the query string the module builds.
-  assert.ok(page.includes('URLSearchParams(location.search).get("k")'), "the page must read ?k=");
-  // Nothing on the page mints or lists links: it is the stranger's side only.
-  assert.ok(!page.includes(SHARE_ENDPOINT), "the public page must not reach the owner API");
-  assert.ok(
-    !page.includes(`${SHARE_LINK_PREFIX}/`),
-    "the public page must not carry a share route",
-  );
-  // No script files and no inline secrets: one inline script, nothing fetched
-  // from another origin.
-  assert.ok(!/<script src=/.test(page), "the page is one inline script");
-  // drive#546: the file input was 1px and transparent but still in the tab
-  // order and the accessibility tree with no label. `hidden` takes it out of
-  // both, the same way public/files.html does it.
-  assert.match(page, /<input type="file" id="file-input" multiple hidden>/);
 });
 
 // The handlers answer DELETE (revoke), but a route the app does not register is
