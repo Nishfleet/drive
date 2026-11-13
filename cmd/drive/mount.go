@@ -542,7 +542,7 @@ func Mount(goos, home, rcloneBin string, c StorageConfig, foreground, dryRun boo
 	renewItem := []byte(DeviceRenewLoginItem(goos, p.DriveBin, home))
 	renewPath := DeviceRenewLoginItemPath(goos, home)
 	if dryRun {
-		p.RCUser, p.RCPass = "<redacted>", "<redacted>"
+		p.RCUser, p.RCPass, p.SecretKey = "<redacted>", "<redacted>", "<redacted>"
 		item := []byte(LoginItem(goos, p))
 		fmt.Printf("--- %s ---\n%s", p.ConfigPath, RcloneConfigRedacted(c))
 		fmt.Printf("--- %s ---\n%s", RcloneEnvPath(home), rcloneEnvRedacted(p))

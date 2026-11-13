@@ -1019,6 +1019,60 @@ func TestMountDryRunWritesNoCacheTag(t *testing.T) {
 	}
 }
 
+// drive#1238: the dry-run print of the login item carries no secret, so the scanner's clear-text-logging finding has nothing to trace. Every secret-bearing field of the input holds a recognisable fake and none of them may appear in the printed output.
+func TestMountDryRunLoginItemCarriesNoSecret(t *testing.T) {
+	const (
+		access = "DRYRUNLOGINITEMACCESSKEY"
+		secret = "dryrun-login-item-storage-secret"
+		token  = "dryrun-login-item-session-token"
+		rcUser = "dryrun-login-item-rc-user"
+		rcPass = "dryrun-login-item-rc-pass"
+	)
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		t.Run(goos, func(t *testing.T) {
+			home := t.TempDir()
+			c := testStorage()
+			c.AccessKey = access
+			c.SecretKey = secret
+			c.SessionToken = token
+			// The rc pair and the storage key a real mount leaves in rclone.env: the dry-run print shows that file redacted, so the fakes must not surface.
+			if err := WriteRcloneEnv(home, c, rcUser, rcPass, "127.0.0.1:1"); err != nil {
+				t.Fatal(err)
+			}
+			if goos == "windows" {
+				origFsp := winFspCheck
+				winFspCheck = func(string, func(string) bool) error { return nil }
+				t.Cleanup(func() { winFspCheck = origFsp })
+			}
+			printed := captureStdout(t, func() {
+				if err := Mount(goos, home, "/fake/rclone", c, false, true, ""); err != nil {
+					t.Fatal(err)
+				}
+			})
+			marker := "ExecStart="
+			if goos == "darwin" {
+				marker = LaunchdLabel + ".plist"
+			} else if goos == "windows" {
+				marker = "Task Scheduler task"
+			}
+			if !strings.Contains(printed, marker) {
+				t.Fatalf("dry-run printed %q, want the %s login item (marker %q)", printed, goos, marker)
+			}
+			for name, fake := range map[string]string{
+				"access key":     access,
+				"storage secret": secret,
+				"session token":  token,
+				"rc user":        rcUser,
+				"rc pass":        rcPass,
+			} {
+				if strings.Contains(printed, fake) {
+					t.Errorf("the dry-run print of the login item carries the %s (%q):\n%s", name, fake, printed)
+				}
+			}
+		})
+	}
+}
+
 func TestMountRestartsWhenThePlanChanged(t *testing.T) {
 	home := t.TempDir()
 	starts, _ := mountTestSeams(t, true)
