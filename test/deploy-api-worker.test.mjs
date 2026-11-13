@@ -211,8 +211,3 @@ test("drive-api has no public address and the site binds it as API", () => {
   const site = read("cloudflare.config.ts");
   assert.match(site, /^\s*API: bindings\.worker\(\{ worker: "drive-api" \}\),/m);
 });
-
-// drive#342: the deploy itself catches a site Worker bound to a Worker that
-// was not shipped first, but its wall check looks only at the site's /v1
-// route — a public workers.dev or preview address on the api Worker would fail
-// nothing, so the test above is the only tripwire for a silent exposure.
