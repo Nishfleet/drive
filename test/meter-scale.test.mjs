@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { dailyDrawMillicents, MILLICENTS_PER_CENT, monthBillCents } from "../core/billing.js";
+import {
+  BILLING_CONFIG,
+  dailyDrawMillicents,
+  MILLICENTS_PER_CENT,
+  monthBillCents,
+} from "../core/billing.js";
 import {
   ACCOUNT_HOUR_USAGE_SQL,
   CLEAR_EMPTY_ACCOUNTS_SQL,
@@ -332,7 +337,11 @@ test("a 3-hour draw outage across a month end is fully drawn afterwards", async 
       )
       .get(from, to).s;
 
-  const monthly = monthBillCents({ size30Bytes: 5000 * GB }).totalMillicents;
+  const monthly = monthBillCents({
+    size30Bytes: 5000 * GB,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  }).totalMillicents;
   const september = dailyDrawMillicents(monthly, 0);
   const october = dailyDrawMillicents(monthly, september.remainderMillicents);
   assert.equal(

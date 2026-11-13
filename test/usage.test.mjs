@@ -436,8 +436,11 @@ test("the usage page's four size30 numbers come from monthBillCents and the wind
   assert.equal(body.labels.size30DropsOut, size30DropsOutDay(reachedDay));
   assert.equal(
     body.todayDrawMillicents,
-    dailyDrawMillicents(monthBillCents({ size30Bytes: body.size30Bytes }).totalMillicents, 0)
-      .drawMillicents,
+    dailyDrawMillicents(
+      monthBillCents({ size30Bytes: body.size30Bytes, downloadBytes: 0, config: BILLING_CONFIG })
+        .totalMillicents,
+      0,
+    ).drawMillicents,
   );
   assert.equal(
     body.billUsd,
