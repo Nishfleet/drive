@@ -6,6 +6,9 @@ name: answer
 on:
   pull_request_review:
     types: [submitted]
+  workflow_run: # zizmor: ignore[dangerous-triggers] nothing from the pull request is checked out or run
+    workflows: [CI]
+    types: [completed]
 permissions: {}
 jobs:
   answer:
