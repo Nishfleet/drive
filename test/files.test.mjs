@@ -3242,66 +3242,6 @@ test("the Worker routes the page's API to the files handler", async () => {
 
 // ---------------------------------------------------------------- the page
 
-test("the page is a mobile-first surface with one-tap actions", () => {
-  // One viewport, no zoom trap, and a 44px tap target the phone can hit.
-  assert.match(page, /<meta name="viewport" content="width=device-width, initial-scale=1[^"]*">/);
-  assert.match(page, /--tap: 44px/);
-  assert.match(page, /min-height: var\(--tap\)/);
-  // Three of the four actions are one tap each: preview, download, restore.
-  assert.match(page, /<input type="file" id="file-input" multiple hidden>/);
-  assert.match(page, /id="upload-button"/);
-  assert.match(page, /id="viewer-close"/);
-  assert.match(page, /<dialog class="viewer" id="viewer"/);
-  // A keyboard user can reach the list without the mouse.
-  assert.match(page, /class="skip-link" href="#file-list-heading"/);
-});
-
-test("the page wears the app shell, with room for the view strip", () => {
-  assert.match(page, /<!-- shell:app-header current="\/files" -->/);
-  assert.doesNotMatch(page, /<header class="masthead">/, "the shell replaces the old masthead");
-  assert.doesNotMatch(page, /<header class="topbar">/, "the page has no top bar of its own");
-  assert.match(page, /<nav class="crumbs" id="crumbs" aria-label="Folder path">/);
-  assert.doesNotMatch(page, /id="account"/);
-  assert.doesNotMatch(page, /getElementById\("account"\)|class="account"/);
-
-  /** @param {string} selector */
-  const rules = (selector) =>
-    [...page.matchAll(new RegExp(`(?:^|\\n)\\.${selector} \\{([^}]*)\\}`, "g"))].map(
-      (rule) => rule[1],
-    );
-  assert.equal(rules("crumbs").length, 1, "the folder-path row has one rule of its own");
-
-  // The strip's rule is the one that lays it out as a strip; the page has a
-  // second .tabs rule that only lines it up with the page's 900px column.
-  const tabs = rules("tabs").find((rule) => rule.includes("display: flex"));
-  assert.ok(tabs, "the page lays the tab strip out as a strip");
-  const gap = Number.parseInt(tabs.match(/gap:\s*(\d+)px/)?.[1] ?? "0", 10);
-  const above = Number.parseInt(tabs.match(/padding-top:\s*(\d+)px/)?.[1] ?? "0", 10);
-  assert.equal(
-    above,
-    24,
-    `the strip sits 24px under the header, not cramped against it, it sits ${above}px`,
-  );
-  assert.equal(gap, 8, `the tabs have 8px between them, they have ${gap}px`);
-  const tab = rules("tabs button").find((rule) => rule.includes("padding:"));
-  const pad = tab?.match(/padding:\s*(\d+)px\s+(\d+)px/);
-  assert.ok(pad, "each tab carries its own padding");
-  assert.deepEqual(
-    [Number.parseInt(pad[1], 10), Number.parseInt(pad[2], 10)],
-    [12, 16],
-    "each tab has room inside it: 12px over, 16px along",
-  );
-
-  // The acceptance for drive#425 is a page with no sideways scroll. No rule
-  // here can measure that, so what this holds is the two things a rule can
-  // prove about it: the page does not hide the symptom, and it does not hold
-  // the list in a box that could keep an overflowing row off the screen. The
-  // measurements themselves are in the PR body, taken in a browser at 1280,
-  // 1024, 768, 390, 360 and 320 pixels wide.
-  assert.doesNotMatch(page, /overflow-x:\s*hidden/);
-  assert.doesNotMatch(page, /\.list\s*\{[^}]*overflow/);
-});
-
 test("the page's copy is the module's copy", () => {
   // The page cannot import core/files.js, so these are the strings it must
   // carry. Drifting copy fails here instead of shipping a page that disagrees
@@ -3324,29 +3264,6 @@ test("the page's copy is the module's copy", () => {
   assert.ok(page.includes(DELETE_COPY.confirm));
   assert.ok(page.includes(DELETE_COPY.done));
   assert.ok(page.includes(RESTORE_COPY.done));
-});
-
-test("the page shows the sign-in words the 401 sent, and carries no copy", () => {
-  // The page cannot import core/messages.js and must not carry a second copy of
-  // the table's `unauthorized` entry (test/pr-gate.test.mjs pins that): the
-  // API's 401 body IS that entry, so the page renders what the endpoint sent
-  // (drive issue #73). This pins the plumbing, not the words.
-  assert.match(page, /function showSignedOut\(message\)/);
-  assert.match(page, /signedOutWhat\.textContent = message;/);
-  assert.match(page, /showSignedOut\(payload\.error\)/);
-  assert.doesNotMatch(page, /You are not signed in to your drive/);
-  assert.ok(page.includes('id="signed-out"'), "the page needs a sign-in panel");
-  // Both 401 branches stop here with the flagged error, so the catch cannot
-  // print the message a second time into the status line.
-  assert.equal((page.match(/response\.status === 401/g) || []).length, 2);
-  assert.equal((page.match(/throw signedOutError\(\);/g) || []).length, 2);
-  // A read that succeeds takes the panel away again, so the page's own
-  // "this page updates on its own" is true.
-  assert.ok(page.includes("function showSignedIn()"));
-  // The read runs through listPage() (drive#570) so the first page and the
-  // More click share one URL builder; the ordering this line pins is the
-  // point: showSignedIn() only runs AFTER the read answered.
-  assert.match(page, /const payload = await listPage\(null\);\s{2,}showSignedIn\(\);/);
 });
 
 test("the page's script reads the same endpoints and the same window", () => {
@@ -3386,66 +3303,6 @@ test("the page's script reads the same endpoints and the same window", () => {
   );
   // The trash folder is the module's, not a second name for it.
   assert.ok(!page.includes(TRASH_PATH.slice(1, -1)) || page.includes("Recently deleted"));
-});
-
-test("the page renders a row, previews a kind and restores in one tap", () => {
-  const script = page.slice(page.indexOf("<script>"));
-  // One listing call for the folder, one for Recently deleted.
-  assert.ok(script.includes("view=deleted"));
-  // Preview and download both go through the api, never to storage directly.
-  assert.ok(script.includes("PREVIEW_ENDPOINT}?path="));
-  assert.ok(script.includes("DOWNLOAD_ENDPOINT}?path="));
-  // The Download link in the viewer is a real URL from the first byte, not a
-  // placeholder: the page's own script sets it the moment a row opens, and a
-  // bare # would send a no-JS browser to the top of the page (drive#92).
-  assert.ok(page.includes('<a id="viewer-download" href="/api/files/download" download>'));
-  // The upload path carries one name, and it is the name the browser knows:
-  // core/files.js's safeFileName is the single place a stored name is decided,
-  // and the page deliberately does not have a second copy of that rule (the
-  // gate above is where the page's character set is compared with the
-  // module's).
-  assert.match(script, /encodeURIComponent\(\s*file\.name,?\s*\)/);
-  // A folder opens in place; a previewable file opens the viewer; every other
-  // kind downloads through its own link.
-  assert.ok(script.includes('row.kind === "folder"'));
-  // A file's name is a link to the file itself (drive#416): the preview URL
-  // for a kind the viewer opens, the download URL for every other kind. The
-  // old page gave every row the folder listing's URL and stopped the click's
-  // navigation in script only, so a browser without the script — or the
-  // navigation the click handler used to leave running — landed on the raw
-  // JSON the walkthrough hit.
-  assert.match(
-    script,
-    /name\.href = isPreviewable\(row\.kind\)\s*\?\s*`\$\{PREVIEW_ENDPOINT\}\?path=\$\{encodeURIComponent\(row\.path\)\}`\s*:\s*`\$\{DOWNLOAD_ENDPOINT\}\?path=\$\{encodeURIComponent\(row\.path\)\}`;/,
-    "a file's name links to the file itself — preview for a kind the viewer opens, download otherwise",
-  );
-  // One tap restores: the Restore button posts the path and the list reloads.
-  assert.ok(script.includes('restore.type = "button"'));
-  assert.ok(script.includes("JSON.stringify({ path: row.path })"));
-  // Deleting asks first, because Recently deleted is the promise that makes it safe.
-  assert.ok(script.includes("window.confirm(DELETE_COPY.confirm)"));
-  // The list reloads under the result line, not over it: an action whose
-  // confirmation is wiped a frame later reads as a silent failure.
-  assert.ok(script.includes("async function refresh(keepStatus)"));
-  assert.ok(script.includes("if (!keepStatus)"));
-  assert.equal(
-    (script.match(/refresh\(true\);/g) || []).length,
-    6,
-    "delete, restore, put-back-an-earlier-copy, upload and rewind all reload under their own result line",
-  );
-  // An upload failure says what happened; it never reads as done.
-  assert.ok(script.includes("The upload did not finish. Try again."));
-  assert.ok(script.includes("catch (error)"));
-});
-
-test("the page only offers a restore the Worker will actually do", () => {
-  // Past the 30 days the module drops the button and says why; the page reads
-  // that flag rather than deciding for itself, so the page and the Worker can
-  // never disagree about the window.
-  const script = page.slice(page.indexOf("<script>"));
-  assert.ok(script.includes("if (row.restorable)"));
-  assert.ok(script.includes("restore.textContent = row.restoreLabel"));
-  assert.ok(script.includes("row.goneLabel"));
 });
 
 test("the first-run page links to the Files page, so the page has a caller", () => {

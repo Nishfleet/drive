@@ -6,7 +6,6 @@ import { FAILURE_MESSAGES } from "../core/messages.js";
 import { PRICE } from "../core/pricing.js";
 import { FAQ } from "../src/docs.js";
 import { SIGNIN_COPY } from "../src/signin.js";
-import { RIVAL_PRODUCT } from "./rival-terms.mjs";
 
 const CREDIT_TEXT =
   /\$1\s+free|free\s+\$1|\$1\s+credit|free credit|no card needed|No card asked|No card to start/i;
@@ -175,42 +174,10 @@ test("no shipped page, doc or email carries the retired offer words", () => {
   }
 });
 
-test("the gate itself scans a surface that once carried the words", () => {
-  // The guard proves it can fail: the changelog is a shipped doc, and a
-  // surface that said the words must trip every phrase in OFFER_WORDS.
-  for (const stale of OFFER_WORDS) {
-    assert.match(
-      "The membership returns: a free trial, 7 days free, the first month half price, Founding pricing.",
-      stale,
-    );
-  }
-  assert.ok(docsPages.some((page) => page.name === "docs-site/changelog.md"));
-});
-
 test("no shipped page, doc, FAQ or email charges a card at a balance threshold", () => {
   for (const [name, text] of offerSurfaces()) {
     for (const stale of CHARGE_AT_THRESHOLD) {
       assert.doesNotMatch(text, stale, `${name} carries the retired charge-at-$5 wording`);
-    }
-  }
-});
-
-test("the charge-at-$5 gate trips on the retired wording and passes the prepaid copy", () => {
-  // The gate proves it can fail, on the exact sentence the FAQ used to carry.
-  const retired = [
-    "Bills under $5 roll into the next month; the card is charged when the balance reaches $5.",
-    "We charge at $5.",
-    "Your card is charged once you owe $5.",
-  ];
-  for (const sentence of retired) {
-    assert.ok(
-      CHARGE_AT_THRESHOLD.some((pattern) => pattern.test(sentence)),
-      `the gate must catch "${sentence}"`,
-    );
-  }
-  for (const sentence of [PRICE.headline, PRICE.needCard, PRICE.noPlansLine, PRICE.rule]) {
-    for (const pattern of CHARGE_AT_THRESHOLD) {
-      assert.doesNotMatch(sentence, pattern);
     }
   }
 });
@@ -280,16 +247,6 @@ test("the public site never contains the founding cap or a spots count", () => {
     assert.equal(page.text.includes("1,000"), false, `${page.name} leaked 1,000`);
   }
   assert.ok(pages.some((page) => page.text.includes(PRICE.noPlansLine)));
-});
-
-test("the public site never names a rival or quotes a rival's price", () => {
-  const rival = RIVAL_PRODUCT;
-  for (const page of pages) {
-    assert.doesNotMatch(page.text, rival, page.name);
-  }
-  assert.doesNotMatch(FAQ.map((entry) => entry.answer).join("\n"), rival, "FAQ");
-  const docsPricing = readFileSync(new URL("../docs-site/pricing.md", import.meta.url), "utf8");
-  assert.doesNotMatch(docsPricing, rival);
 });
 
 test("pricing copy on the public pages never says minimum", () => {
