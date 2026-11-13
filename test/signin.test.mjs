@@ -6,6 +6,7 @@ import {
   createAuth,
   SIGNIN_LINK_PATH,
   SIGNIN_LINK_TTL_SECONDS,
+  SIGNIN_MAGIC_LINK_LIMIT,
   safeAfterSigninPath,
   signinLinkEmail,
 } from "../core/auth.js";
@@ -1867,15 +1868,17 @@ test("sign-out everywhere withdraws every key at the vendor, and a retry finishe
 
 test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store", async () => {
   // Better Auth's rate limiter stores its counter in the customer D1 (drive
-  // issue #200), keyed by IP plus path. Three sends from one address succeed;
-  // the fourth is refused. A different address is unaffected.
+  // issue #200), keyed by IP plus path. The ceiling is the shipped edge per-IP
+  // figure, wide enough to serve a shared office (drive#876), so this drives
+  // it to the top: every send under the ceiling lands, the next one is
+  // refused, and a different address is unaffected.
   const made = dispatchEnv();
   const env = made.env;
 
-  // The first three sends from one IP land. Each one carries a different
+  // Every send up to the ceiling lands. Each one carries a different
   // x-forwarded-for: that header is not the key (core/auth.js consults only
   // cf-connecting-ip), so a caller cannot mint a fresh bucket by choosing it.
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < SIGNIN_MAGIC_LINK_LIMIT.max; i++) {
     const response = await workerFetch(
       post(
         { step: "start", method: "email", email: `user${i}@example.com` },
@@ -1883,17 +1886,21 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
           headers: {
             origin: TEST_BASE_URL,
             "cf-connecting-ip": "192.0.2.1",
-            "x-forwarded-for": `198.51.100.${i}`,
+            "x-forwarded-for": `198.51.100.${i % 200}`,
           },
         },
       ),
       env,
     );
     assert.equal(response.status, 202, `send ${i + 1} from one IP should succeed`);
-    assert.equal(made.sent.length, i + 1, `send ${i + 1} should mail a link`);
   }
+  assert.equal(
+    made.sent.length,
+    SIGNIN_MAGIC_LINK_LIMIT.max,
+    "every send under the ceiling mails a link",
+  );
 
-  // The fourth send from the same IP is refused: the ceiling is hit, and no
+  // The next send from the same IP is refused: the ceiling is hit, and no
   // link leaves after it — even with yet another x-forwarded-for.
   const refused = await workerFetch(
     post(
@@ -1908,9 +1915,9 @@ test("a per-IP ceiling on the magic-link send is enforced by the shared D1 store
     ),
     env,
   );
-  assert.equal(refused.status, 429, "the fourth send from one IP is refused");
+  assert.equal(refused.status, 429, "the send over the ceiling from one IP is refused");
   assert.deepEqual(await refused.json(), { error: failureMessage("rate-limited") });
-  assert.equal(made.sent.length, 3, "no link leaves after the ceiling");
+  assert.equal(made.sent.length, SIGNIN_MAGIC_LINK_LIMIT.max, "no link leaves after the ceiling");
 
   // A different IP is not under the first address's ceiling.
   const other = await workerFetch(
@@ -1930,7 +1937,7 @@ test("a rate-limited send is still refused by a fresh isolate over the same D1",
   const env = made.env;
 
   // Drive the ceiling home from one address.
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < SIGNIN_MAGIC_LINK_LIMIT.max; i++) {
     await workerFetch(
       post(
         { step: "start", method: "email", email: `user${i}@example.com` },

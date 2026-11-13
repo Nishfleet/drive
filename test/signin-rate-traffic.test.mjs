@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { SIGNIN_MAGIC_LINK_LIMIT } from "../core/auth.js";
 import worker from "../src/index.js";
 import { SIGNIN_ACCOUNT_SEND_MAX } from "../src/signin-send-limit.js";
 import { createTestAuth, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
@@ -234,11 +235,8 @@ const GLOBAL = shippedLimit("SIGNIN_GLOBAL_RATE_LIMITER");
  *                           workplace, and the burst assumes they arrive
  *                           together, the conservative reading.
  *   An office in a login    25 people behind one router, each pressing three
- *   morning                 times because they mistyped. Three is Better
- *                           Auth's own per-IP rule on the magic-link route
- *                           (core/auth.js), so this is the largest an ordinary
- *                           person reaches without meeting a rule written for
- *                           one person.
+ *   morning                 times because they mistyped: an ordinary person's
+ *                           own retry pace.
  *   A carrier CGNAT pool    2,000 subscribers behind one address, arriving in
  *                           one minute: deliberately past the point where any
  *                           per-IP ceiling can fit everyone, measured for what
@@ -392,32 +390,81 @@ test("both ceilings are whole numbers the binding can take", () => {
 
 // ---------------------------------------------------------- what a customer meets
 
-test("the per-IP send bound a customer meets is the library's, not this edge's", async () => {
-  // The finding of drive issue #202, measured here so the next reader sees the
-  // number instead of re-deriving it: raising the two edge ceilings does NOT by
-  // itself free a shared office. Better Auth keys its own `/sign-in/magic-link`
-  // rule on the same client IP (core/auth.js: max 3 per 60s, D1-backed, so the
-  // counter is one per IP across every isolate), and that rule runs AFTER both
-  // edge bindings, so it refuses first.
-  //
-  // This test drives the real route twice with the edge layer held wide open —
-  // so the only thing that can refuse is the library's rule — and answers how
-  // many emails one shared office address actually causes.
-  const servedWithEdgeHeldOpen = await servedBehindOneNat();
-  assert.ok(
-    servedWithEdgeHeldOpen < OFFICE.people,
-    `an office behind one NAT is refused by the library's own per-IP rule: ${servedWithEdgeHeldOpen} of ${OFFICE.people} served with the edge layer held open, so raising the edge ceilings alone cannot reach the people behind a shared address`,
+test("a shared office behind one NAT is served, with the library's rule the only gate", async () => {
+  // The finding of drive issue #876, fixed here and measured so the next
+  // reader sees the number instead of re-deriving it: the library's own
+  // `/sign-in/magic-link` rule used to cap one client IP at 3 links a minute
+  // (core/auth.js), and because its counter is D1-backed — one per IP across
+  // every isolate and every Cloudflare location — it refused before the two
+  // per-location edge bindings, so an office, campus or carrier NAT shared one
+  // bucket of 3 and 22 of 25 people were told to wait. The ceiling is now the
+  // shipped edge per-IP figure (SIGNIN_MAGIC_LINK_LIMIT, pinned to it below),
+  // so an office arriving together is served in full.
+  const servedWithEdgeHeldOpen = await servedBehindOneNat(OFFICE.ip, OFFICE.people);
+  assert.equal(
+    servedWithEdgeHeldOpen.sent,
+    OFFICE.people,
+    `an office behind one NAT must be served in full with the edge held open; ${servedWithEdgeHeldOpen.sent} of ${OFFICE.people} links left, ${servedWithEdgeHeldOpen.refused} refused`,
+  );
+  assert.equal(
+    servedWithEdgeHeldOpen.refused,
+    0,
+    "no one in the office waits on the library's rule",
+  );
+});
+
+test("with the edge held open, one address is still bounded by the library's rule", async () => {
+  // The other half of #876: raising the ceiling must not take the bound away.
+  // The library's counter is the one per-IP count that spans every Cloudflare
+  // location, so a population past its ceiling from one address is refused
+  // even with the edge layer wide open — this is what keeps one shared
+  // address from causing unbounded mail by walking locations. The population
+  // is just over the ceiling, and every send it got through is one the route's
+  // own D1 guards allowed first (each address well under 5 an hour, the whole
+  // run under the account-wide 5000 a minute), so the library's rule is
+  // demonstrably the thing that binds here.
+  const population = SIGNIN_MAGIC_LINK_LIMIT.max + 10;
+  const bounded = await servedBehindOneNat(CGNAT.ip, population);
+  assert.equal(
+    bounded.sent,
+    SIGNIN_MAGIC_LINK_LIMIT.max,
+    `one address with the edge held open must stop at the library's ceiling; ${bounded.sent} links left of ${population}`,
+  );
+  assert.equal(bounded.refused, population - SIGNIN_MAGIC_LINK_LIMIT.max);
+});
+
+test("the library's magic-link ceiling is the shipped edge per-IP figure", () => {
+  // core/auth.js and cloudflare.config.ts must agree, or one layer binds a
+  // shared address before the other has served it: a library ceiling under
+  // the edge's re-opens the lockout this fix removed, and one over it lets an
+  // address past what the edge grants a location. The shipped file is parsed,
+  // not imported, because a deploy takes the numbers from there.
+  const edge = shippedLimit("SIGNIN_RATE_LIMITER");
+  assert.equal(
+    SIGNIN_MAGIC_LINK_LIMIT.max,
+    edge.limit,
+    `the library's per-IP magic-link ceiling (${SIGNIN_MAGIC_LINK_LIMIT.max}) must equal the shipped edge per-IP limit (${edge.limit})`,
+  );
+  assert.equal(
+    SIGNIN_MAGIC_LINK_LIMIT.window,
+    edge.period,
+    `the library's per-IP window (${SIGNIN_MAGIC_LINK_LIMIT.window}s) must equal the shipped edge period (${edge.period}s)`,
   );
 });
 
 /**
- * How many sign-in links one shared office address actually gets, with the
- * edge layer held wide open so the library's own per-IP rule is the only thing
- * that can refuse. This is the measurement behind the test above and the
- * comment beside the bindings in cloudflare.config.ts.
- * @returns {Promise<number>}
+ * How many sign-in links one shared address actually gets, with the edge layer
+ * held wide open so the library's own per-IP rule is the only thing that can
+ * refuse. This is the measurement behind the two tests above and the comment
+ * beside the rule in core/auth.js. Each person posts their own address, so the
+ * route's per-address guard (5 an hour) never binds, and the run stays under
+ * the account-wide counter (SIGNIN_ACCOUNT_SEND_MAX a minute).
+ * @param {string} ip the shared client IP the population sits behind
+ * @param {number} people how many distinct addresses post a start
+ * @returns {Promise<{sent: number, refused: number}>} links mailed, and starts
+ *   the library's rule answered 429 to
  */
-async function servedBehindOneNat() {
+async function servedBehindOneNat(ip, people) {
   const made = createTestAuth();
   const open = { limit: async () => ({ success: true }) };
   const env = {
@@ -431,11 +478,12 @@ async function servedBehindOneNat() {
     SIGNIN_RATE_LIMITER: open,
     SIGNIN_GLOBAL_RATE_LIMITER: open,
   };
-  for (let person = 0; person < OFFICE.people; person += 1) {
-    await workerFetch(
+  let refused = 0;
+  for (let person = 0; person < people; person += 1) {
+    const response = await workerFetch(
       new Request(`${TEST_BASE_URL}/api/signin`, {
         method: "POST",
-        headers: { "content-type": "application/json", "cf-connecting-ip": OFFICE.ip },
+        headers: { "content-type": "application/json", "cf-connecting-ip": ip },
         body: JSON.stringify({
           step: "start",
           method: "email",
@@ -444,6 +492,9 @@ async function servedBehindOneNat() {
       }),
       env,
     );
+    if (response.status === 429) {
+      refused += 1;
+    }
   }
-  return made.sent.length;
+  return { sent: made.sent.length, refused };
 }
