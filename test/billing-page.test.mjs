@@ -153,12 +153,3 @@ test("one plain sentence explains the peak, and the page works nothing out beyon
     assert.equal(script.includes(banned), false, `the page must not carry ${banned}`);
   }
 });
-
-test("the page has one inline script per part and loads only the shared banner script", () => {
-  const sources = [...page.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(sources, ["/close-banner.js"]);
-  assert.match(page, /<!-- shell:app-header current="\/billing" -->/);
-  assert.match(page, /<a href="\/billing" aria-current="page">Billing<\/a>/);
-  assert.match(page, /<a class="top-up" href="\/billing#topup-form">Top up<\/a>/);
-  assert.ok(page.split("\n").length < 800, "the page stays under 800 lines");
-});

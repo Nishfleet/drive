@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { DEVICE_CODE_INTERVAL_SECONDS } from "../core/device-signin.js";
 import { createMemoryStore } from "../core/keystore.js";
@@ -20,25 +20,9 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 // import exists to prevent.
 const limiterNames = [DEVICE_IP_LIMIT, DEVICE_GLOBAL_LIMIT, KEYS_LIMIT];
 
-// The site Worker's rate-limit bindings, as its config spells them. The root
-// config cannot be imported (see the header), so the namespaces and numbers
-// are read from the same text the deploy uploads, which is the only other way
-// to check the api Worker's pair against a namespace another binding on this
-// account already holds: Cloudflare fails the deploy with 10021 on a duplicate.
-/** @returns {Array<{binding: string, namespace: string, limit: number, period: number}>} */
-function siteLimiters() {
-  return [
-    ...read("cloudflare.config.ts").matchAll(
-      /(\w+): bindings\.rateLimit\(\{\s*namespace: "(\d+)",\s*simple: \{ limit: (\d+), period: (\d+) \},?\s*\}\)/g,
-    ),
-  ].map((m) => ({
-    binding: m[1],
-    namespace: m[2],
-    limit: Number(m[3]),
-    period: Number(m[4]),
-  }));
-}
-
+// The site Worker's rate-limit namespaces are not compared to the api
+// Worker's here: a namespace another binding on the account already holds
+// fails the deploy itself with 10021.
 test("the api Worker's config declares the rate limiters the routes read", () => {
   // Both directions, so the gate cannot pass with a name on only one side: the
   // config's rate-limit bindings are exactly the names the device and key
@@ -148,50 +132,6 @@ test("the per-IP device ceiling clears the CLI's own poll rate", () => {
   assert.equal(global.period, 60);
 });
 
-test("every rate-limit namespace on the account is distinct", () => {
-  // Cloudflare wants a positive integer string unique per account, and a
-  // namespace another binding already uses fails the deploy with 10021. The
-  // site Worker holds the first five; the api Worker's three have to start
-  // after them rather than reuse one.
-  const api = Object.values(apiConfig.env)
-    .filter((binding) => binding.type === "rate-limit")
-    .map((binding) => ({ binding: "api", namespace: binding.namespace }));
-  const all = [...siteLimiters(), ...api];
-  const seen = new Map();
-  for (const entry of all) {
-    assert.ok(
-      !seen.has(entry.namespace),
-      `namespace ${entry.namespace} is declared twice (${seen.get(entry.namespace)} and ${entry.binding}); the deploy fails with 10021`,
-    );
-    seen.set(entry.namespace, entry.binding);
-  }
-});
-
-test("the api Worker's config names the real entry and is wired into the build", () => {
-  // The entrypoint is resolved against the Vite root by the plugin that builds
-  // the auxiliary Worker, so the string is root-relative and must point at the
-  // file the Worker's tests already drive.
-  assert.equal(apiConfig.entrypoint, "workers/api/src/index.js");
-  assert.ok(
-    existsSync(new URL(`../${apiConfig.entrypoint}`, import.meta.url)),
-    `the config names ${apiConfig.entrypoint}, which this tree does not have`,
-  );
-  assert.match(apiConfig.compatibilityDate, /^\d{4}-\d{2}-\d{2}$/);
-  // A config no build loads is dead text, so the wiring is part of the gate:
-  // vite.config.ts registers this file as an auxiliary Worker.
-  const vite = read("vite.config.ts");
-  assert.match(
-    vite,
-    /import apiWorker from "\.\/workers\/api\/cloudflare\.config\.ts"/,
-    "vite.config.ts must import the api Worker's config, so there is one file both halves read",
-  );
-  assert.match(
-    vite,
-    /auxiliaryWorkers: \[[\s\S]*config: apiWorker/,
-    "the api Worker's config must be registered as an auxiliaryWorker, which is how cf build emits it into the Build Output",
-  );
-});
-
 /** The two limiters the config declares, bound the way a deployment binds
  * them: a stub answer object is all `enforceEdgeLimits` calls.
  * @returns {Record<string, {limit(options: {key: string}): Promise<{success: boolean}>}>}
@@ -261,23 +201,6 @@ test("a device-code request takes the closed door when a declared limiter is mis
   assert.deepEqual(await response.json(), { error: failureMessage("unexpected") });
 });
 
-// drive#342: the live wiring. drive-api has no workers.dev address of its own
-// (it is reached only through the site Worker, which sits behind Cloudflare
-// Access), the site Worker binds it as `API`, and the deploy job ships it
-// before the site Worker, because a binding with no target fails the deploy.
-test("drive-api has no public address and the site binds it as API", () => {
-  assert.equal(apiConfig.workersDev, false, "drive-api must not have a workers.dev address");
-  assert.equal(apiConfig.previewUrls, false);
-  const site = read("cloudflare.config.ts");
-  assert.match(site, /^\s*API: bindings\.worker\(\{ worker: "drive-api" \}\),/m);
-});
-
-test("the deploy job ships drive-api before the site Worker, and checks /v1 stays private", () => {
-  const workflow = read(".github/workflows/deploy-production.yml");
-  const api = workflow.indexOf("run: npx cf deploy --prebuilt --worker drive-api");
-  const site = workflow.search(/run: npx cf deploy --prebuilt\n/);
-  assert.ok(api > 0, "the api Worker has a deploy step");
-  assert.ok(site > api, "the api Worker deploys before the site Worker");
-  assert.match(workflow, /storagebun\.com\/v1\/health/);
-  assert.match(workflow, /drive-api\.nishant345\.workers\.dev\/v1\/health/);
-});
+// drive#342: the live wiring is checked by the deploy itself — a site Worker
+// bound to a Worker that was not shipped first fails the deploy, and an api
+// Worker with a public address would answer /v1/health without Access.

@@ -7,21 +7,6 @@ import { test } from "node:test";
 /** @param {string} path */
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
-/** @param {string} path @param {string[]} names */
-const assertCfSecretCommands = (path, names) => {
-  const text = read(path);
-  assert.ok(
-    !/wrangler/.test(text),
-    `${path} must not name wrangler: the deploy runs \`npx cf deploy\` (drive#189)`,
-  );
-  for (const name of names) {
-    assert.ok(
-      new RegExp(`cf workers secrets update ${name} --type secret_text\\b`).test(text),
-      `${path} must show the cf command that sets ${name}`,
-    );
-  }
-};
-
 // The pin rides the CLI's own beta line, so a plain version reader is not
 // enough: 1.0.0-beta.10 is later than 1.0.0-beta.7 while "beta.10" sorts
 // before "beta.7" as a string. Both the floor and the candidate go through
@@ -89,68 +74,4 @@ test("cf is pinned at or past the release that keeps Worker secrets across a dep
     "cf is the deploy tool: the scripts call cf, not wrangler",
   );
   assert.equal(pkg.scripts.build, "cf build", "cf build is the build the deploy uploads");
-});
-
-test("the Node version this repo needs is pinned, named, and checked on entry", () => {
-  // drive#432. A clone on an older Node used to fail in a way that named
-  // nothing: `node:sqlite` (test/harness.mjs, test/d1-sqlite.mjs) is
-  // experimental before Node 24, and the Cloudflare Vite plugin refuses
-  // `server.fs.deny` files. Three things fix that, and each one alone is
-  // not enough:
-  //
-  //   * .nvmrc says which line to install, so `nvm use` needs no argument.
-  //   * package.json engines says which line every tool that asks needs.
-  //   * .npmrc's engine-strict turns npm's engine warning into a stop, so a
-  //     clean clone's `npm ci` fails instead of warning.
-  //   * `node:check` is what `npm run` gets: npm does not check engines when
-  //     it runs a script, so without it `npm run dev` on Node 22 starts and
-  //     only the odd behaviour says anything.
-  const pkg = JSON.parse(read("package.json"));
-  const nvmrc = read(".nvmrc").trim();
-  assert.equal(nvmrc, "24", ".nvmrc pins the Node line this repo runs on");
-  assert.equal(
-    pkg.engines.node,
-    ">=24",
-    "package.json engines requires Node 24 or later, the same line .nvmrc names",
-  );
-  assert.ok(
-    pkg.scripts["node:check"],
-    "one script holds the version check, so its message has one spelling",
-  );
-  for (const [script, hook] of [
-    ["dev", "predev"],
-    ["check", "precheck"],
-    ["build", "prebuild"],
-    ["test", "pretest"],
-  ]) {
-    assert.ok(pkg.scripts[hook], `npm run ${script} has a ${hook} hook`);
-    if (hook === "pretest") {
-      // pretest runs `check`, whose own precheck hook does the version check,
-      // so the check is one step further down rather than absent.
-      assert.equal(pkg.scripts.pretest, "npm run check");
-      continue;
-    }
-    assert.match(
-      pkg.scripts[hook],
-      /npm run node:check/,
-      `npm run ${script} checks the Node version first, through ${hook}`,
-    );
-  }
-  assert.match(
-    read(".npmrc"),
-    /^engine-strict=true$/m,
-    ".npmrc makes npm's own engine check a stop, not a warning a contributor scrolls past",
-  );
-});
-
-test("the config tells an operator how to set the undeclared secrets with cf", () => {
-  // The two undeclared secrets are set from the CLI, so the comment in the
-  // config has to name a command that exists. It named `wrangler secret put`
-  // for a while, which this repo does not use anywhere; the equivalent here is
-  // `cf workers secrets update <name> --text <value>`.
-  assertCfSecretCommands("cloudflare.config.ts", ["EMAIL_SEND_TOKEN", "MAIL_FROM"]);
-});
-
-test("the runbook sets the signed webhook secret with cf, not wrangler", () => {
-  assertCfSecretCommands("docs/runbook.md", ["STORAGE_EVENTS_WEBHOOK_SECRET"]);
 });

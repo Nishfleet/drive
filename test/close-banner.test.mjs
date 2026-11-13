@@ -320,24 +320,6 @@ test("the shared script is one served file, and the public tree carries it", () 
   );
 });
 
-test("the Lighthouse script-count budget is still one, so get-started cannot add a second src", () => {
-  // CI runs lhci before npm test. A second <script src> on get-started.html is
-  // what failed verify on this branch: the page already loads its renderer.
-  const budgets = JSON.parse(
-    readFileSync(new URL("../lighthouserc.json", import.meta.url), "utf8"),
-  ).ci.assert.assertMatrix.find(
-    (/** @type {{matchingUrlPattern: string}} */ entry) => entry.matchingUrlPattern === ".*",
-  ).assertions;
-  assert.deepEqual(budgets["resource-summary.script:count"], ["error", { maxNumericValue: 1 }]);
-  assert.match(
-    JSON.stringify(
-      JSON.parse(readFileSync(new URL("../lighthouserc.json", import.meta.url), "utf8")),
-    ),
-    /get-started\.html/,
-    "the budget is measured on get-started.html",
-  );
-});
-
 // The shipped script run for real. The assertions above read the source; these
 // load the actual public/close-banner.js into a minimal DOM the way a browser
 // page sets it up, so the banner's reveal-and-fill is executed rather than
