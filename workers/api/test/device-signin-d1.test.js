@@ -181,11 +181,6 @@ test("the D1 sweep drops the expired and the revoked token rows and leaves the l
   );
 });
 
-// The store's SQL names a table and a set of columns; the migration is what
-// creates them. Nothing in a Worker runs the migration (the api Worker has no
-// deploy config in this tree, drive#168), so this is the check that the SQL the
-// Worker prepares and the DDL the database gets cannot drift apart: a column
-// renamed in the migration, or a table the migration never creates, fails here.
 // Consuming a code and writing its token are one transaction, so a failure
 // between them cannot lose a sign-in a person already approved: the row is
 // rolled back to `approved` and the next poll mints the token for real. Before

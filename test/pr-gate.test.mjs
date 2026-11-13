@@ -173,7 +173,7 @@ const liveFilesWorld = () => {
 // Worker runs. The one line a program cannot judge is the last one — what the
 // PR body claims was proven on real records — so its pointer is the spec's rule
 // for it (docs/build-spec.md), and the builder answers it in the PR.
-test("the list is checkable: nine lines, every pointer real, gates still wired", () => {
+test("every checklist line names a real pointer", () => {
   const agents = read("AGENTS.md");
   const start = agents.indexOf("## Before you open a PR");
   assert.notEqual(start, -1, "AGENTS.md must carry the 'Before you open a PR' list");
