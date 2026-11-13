@@ -1,11 +1,14 @@
 name: answer
-# A change request from the reviewer bot on an agent PR goes back to the fleet's worker
+# A reviewer-bot change request or a failed CI run (filtered in fleet-ops's answer.yml) on an agent PR goes back to the fleet's worker
 # lane, which lives in fleet-ops. The stub needs its own trigger, because "the github
 # context is always associated with the caller workflow":
 # https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations
 on:
   pull_request_review:
     types: [submitted]
+  workflow_run: # zizmor: ignore[dangerous-triggers] nothing from the pull request is checked out or run
+    workflows: [CI]
+    types: [completed]
 permissions: {}
 jobs:
   answer:
