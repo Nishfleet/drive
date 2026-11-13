@@ -44,6 +44,30 @@ function listedSecrets(agents) {
   return [...body.join("\n").matchAll(/^- `([A-Z][A-Z0-9_]+)`/gm)].map((match) => match[1]);
 }
 
+test("a commented-out bindings.secret() is not a declared secret", () => {
+  const names = declaredSecrets(`
+    env: {
+      LIVE: bindings.secret(),
+      // DEAD: bindings.secret(),
+    }
+  `);
+  assert.deepEqual(names, ["LIVE"]);
+});
+
+test("listedSecrets keeps names after a ### subsection", () => {
+  const names = listedSecrets(`## Known Worker secrets
+
+- \`FIRST\`
+
+### Note
+
+- \`SECOND\`
+
+## Before you open a PR
+`);
+  assert.deepEqual(names, ["FIRST", "SECOND"]);
+});
+
 test("the live cloudflare.config.ts uses NAME: bindings.secret() for declared secrets", () => {
   const configPath = fileURLToPath(new URL("../cloudflare.config.ts", import.meta.url));
   assert.ok(existsSync(configPath), "the gate reads cloudflare.config.ts from the repo root");
