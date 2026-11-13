@@ -7,7 +7,9 @@ name: answer
 on:
   pull_request_review:
     types: [submitted]
-  workflow_run: # zizmor: ignore[dangerous-triggers] nothing from the pull request is checked out or run
+  # Only this repo's CI, only on completion: the job's if: below does the
+  # narrowing the trigger itself cannot.
+  workflow_run: # zizmor: ignore[dangerous-triggers] the answer job has no steps: one uses: call, no checkout, and its if: admits only red agent/* runs (test/workflow-triggers.test.mjs pins both)
     workflows: [CI]
     types: [completed]
 permissions: {}
@@ -15,6 +17,17 @@ jobs:
   answer:
     # The lane's job dispatches agent.yml on main with the issue and the PR. A called
     # workflow can only lower the caller's GITHUB_TOKEN permissions, never raise them.
+    # workflow_run carries no pull_request context and fires for every finished
+    # CI run, on fork heads too, so the gate hands the lane only failures on
+    # the agent lane's own branches: agent/* in this repo, never a fork.
+    # pull_request_review passes through unchanged.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (
+        github.event.workflow_run.conclusion == 'failure' &&
+        startsWith(github.event.workflow_run.head_branch, 'agent/') &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      )
     permissions: {actions: write}
     # @main, not a SHA, the same as the agent stub.
     uses: Nishfleet/fleet-ops/.github/workflows/answer.yml@main
