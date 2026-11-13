@@ -1,6 +1,6 @@
 import { BYTES_PER_GB, GB_PER_TB } from "../core/billing.js";
 import { TRASH_PATH, validatePath } from "../core/files.js";
-import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { failureMessage } from "../core/messages.js";
 import { formatBytes } from "../core/status.js";
 import { DAY_MS } from "../core/units.js";
 
@@ -319,23 +319,6 @@ export function requestRow(record, now, base) {
         : `${count} upload${count === 1 ? "" : "s"}, ${formatBytes(bytes)} of ${formatBytes(max)}`,
   });
 }
-
-export const UPLOAD_PAGE_COPY = Object.freeze({
-  title: "Drop files here",
-  lede: "Files you drop land in the folder below. The owner sees them on their drive.",
-  folderLabel: "Lands in",
-  ownerLabel: "Shared by",
-  choose: "Choose files",
-  hint: "or drop them anywhere on this page",
-  uploading: "Uploading…",
-  done: "Uploaded. Drop another whenever you like.",
-  closedTitle: FAILURE_MESSAGES["link-not-found"].what,
-  closedBody: FAILURE_MESSAGES["link-not-found"].next,
-  noToken: "This page needs the link it was sent with. Open the link again to drop files.",
-});
-
-export const UPLOAD_PAGE_LINE =
-  "This page takes files into one folder and nothing else. It stops working when the link expires or the owner turns it off.";
 
 /**
  * What the handlers need from the link store, and nothing more.

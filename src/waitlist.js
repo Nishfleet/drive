@@ -6,7 +6,7 @@ import { clientIpKey, enforceEdgeLimits } from "../core/rate-limit.js";
 
 export { isSameOriginRequest };
 
-export const SOURCES = ["pricing-page", "business"];
+const SOURCES = ["pricing-page", "business"];
 
 const MAX_EMAIL_LENGTH = 254;
 const MAX_BODY_BYTES = 4096;

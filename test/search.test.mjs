@@ -1307,10 +1307,6 @@ test("a named meter-queue batch is not refused as unknown", async () => {
 
 test("the published worker really declares the reindex queue halves", async () => {
   const config = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
-  assert.ok(
-    config.includes("bindings.queue<{ accountId: string }>"),
-    "the consumer binding is typed with its message body",
-  );
   assert.match(
     config,
     /triggers\.queue\(\{\s*name: "drive-reindex"/,

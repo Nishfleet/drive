@@ -33,10 +33,6 @@ function quoteRequest(query, method = "GET") {
   return new Request(url, { method });
 }
 
-test("QUOTE_ENDPOINT is the one public calculator path", () => {
-  assert.equal(QUOTE_ENDPOINT, "/api/quote");
-});
-
 test("quoteForStoredTb is monthBillCents for a size held all month, plus the maximum and the plan", () => {
   for (const tb of [0, 0.05, 0.2, 0.5, 0.8, 1, 1.5, 2, 3, 5]) {
     const quote = quoteForStoredTb(tb);

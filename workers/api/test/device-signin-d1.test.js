@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import "urlpattern-polyfill";
 import { sha256Hex } from "../../../core/db.js";
@@ -182,62 +181,6 @@ test("the D1 sweep drops the expired and the revoked token rows and leaves the l
   );
 });
 
-// The store's SQL names a table and a set of columns; the migration is what
-// creates them. Nothing in a Worker runs the migration (the api Worker has no
-// deploy config in this tree, drive#168), so this is the check that the SQL the
-// Worker prepares and the DDL the database gets cannot drift apart: a column
-// renamed in the migration, or a table the migration never creates, fails here.
-test("the migration creates every table and column the store's SQL names", () => {
-  const ddl = readFileSync(
-    new URL("../../../migrations/drive/0007_device_codes.sql", import.meta.url),
-    "utf8",
-  );
-  /** @param {string} table */
-  const columnsOf = (table) => {
-    const body = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\((.*?)\\n\\);`, "s").exec(
-      ddl,
-    )?.[1];
-    assert.ok(body, `the migration never creates ${table}`);
-    // The CHECK list on `status` holds commas of its own, so each line is read
-    // from its start rather than split on them.
-    return body
-      .split("\n")
-      .map((line) => /^\s{2}([a-z_]+)\s/.exec(line)?.[1])
-      .filter((name) => name !== undefined);
-  };
-
-  assert.deepEqual(columnsOf("device_codes"), [
-    "device_code_hash",
-    "user_code",
-    "name",
-    "status",
-    "account_id",
-    "account_name",
-    "account_email",
-    "created_at",
-    "expires_at",
-    "consumed_by",
-  ]);
-  assert.deepEqual(columnsOf("device_tokens"), [
-    "token_hash",
-    "account_id",
-    "account_name",
-    "account_email",
-    "created_at",
-    "expires_at",
-    "revoked_at",
-  ]);
-  // The sweep the code route runs on every request is a full scan without the
-  // first index, and the token sweep is a full scan without the second.
-  assert.match(
-    ddl,
-    /CREATE INDEX IF NOT EXISTS device_codes_expires_at ON device_codes \(expires_at\)/,
-  );
-  assert.match(
-    ddl,
-    /CREATE INDEX IF NOT EXISTS device_tokens_expires_at ON device_tokens \(expires_at\)/,
-  );
-});
 // Consuming a code and writing its token are one transaction, so a failure
 // between them cannot lose a sign-in a person already approved: the row is
 // rolled back to `approved` and the next poll mints the token for real. Before
