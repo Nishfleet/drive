@@ -7,10 +7,10 @@ import { createServer } from "node:net";
 import { arch, platform, tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { killTracked, spawnTracked } from "./minio-standin.mjs";
+import { waitForExit, waitUntil } from "./wait-for.mjs";
 
 const run = promisify(execFile);
 // The mount subcommand and the mount-detection tool differ by platform (the
@@ -257,23 +257,29 @@ async function startStandin(dir, configPath) {
   server.stderr?.on("data", (chunk) => {
     stderr += chunk;
   });
-  const deadline = Date.now() + 20_000;
-  for (;;) {
-    if (server.exitCode !== null)
-      throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
-    try {
-      await run("bash", ["-c", `exec 3<>/dev/tcp/127.0.0.1/${port}`]);
-      break;
-    } catch {
-      if (Date.now() > deadline) {
-        // Kill it before throwing, or a stand-in that never listened would
-        // outlive this function and hold its directory open.
-        killTracked(server);
-        throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
-      }
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      await sleep(300);
-    }
+  try {
+    await waitUntil(
+      async () => {
+        if (server.exitCode !== null) {
+          throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
+        }
+        try {
+          await run("bash", ["-c", `exec 3<>/dev/tcp/127.0.0.1/${port}`]);
+          return true;
+        } catch {
+          // Not listening yet.
+          return false;
+        }
+      },
+      20_000,
+      "rclone serve s3 to listen",
+      () => stderr,
+    );
+  } catch (error) {
+    // Kill it before throwing, or a stand-in that never listened would
+    // outlive this function and hold its directory open.
+    killTracked(server);
+    throw error;
   }
   return {
     endpoint: `http://127.0.0.1:${port}`,
@@ -385,48 +391,42 @@ async function startMachine(label, workDir, cfg) {
     stderr += chunk;
   });
 
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    if (child.exitCode !== null) {
-      const log = await readFile(logPath, "utf8").catch(() => "");
-      const tail = log.split("\n").slice(-6).join("\n");
-      const refused =
-        /Operation not permitted|fusermount:|nfsmount:|mount_nfs|sudoers|password is required/i.test(
-          `${stderr}${tail}`,
+  return waitUntil(
+    async () => {
+      if (child.exitCode !== null) {
+        const log = await readFile(logPath, "utf8").catch(() => "");
+        const tail = log.split("\n").slice(-6).join("\n");
+        const refused =
+          /Operation not permitted|fusermount:|nfsmount:|mount_nfs|sudoers|password is required/i.test(
+            `${stderr}${tail}`,
+          );
+        const err = /** @type {Error & {refusedFuse?: boolean}} */ (
+          new Error(
+            `rclone ${isDarwin ? "nfsmount" : "mount"} ${label} exited ${child.exitCode}\n${stderr}${tail}`,
+          )
         );
-      const err = /** @type {Error & {refusedFuse?: boolean}} */ (
-        new Error(
-          `rclone ${isDarwin ? "nfsmount" : "mount"} ${label} exited ${child.exitCode}\n${stderr}${tail}`,
-        )
-      );
-      if (refused) err.refusedFuse = true;
-      throw err;
-    }
-    // A live mount is a mount point in the kernel's table; an empty directory
-    // rclone has not mounted lists identically, so isMountPoint is the probe
-    // (the same check the CLI's MountedDir() uses: findmnt on Linux, the BSD
-    // mount listing on macOS).
-    if (isMountPoint(mountDir)) {
-      return { label, mountDir, rcAddr, child };
-    }
-    if (Date.now() > deadline) {
-      child.kill("SIGTERM");
-      const log = await readFile(logPath, "utf8").catch(() => "");
-      throw new Error(
-        `rclone ${isDarwin ? "nfsmount" : "mount"} ${label} never came up in 30s\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
-      );
-    }
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(500);
-  }
+        if (refused) err.refusedFuse = true;
+        throw err;
+      }
+      // A live mount is a mount point in the kernel's table; an empty directory
+      // rclone has not mounted lists identically, so isMountPoint is the probe
+      // (the same check the CLI's MountedDir() uses: findmnt on Linux, the BSD
+      // mount listing on macOS).
+      if (isMountPoint(mountDir)) {
+        return { label, mountDir, rcAddr, child };
+      }
+      return null;
+    },
+    30_000,
+    `rclone ${isDarwin ? "nfsmount" : "mount"} ${label} to come up`,
+    () => stderr,
+  );
 }
 
 /** @param {Machine} m */
 async function stopMachine(m) {
   m.child.kill("SIGTERM");
-  const exited = new Promise((resolve) => m.child.once("exit", resolve));
-  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-  await Promise.race([exited, sleep(10_000)]);
+  await waitForExit(m.child, 10_000);
   if (m.child.exitCode === null) m.child.kill("SIGKILL");
   // Clear the mount point after rclone exits the same way Unmount() does:
   // umount on macOS (nfsmount's NFS share), fusermount on Linux (FUSE mount).
@@ -448,26 +448,32 @@ async function stopMachine(m) {
  * @returns {Promise<{seconds: number} | null>}
  */
 async function waitForFile(mountDir, name, seconds, rcAddr, configPath) {
-  const deadline = Date.now() + seconds * 1000;
   const started = Date.now();
-  for (;;) {
-    // This proof drives vfs/refresh itself so a 24h directory cache still
-    // sees the other machine's save. The seconds it reports are therefore
-    // a floor (write-back plus one refresh), not the fill loop's interval.
-    // The refresh is called outside the try on purpose: a failed refresh
-    // must fail the proof with rclone's own message, not be swallowed into
-    // a bare timeout that hides why the save never appeared (issue #541).
-    // No fs= is passed: this machine has one mount, and rclone's vfs/refresh
-    // uses the only active VFS when fs is absent (vfs/rc.go, getVFS).
-    await run(rcloneBin, ["rc", "--rc-addr", rcAddr, "--config", configPath, "vfs/refresh"]);
-    try {
-      await stat(path.join(mountDir, name));
-      return { seconds: (Date.now() - started) / 1000 };
-    } catch {
-      if (Date.now() > deadline) return null;
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      await sleep(500);
-    }
+  // This proof drives vfs/refresh itself so a 24h directory cache still
+  // sees the other machine's save. The seconds it reports are therefore
+  // a floor (write-back plus one refresh), not the fill loop's interval.
+  // The refresh is left to throw on purpose: a failed refresh must fail the
+  // proof with rclone's own message, not be swallowed into a bare timeout
+  // that hides why the save never appeared (issue #541).
+  // No fs= is passed: this machine has one mount, and rclone's vfs/refresh
+  // uses the only active VFS when fs is absent (vfs/rc.go, getVFS).
+  try {
+    return await waitUntil(
+      async () => {
+        await run(rcloneBin, ["rc", "--rc-addr", rcAddr, "--config", configPath, "vfs/refresh"]);
+        try {
+          await stat(path.join(mountDir, name));
+          return { seconds: (Date.now() - started) / 1000 };
+        } catch {
+          return null;
+        }
+      },
+      seconds * 1000,
+      `${name} to appear in ${mountDir}`,
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("timed out after")) return null;
+    throw error;
   }
 }
 

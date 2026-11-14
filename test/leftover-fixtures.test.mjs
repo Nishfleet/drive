@@ -4,13 +4,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import {
   containerEngine,
   leftoverContainers,
   orphanFixtures,
   sweepLeftovers,
 } from "./minio-standin.mjs";
+import { waitUntil } from "./wait-for.mjs";
 
 const STANDIN_MODULE = new URL("./minio-standin.mjs", import.meta.url).href;
 // The same indirection the other stand-in proofs use, so a host with a
@@ -54,21 +54,6 @@ const alive = (pid) => {
     return true;
   } catch {
     return false;
-  }
-};
-
-/**
- * @param {() => boolean} predicate
- * @param {number} ms
- * @param {string} what
- */
-const waitUntil = async (predicate, ms, what) => {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    if (predicate()) return;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(200);
   }
 };
 

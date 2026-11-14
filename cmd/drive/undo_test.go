@@ -171,8 +171,9 @@ func TestRunUndoReportsTheRoutesOwnSentenceForAnUnknownBranch(t *testing.T) {
 }
 
 func TestRunUndoWaitsOutARewindThatIsStillRunning(t *testing.T) {
+	origSleepBranchJob := sleepBranchJob
 	sleepBranchJob = func(time.Duration) {}
-	t.Cleanup(func() { sleepBranchJob = time.Sleep })
+	t.Cleanup(func() { sleepBranchJob = origSleepBranchJob })
 	server, requests := undoServer(t, undoStandIn{
 		postState:  "rewinding",
 		pollStates: []string{"rewinding", "discarded"},

@@ -36,7 +36,9 @@ func TestStandinOfflineProof(t *testing.T) {
 	if offlineWait >= dirCache {
 		t.Fatalf("offline wait %s is not inside --dir-cache-time %s", offlineWait, dirCache)
 	}
-	time.Sleep(offlineWait)
+	// The dir-cache TTL is the test's input, not a wait for a result: wait out
+	// the interval the mount is configured to keep a listing for.
+	pause(offlineWait)
 
 	keepDir := filepath.Join(env.mountDir, "keep")
 	entries, err := os.ReadDir(keepDir)
@@ -86,7 +88,20 @@ func TestStandinOfflineProof(t *testing.T) {
 	if err := os.WriteFile(newName, []byte("new in a kept folder\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(8 * time.Second)
+	if !waitFor(t, 20*time.Second, func() bool {
+		pending, err := PendingUploads(DefaultCacheDir(env.home))
+		if err != nil {
+			return false
+		}
+		for _, name := range pending.Names {
+			if name == "new.txt" {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatal("the new file never became a pending upload before re-keeping")
+	}
 	out = runDriveHome(t, env.rcAddr, "offline", "--home", env.home, "keep")
 	if !strings.Contains(out, "keep") {
 		t.Fatalf("re-keep after a new file: %q", out)
@@ -162,7 +177,7 @@ func TestOfflineKeptFilesSurviveAFullCache(t *testing.T) {
 		if _, err := targets.read(context.Background(), false, 0); err != nil {
 			t.Fatalf("keep-warm: %v", err)
 		}
-		time.Sleep(500 * time.Millisecond)
+		pause(500 * time.Millisecond)
 	}
 
 	if err := restart.stop(); err != nil {

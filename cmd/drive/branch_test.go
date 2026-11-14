@@ -415,8 +415,9 @@ func TestDefaultBranchName(t *testing.T) {
 }
 
 func TestRunBranchPollsUntilCreatingFinishes(t *testing.T) {
+	origSleepBranchJob := sleepBranchJob
 	sleepBranchJob = func(time.Duration) {}
-	t.Cleanup(func() { sleepBranchJob = time.Sleep })
+	t.Cleanup(func() { sleepBranchJob = origSleepBranchJob })
 	server, requests := branchServerWith(t, branchStandIn{
 		createState: "creating",
 		getStates:   []string{"creating", "open"},
