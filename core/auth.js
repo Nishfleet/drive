@@ -166,6 +166,8 @@ export async function consumeSigninReturn(db, token) {
   };
 }
 
+export const SIGNIN_LINK_PER_IP_MAX = 500;
+
 /**
  * Builds a Better Auth instance over one D1 database.
  *
@@ -205,7 +207,7 @@ export function createAuth(options) {
       storage: "database",
       enabled: true,
       customRules: {
-        "/sign-in/magic-link": { window: 60, max: 3 },
+        "/sign-in/magic-link": { window: 60, max: SIGNIN_LINK_PER_IP_MAX },
       },
     },
     session: {
