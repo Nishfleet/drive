@@ -97,7 +97,8 @@ nothing. The dumps are sealed with `age` before upload: anyone with read
 access to this public repository can download its workflow artifacts, so only
 the ciphertext leaves the runner.
 
-**The matrix also carries the `0509` database** (fleet-ops#10594). It is
+**The matrix also carries the `0509` database**
+(`746c6e3d-782e-443a-82d6-28ca93a16294`, fleet-ops#10594). It is
 dumped from here because the export credential is the Cloudflare D1 token on
 this repository's production environment, D1 permissions are account-scoped,
 and the 0509 repository holds no such token and no `AGE_RECIPIENT`. It moves

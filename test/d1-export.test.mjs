@@ -90,6 +90,39 @@ test("the backup walks every database the fleet owns, not only the deploy's", ()
   );
 });
 
+test("every backup row is vouched for by the deploy or the runbook, and every row the runbook records is dumped", () => {
+  const runbook = readFileSync(new URL("../docs/runbook.md", import.meta.url), "utf8");
+  // The runbook's weekly-backup section records each hand-dumped database
+  // with its id and who exports it (0509's own repository holds no D1 token).
+  const start = runbook.indexOf("## The weekly backup");
+  const end = runbook.indexOf("## Pause the scheduled jobs");
+  assert.ok(start >= 0 && end > start, "the runbook records the weekly backup in its own section");
+  const BACKUP = runbook.slice(start, end);
+  const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
+  const deployIds = [
+    ...DEPLOY.matchAll(
+      /migrations apply ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g,
+    ),
+  ].map((m) => m[1]);
+  const entries = matrixRows(WF.slice(WF.indexOf("matrix:"), WF.indexOf("steps:")));
+  assert.ok(entries.length > 0, "the export walks the databases in one matrix");
+  // A row whose id neither source vouches for is how a deleted database kept
+  // answering 404 each Monday (TinyStudio, drive#1027): the row enters on a
+  // hand edit, so it must be recorded where the owner would look.
+  for (const [name, id] of entries)
+    assert.ok(
+      deployIds.includes(id) || BACKUP.includes(id),
+      `the ${name} row (${id}) is justified by neither the deploy's migrations apply nor an id recorded in docs/runbook.md's weekly-backup section: record it there with who exports it, or drop the row`,
+    );
+  // And the other way: a database the runbook records as dumped here stays
+  // in the matrix, or the weekly job quietly stopped covering it.
+  for (const [id] of BACKUP.matchAll(UUID))
+    assert.ok(
+      entries.some(([, rowId]) => rowId === id),
+      `docs/runbook.md's weekly-backup section records ${id} as dumped here, and the matrix must dump it`,
+    );
+});
+
 test("a database that cannot be dumped fails its own job, and the others still ship", () => {
   const strategy = WF.slice(WF.indexOf("strategy:"), WF.indexOf("steps:"));
   assert.match(
