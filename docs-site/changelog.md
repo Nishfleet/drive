@@ -8,6 +8,15 @@ description: One line per thing that shipped, newest first.
 One line per shipped thing. Newest first, and the date is the day it reached
 the live site.
 
+## 2026-11-10
+
+- Sign-in now serves a shared network. One address can carry a whole office,
+  campus or phone network, and an old sign-in rule capped every address at 3
+  emailed links a minute, so the people behind it waited in a queue nobody
+  could see. The ceiling now matches the edge's own per-IP limit, and the
+  bounds that protect the mail are unchanged: 5 links an hour and 20 a day to
+  any one address, 5000 a minute across the whole account.
+
 ## 2026-10-15
 
 - Billing is its own page: your balance, top-up amounts, the biggest size in the

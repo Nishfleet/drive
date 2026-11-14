@@ -334,16 +334,15 @@ export default defineConfig(({ isPreview }) => ({
           // this bucket moves, so it caps a single-location flood from many
           // addresses and nothing wider.
           //
-          // MEASURED, NOT YET FIXED, and it is the finding of issue #202: raising
-          // these two numbers does not by itself free a shared office. Better Auth
-          // keys its own `/sign-in/magic-link` rule on the same client IP
-          // (core/auth.js, max 3 per 60s, D1-backed), and it runs after these two,
-          // so an office behind one NAT still gets 3 links out of 25 at any edge
-          // ceiling: measured at 10/min and at 400/min alike, 3 of 25 served both
-          // times. The per-IP send bound a customer actually meets is the
-          // library's, and widening it trades mail cost for shared-egress access,
-          // which is a decision #202's scope explicitly excludes. It is tracked as
-          // issue #876 rather than changed here.
+          // The finding of issue #202 is fixed underneath these two (drive#876):
+          // Better Auth's own `/sign-in/magic-link` rule, which runs after both
+          // bindings and is D1-backed across every location, used to key one
+          // client IP to 3 links a minute, so an office behind one NAT got 3
+          // of 25 at any edge ceiling. Its ceiling is now the SIGNIN_RATE_LIMITER
+          // figure below (core/auth.js SIGNIN_MAGIC_LINK_LIMIT, pinned equal by
+          // test/signin-rate-traffic.test.mjs), so the library never binds before
+          // this binding inside a location, and the mail is bounded by the
+          // per-address and account-wide counters instead.
           //
           // Each binding needs its own namespace: Cloudflare wants a positive
           // integer string, and a namespace another binding already uses fails
