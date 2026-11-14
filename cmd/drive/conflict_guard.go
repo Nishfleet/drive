@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -83,24 +84,54 @@ type ConflictCopy struct {
 	Device     string
 }
 
+// conflictGuard: one goroutine (the decide loop) owns seen, order and cursor; the sight loop talks to it only through staged, mirrored in merged. Both look into synced.
 type conflictGuard struct {
-	device   string
-	mountDir string
-	cacheDir string
-	fs       string
-	seen     map[string]*pendingSave
-	order    []string
-	cursor   int
-	synced   map[string]string
+	device      string
+	mountDir    string
+	cacheDir    string
+	fs          string
+	stageMu     sync.Mutex
+	staged      map[string]*pendingSave
+	stagedOrder []string
+	merged      map[string]bool
+	// hasSightLoop says a sight loop is running beside this guard, so pass() leaves the sighting to it. The old sole-pass shape (the tests drive pass() directly) sights inside the pass itself.
+	hasSightLoop bool
+	seen         map[string]*pendingSave
+	order        []string
+	cursor       int
+	syncedMu     sync.Mutex
+	synced       map[string]string
 }
 
 func newConflictGuard(device, mountDir string) *conflictGuard {
 	return &conflictGuard{
 		device:   device,
 		mountDir: mountDir,
+		staged:   map[string]*pendingSave{},
+		merged:   map[string]bool{},
 		seen:     map[string]*pendingSave{},
 		synced:   map[string]string{},
 	}
+}
+
+// SightLoop tells the guard that a sight loop is running: pass() then leaves the queue sighting to it.
+func (g *conflictGuard) SightLoop() {
+	g.hasSightLoop = true
+}
+
+func (g *conflictGuard) hold(name string) bool {
+	g.stageMu.Lock()
+	defer g.stageMu.Unlock()
+	if _, ok := g.staged[name]; ok {
+		return true
+	}
+	return g.merged[name]
+}
+
+func (g *conflictGuard) admit(name string) {
+	g.stageMu.Lock()
+	defer g.stageMu.Unlock()
+	g.merged[name] = true
 }
 
 func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictResult, error) {
@@ -117,49 +148,26 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		inFlight[e.Name] = true
 	}
 	res.Watched = len(inFlight)
-
+	g.absorb(inFlight)
 	listings := map[string]map[string]bool{}
 	hashes := 0
-	var baselined []string
+	baselined := map[string]*pendingSave{}
 	for _, e := range queue {
 		if e.Name == "" || !inFlight[e.Name] {
 			continue
 		}
 		if save, ok := g.seen[e.Name]; ok {
-			if save.reason == "" && g.mountChanged(e.Name, save) {
-				if save.byFingerprint {
-					info, err := g.mountStat(e.Name)
-					if err != nil {
-						save.reason = fmt.Sprintf("the save is not in the drive any more: %v", err)
-					} else if reason := statReason(info); reason != "" && info.size <= conflictProtectMax {
-						save.reason = reason
-					} else if info.size > conflictProtectMax {
-						save.stat = info
-						save.hash = fmt.Sprintf("size:%d:mtime:%d", info.size, info.modTime.UnixNano())
-					} else {
-						save.byFingerprint = false
-						reason, err := g.rehash(e.Name, save)
-						if err != nil {
-							return res, err
-						}
-						if reason != "" {
-							save.reason = reason
-						}
-					}
-				} else {
-					reason, err := g.rehash(e.Name, save)
-					if err != nil {
-						return res, err
-					}
-					if reason != "" {
-						save.reason = reason
-					}
-				}
+			if err := g.refreshSave(e.Name, save); err != nil {
+				return res, err
 			}
 			if save.reason != "" && !save.reported {
 				res.Skipped = append(res.Skipped, ConflictSkip{Remote: e.Name, Reason: save.reason})
 				save.reported = true
 			}
+			continue
+		}
+		if g.hasSightLoop {
+			// The sight loop reads the queue on its own tick, so this save is recorded there (issue #1146).
 			continue
 		}
 		if hashes >= conflictSightMax {
@@ -176,12 +184,13 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			return res, err
 		}
 		g.seen[e.Name] = save
+		g.admit(e.Name)
 		g.order = append(g.order, e.Name)
 		if skip.Reason != "" {
 			res.Skipped = append(res.Skipped, skip)
 		}
 		if save.previous != "" {
-			baselined = append(baselined, e.Name)
+			baselined[e.Name] = save
 		}
 	}
 	g.forgetBaselinesReadAfterUpload(ctx, b, baselined)
@@ -228,9 +237,12 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 		next = i
 	}
 	g.order, g.cursor = retireFinished(g.order, finished, next)
+	g.stageMu.Lock()
 	for _, name := range finished {
 		delete(g.seen, name)
+		delete(g.merged, name)
 	}
+	g.stageMu.Unlock()
 	if len(res.Claimed) > 0 {
 		if err := b.reachable(ctx); err != nil {
 			return res, nil
@@ -242,8 +254,8 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 	return res, nil
 }
 
-func (g *conflictGuard) forgetBaselinesReadAfterUpload(ctx context.Context, b conflictBackend, names []string) {
-	if len(names) == 0 {
+func (g *conflictGuard) forgetBaselinesReadAfterUpload(ctx context.Context, b conflictBackend, saves map[string]*pendingSave) {
+	if len(saves) == 0 {
 		return
 	}
 	stillQueued := map[string]bool{}
@@ -252,9 +264,128 @@ func (g *conflictGuard) forgetBaselinesReadAfterUpload(ctx context.Context, b co
 			stillQueued[e.Name] = true
 		}
 	}
-	for _, name := range names {
+	for name, save := range saves {
 		if !stillQueued[name] {
-			g.seen[name].previous = ""
+			save.previous = ""
+		}
+	}
+}
+
+// stage is the sighting half: it reads the upload queue and records every save no decide pass holds yet, with the save's own bytes and the version storage carried before the save lands. It runs on its own tick so a save entering the queue is recorded inside the write-back delay even while the decide loop sits behind a large claim copy or a wave of slow hash reads (issue #1146).
+func (g *conflictGuard) stage(ctx context.Context, b conflictBackend) (ConflictResult, error) {
+	var res ConflictResult
+	queue, err := b.queue(ctx)
+	if err != nil {
+		return res, fmt.Errorf("conflict: read the upload queue: %w", err)
+	}
+	seenOnce := map[string]bool{}
+	for _, e := range queue {
+		if e.Name == "" || seenOnce[e.Name] {
+			continue
+		}
+		seenOnce[e.Name] = true
+	}
+	res.Watched = len(seenOnce)
+
+	listings := map[string]map[string]bool{}
+	hashes := 0
+	var skipped []ConflictSkip
+	var incoming []string
+	saves := map[string]*pendingSave{}
+	for _, e := range queue {
+		if e.Name == "" || !seenOnce[e.Name] {
+			continue
+		}
+		seenOnce[e.Name] = false
+		if g.hold(e.Name) {
+			continue
+		}
+		res.Behind++
+		if hashes >= conflictSightMax {
+			continue
+		}
+		hashes++
+		save, skip, err := g.sight(ctx, b, e.Name, listings)
+		if errors.Is(err, errNoCacheFile) {
+			hashes--
+			continue
+		}
+		if err != nil {
+			return res, err
+		}
+		if skip.Reason != "" {
+			skipped = append(skipped, skip)
+		}
+		saves[e.Name] = save
+		incoming = append(incoming, e.Name)
+	}
+	// A listing read that outlasted the upload leaves a stale baseline behind: the baseline would then be the save's own uploaded bytes, and the guard would wave a foreign overwrite through as this device's own save. The same rule the decide pass applies (forgetBaselinesReadAfterUpload) applies here.
+	g.forgetBaselinesReadAfterUpload(ctx, b, saves)
+	g.stageMu.Lock()
+	for _, name := range incoming {
+		if g.merged[name] {
+			// The decide pass sighted this save itself while we were sighting: its own record is already polling, so ours would be redundant.
+			continue
+		}
+		g.staged[name] = saves[name]
+		g.stagedOrder = append(g.stagedOrder, name)
+		res.Behind--
+	}
+	g.stageMu.Unlock()
+	res.Skipped = append(res.Skipped, skipped...)
+	return res, nil
+}
+
+// refreshSave re-reads a watched save whose bytes on this machine changed, so the copy the guard keeps later holds the bytes the upload will carry.
+func (g *conflictGuard) refreshSave(name string, save *pendingSave) error {
+	if save.reason != "" || !g.mountChanged(name, save) {
+		return nil
+	}
+	if save.byFingerprint {
+		info, err := g.mountStat(name)
+		if err != nil {
+			save.reason = fmt.Sprintf("the save is not in the drive any more: %v", err)
+			return nil
+		}
+		if reason := statReason(info); reason != "" && info.size <= conflictProtectMax {
+			save.reason = reason
+			return nil
+		}
+		if info.size > conflictProtectMax {
+			save.stat = info
+			save.hash = fmt.Sprintf("size:%d:mtime:%d", info.size, info.modTime.UnixNano())
+			return nil
+		}
+		save.byFingerprint = false
+	}
+	reason, err := g.rehash(name, save)
+	if err != nil {
+		return err
+	}
+	if reason != "" {
+		save.reason = reason
+	}
+	return nil
+}
+
+// absorb merges the staged saves into this pass's watch list. A staged save that left the queue before this pass read it drops its baseline: the same rule forgetBaselinesReadAfterUpload applies when a listing read outlasts the upload, and a stale baseline can only be the save's own uploaded bytes, which would let the guard wave a foreign overwrite through as this device's own save (issue #1146).
+func (g *conflictGuard) absorb(inFlight map[string]bool) {
+	g.stageMu.Lock()
+	incoming, order := g.staged, g.stagedOrder
+	g.staged, g.stagedOrder = map[string]*pendingSave{}, nil
+	g.stageMu.Unlock()
+	for _, name := range order {
+		if _, ok := g.seen[name]; ok {
+			// The decide pass sighted this save itself before our staged record arrived: its own record is already polling, so ours is redundant.
+			continue
+		}
+		g.admit(name)
+		save := incoming[name]
+		g.seen[name] = save
+		g.order = append(g.order, name)
+		if !inFlight[name] {
+			// The save left the queue before this pass read it: its baseline is its own uploaded bytes now, and a stale baseline would wave a foreign overwrite through.
+			save.previous = ""
 		}
 	}
 }
@@ -364,12 +495,12 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		if sameVersion(size, modTime, save.stat.size, save.stat.modTime) {
 			save.winPolls++
 			if save.winPolls >= conflictWinPolls {
-				g.synced[name] = landed
+				g.rememberSynced(name, landed)
 				return true, nil, nil, nil
 			}
 			return false, nil, nil, nil
 		}
-		g.synced[name] = landed
+		g.rememberSynced(name, landed)
 		return true, &ConflictSkip{
 			Remote: name,
 			Reason: "another version landed on a file too large to keep a copy of",
@@ -377,7 +508,7 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 	case landed == save.hash:
 		save.winPolls++
 		if save.winPolls >= conflictWinPolls {
-			g.synced[name] = landed
+			g.rememberSynced(name, landed)
 			return true, nil, nil, nil
 		}
 		return false, nil, nil, nil
@@ -388,7 +519,7 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		return false, nil, nil, nil
 	default:
 		if save.byFingerprint {
-			g.synced[name] = landed
+			g.rememberSynced(name, landed)
 			return true, &ConflictSkip{
 				Remote: name,
 				Reason: "the file is compared by size and time and a copy could not be kept",
@@ -416,7 +547,7 @@ func (g *conflictGuard) decide(ctx context.Context, b conflictBackend, name stri
 		if err != nil {
 			return false, nil, nil, err
 		}
-		g.synced[name] = landed
+		g.rememberSynced(name, landed)
 		return true, nil, &claim, nil
 	}
 }
@@ -514,7 +645,7 @@ func (g *conflictGuard) mountChanged(name string, save *pendingSave) bool {
 }
 
 func (g *conflictGuard) previousHash(ctx context.Context, b conflictBackend, name string, listings map[string]map[string]bool) string {
-	if previous := g.synced[name]; previous != "" {
+	if previous := g.lastSynced(name); previous != "" {
 		return previous
 	}
 	present, err := g.parentListing(ctx, b, parentDir(name), listings)
@@ -533,6 +664,19 @@ func (g *conflictGuard) previousHash(ctx context.Context, b conflictBackend, nam
 		return ""
 	}
 	return hash
+}
+
+// lastSynced reads the hash this device last confirmed as its own upload at name; the decide half writes it through rememberSynced and the sight half reads it here as a baseline.
+func (g *conflictGuard) lastSynced(name string) string {
+	g.syncedMu.Lock()
+	defer g.syncedMu.Unlock()
+	return g.synced[name]
+}
+
+func (g *conflictGuard) rememberSynced(name, hash string) {
+	g.syncedMu.Lock()
+	defer g.syncedMu.Unlock()
+	g.synced[name] = hash
 }
 
 func (g *conflictGuard) parentListing(ctx context.Context, b conflictBackend, dir string, listings map[string]map[string]bool) (map[string]bool, error) {
@@ -714,34 +858,24 @@ func RunConflictLoop(ctx context.Context, device, mountDir, cacheDir, fs, stateP
 		defer close(msgs)
 		guard := newConflictGuard(device, mountDir)
 		guard.cacheDir, guard.fs = cacheDir, fs
-		ticker := time.NewTicker(conflictInterval)
-		defer ticker.Stop()
+		guard.SightLoop()
+		var reportMu sync.Mutex
 		lastReport := make(map[string]time.Time)
 		report := func(format string, args ...any) {
 			line := fmt.Sprintf(format, args...)
+			reportMu.Lock()
 			if time.Since(lastReport[line]) < conflictReportEvery {
+				reportMu.Unlock()
 				return
 			}
 			lastReport[line] = time.Now()
+			reportMu.Unlock()
 			select {
 			case msgs <- fmt.Errorf("%s", line):
 			default:
 			}
 		}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-			passCtx, cancel := context.WithTimeout(ctx, conflictContextTimeout)
-			res, err := guard.pass(passCtx, c)
-			cancel()
-			if err != nil {
-				report("%v", err)
-			} else if err := writeConflictGuardState(statePath, res.Behind, time.Now()); err != nil {
-				report("conflict: write the guard state: %v", err)
-			}
+		speak := func(res ConflictResult) {
 			for _, claim := range res.Claimed {
 				report("kept the save that landed first: %s (the other device saved %s)",
 					claim.Remote, claim.LosingPath)
@@ -749,6 +883,51 @@ func RunConflictLoop(ctx context.Context, device, mountDir, cacheDir, fs, stateP
 			for _, skip := range res.Skipped {
 				report("could not protect %s: %s", skip.Remote, skip.Reason)
 			}
+		}
+		// The decide loop polls the remote for the saves it watched and copies the conflict candidates (issue #1146). Its passes can run past the write-back delay - a large claim copy, a wave of hash reads or slow storage - so it is decoupled from the sight loop below, and its bundle of remote work never delays the next queue read.
+		var decides sync.WaitGroup
+		decides.Add(1)
+		go func() {
+			defer decides.Done()
+			ticker := time.NewTicker(conflictInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+				passCtx, cancel := context.WithTimeout(ctx, conflictContextTimeout)
+				res, err := guard.pass(passCtx, c)
+				cancel()
+				if err != nil {
+					report("%v", err)
+					continue
+				}
+				speak(res)
+			}
+		}()
+		// The sight loop reads the upload queue every conflictInterval itself, so a save that lands within the write-back delay is recorded even while the decide loop is deep in its own work (issue #1146).
+		ticker := time.NewTicker(conflictInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				decides.Wait()
+				return
+			case <-ticker.C:
+			}
+			passCtx, cancel := context.WithTimeout(ctx, conflictContextTimeout)
+			res, err := guard.stage(passCtx, c)
+			cancel()
+			if err != nil {
+				report("%v", err)
+				continue
+			}
+			if err := writeConflictGuardState(statePath, res.Behind, time.Now()); err != nil {
+				report("conflict: write the guard state: %v", err)
+			}
+			speak(res)
 		}
 	}()
 	return msgs
