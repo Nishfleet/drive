@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1105,6 +1106,244 @@ func TestConflictGuardNamesALargeOverwrite(t *testing.T) {
 	}
 	if len(g.seen) != 0 {
 		t.Errorf("still watches %v", g.seen)
+	}
+}
+
+func TestStagedSaveMergesIntoTheNextPass(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-this-device-saved\n"})
+	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
+	if _, err := g.stage(context.Background(), f); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	if len(g.staged) != 1 {
+		t.Fatalf("the stage pass left %d staged saves, want 1", len(g.staged))
+	}
+	if !g.hold("report.txt") {
+		t.Fatal("a staged save does not hold its own name")
+	}
+	// the upload lands and another device overwrites before the next sight pass reads the queue
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("B-the-other-device-saved-second\n")
+	res, err := g.pass(context.Background(), f)
+	if err != nil {
+		t.Fatalf("pass after the overwrite: %v", err)
+	}
+	want := "report (conflict, mac).txt"
+	if len(f.copied) != 1 || f.copied[0] != want {
+		t.Fatalf("copied %v, want [%s]: a sighted save was lost with no conflict copy", f.copied, want)
+	}
+	if got := f.objects[want]; got != md5Hex("A-this-device-saved\n") {
+		t.Errorf("the conflict copy holds %q, want this device's own bytes", got)
+	}
+	if len(res.Claimed) != 1 {
+		t.Errorf("Claimed = %+v, want the one conflict copy", res.Claimed)
+	}
+}
+
+func TestStageDoesNotReSightAStagedSave(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "only saved once\n"})
+	f.objects["report.txt"] = "the version already there"
+	f.pending = []queueEntry{{Name: "report.txt", Size: 16}}
+	if _, err := g.stage(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	hashed := f.hashCalls
+	if _, err := g.stage(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	if f.hashCalls != hashed {
+		t.Errorf("the second stage pass read the remote again for a save it already held: %d reads", f.hashCalls-hashed)
+	}
+	if len(g.staged) != 1 {
+		t.Errorf("the stage pass left %d staged saves, want one", len(g.staged))
+	}
+}
+
+func TestAbsorbForgetsTheBaselineOfAStagedSaveThatLeftTheQueue(t *testing.T) {
+	g, _, f := guardFor(t, "mac", map[string]string{"report.txt": "A-this-device-saved\n"})
+	f.objects["report.txt"] = "the version already there"
+	f.pending = []queueEntry{{Name: "report.txt", Size: 20}}
+	if _, err := g.stage(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.staged["report.txt"].previous; got != "the version already there" {
+		t.Fatalf("the staged save holds previous %q, want the version read before the save landed", got)
+	}
+	f.pending = nil
+	f.objects["report.txt"] = md5Hex("B-the-other-device-saved-second\n")
+	g.absorb(map[string]bool{})
+	if got := g.seen["report.txt"].previous; got != "" {
+		t.Fatalf("a save that left the queue before was merged kept its baseline %q: the stale baseline is its own uploaded bytes", got)
+	}
+}
+
+// stagedLoopBackend is a thread-safe stand-in for the loop proof: the test drives the loop's two goroutines against one storage, so the stand-in has to be safe to read and write from both.
+type stagedLoopBackend struct {
+	mu      sync.Mutex
+	pending []queueEntry
+	objects map[string]string
+
+	listed  chan string   // the guard read a parent listing: the sight pass is hashing a save
+	copied  chan string   // the guard started a claim copy
+	halt    chan struct{} // closed by the test to let a stalled claim copy finish
+	release chan struct{} // closed by the test to let a stalled hash read finish
+}
+
+func newStagedLoopBackend() *stagedLoopBackend {
+	return &stagedLoopBackend{
+		objects: map[string]string{},
+		listed:  make(chan string, 64),
+		copied:  make(chan string, 64),
+		halt:    make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (b *stagedLoopBackend) queue(context.Context) ([]queueEntry, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.pending, nil
+}
+
+func (b *stagedLoopBackend) remoteHas(_ context.Context, name string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.objects[name]
+	return ok, nil
+}
+
+func (b *stagedLoopBackend) remoteHash(_ context.Context, name string) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.objects[name], nil
+}
+
+func (b *stagedLoopBackend) parentContents(_ context.Context, dir string) (map[string]bool, error) {
+	b.mu.Lock()
+	present := map[string]bool{}
+	for name := range b.objects {
+		if parentDir(name) == dir {
+			present[remoteBase(name)] = true
+		}
+	}
+	b.mu.Unlock()
+	b.listed <- dir
+	return present, nil
+}
+
+func (b *stagedLoopBackend) remoteVersion(context.Context, string) (int64, time.Time, bool, error) {
+	return 0, time.Time{}, false, nil
+}
+
+func (b *stagedLoopBackend) copyLocalToRemote(_ context.Context, srcRoot, srcRemote, dstRemote string) error {
+	b.copied <- dstRemote
+	<-b.halt
+	b.mu.Lock()
+	sum, err := hashFile(filepath.Join(srcRoot, filepath.FromSlash(srcRemote)))
+	if err != nil {
+		b.mu.Unlock()
+		return err
+	}
+	b.objects[dstRemote] = sum
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *stagedLoopBackend) refresh(context.Context, bool) error { return nil }
+
+func (b *stagedLoopBackend) reachable(context.Context) error { return nil }
+
+// TestConflictLoopSightsWhileADecidePassRunsLong proves the fix for issue #1146: a guard pass that runs longer than the write-back delay must not let a save land unseen. The decide pass here is held inside a claim copy for longer than the delay, and the save that lands in that gap still gets its conflict copy.
+func TestConflictLoopSightsWhileADecidePassRunsLong(t *testing.T) {
+	root := t.TempDir()
+	mountDir := filepath.Join(root, "Drive")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bodyA := []byte("A: the save whose claim copy holds the decide pass\n")
+	bodyY := []byte("Y: the save made while that decide pass was still running\n")
+	for name, body := range map[string][]byte{"big.txt": bodyA, "notes.txt": bodyY} {
+		if err := os.WriteFile(filepath.Join(mountDir, name), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := newStagedLoopBackend()
+	f.mu.Lock()
+	f.objects["big.txt"] = "B: the version big.txt carried before the save\n"
+	f.pending = []queueEntry{{Name: "big.txt", Size: int64(len(bodyA))}}
+	f.mu.Unlock()
+	statePath := filepath.Join(root, "conflict-guard.json")
+	ctx, cancel := context.WithCancel(context.Background())
+	msgs := RunConflictLoop(ctx, "mac", mountDir, "", "", statePath, f)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for range msgs {
+		}
+	}()
+	var haltOnce sync.Once
+	release := func() { haltOnce.Do(func() { close(f.halt) }) }
+	defer func() {
+		cancel()
+		release()
+		select {
+		case <-stopped:
+		case <-time.After(30 * time.Second):
+			t.Error("the guard loop did not stop")
+		}
+	}()
+	waitFor := func(c <-chan string, what string, d time.Duration) string {
+		t.Helper()
+		select {
+		case got := <-c:
+			return got
+		case <-time.After(d):
+			t.Fatalf("the guard never %s", what)
+			return ""
+		}
+	}
+
+	// 1: the sight pass hashes big.txt and takes its baseline; the upload then lands and another device overwrites it.
+	waitFor(f.listed, "listed the drive for the first save", 20*time.Second)
+	f.mu.Lock()
+	f.pending = nil
+	f.objects["big.txt"] = md5Hex("C: the other device overwrote big.txt\n")
+	f.mu.Unlock()
+	// 2: the decide pass claims big.txt and holds the copy: this is the pass that runs longer than the write-back delay.
+	if got := waitFor(f.copied, "started big.txt's claim copy", 20*time.Second); got != ConflictName("big.txt", "mac") {
+		t.Fatalf("the claim copy was %s, want %s", got, ConflictName("big.txt", "mac"))
+	}
+	// 3: while that copy is held, a save lands on notes.txt. It must be sighted inside the write-back delay.
+	f.mu.Lock()
+	f.pending = []queueEntry{{Name: "notes.txt", Size: int64(len(bodyY))}}
+	f.mu.Unlock()
+	sighted := false
+	for !sighted {
+		select {
+		case <-f.listed:
+			sighted = true
+		case <-time.After(20 * time.Second):
+			t.Fatal("the sight pass never read the drive while the decide pass held its claim: a save can land unseen when a pass runs longer than the write-back delay (issue #1146)")
+		}
+	}
+	// 4: the save lands and another device overwrites it while the decide pass is still held.
+	f.mu.Lock()
+	f.pending = nil
+	f.objects["notes.txt"] = md5Hex("Z: the other device overwrote notes.txt\n")
+	f.mu.Unlock()
+	// 5: the held claim finishes; the next decide pass protects the save sighted during the hold.
+	release()
+	if got := waitFor(f.copied, "claimed the overwrite of notes.txt", 30*time.Second); got != ConflictName("notes.txt", "mac") {
+		t.Fatalf("the second claim copy was %s, want %s", got, ConflictName("notes.txt", "mac"))
+	}
+	f.mu.Lock()
+	sum, ok := f.objects[ConflictName("notes.txt", "mac")]
+	f.mu.Unlock()
+	if !ok {
+		t.Fatal("no conflict copy for notes.txt: a save that landed during a long pass was lost")
+	}
+	if sum != md5Hex(string(bodyY)) {
+		t.Errorf("the conflict copy holds %q, want the save made during the held pass", sum)
 	}
 }
 
