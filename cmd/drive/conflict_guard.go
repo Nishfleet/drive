@@ -157,8 +157,35 @@ func (g *conflictGuard) pass(ctx context.Context, b conflictBackend) (ConflictRe
 			continue
 		}
 		if save, ok := g.seen[e.Name]; ok {
-			if err := g.refreshSave(e.Name, save); err != nil {
-				return res, err
+			if save.reason == "" && g.mountChanged(e.Name, save) {
+				if save.byFingerprint {
+					info, err := g.mountStat(e.Name)
+					if err != nil {
+						save.reason = fmt.Sprintf("the save is not in the drive any more: %v", err)
+					} else if reason := statReason(info); reason != "" && info.size <= conflictProtectMax {
+						save.reason = reason
+					} else if info.size > conflictProtectMax {
+						save.stat = info
+						save.hash = fmt.Sprintf("size:%d:mtime:%d", info.size, info.modTime.UnixNano())
+					} else {
+						save.byFingerprint = false
+						reason, err := g.rehash(e.Name, save)
+						if err != nil {
+							return res, err
+						}
+						if reason != "" {
+							save.reason = reason
+						}
+					}
+				} else {
+					reason, err := g.rehash(e.Name, save)
+					if err != nil {
+						return res, err
+					}
+					if reason != "" {
+						save.reason = reason
+					}
+				}
 			}
 			if save.reason != "" && !save.reported {
 				res.Skipped = append(res.Skipped, ConflictSkip{Remote: e.Name, Reason: save.reason})
@@ -336,50 +363,21 @@ func (g *conflictGuard) stage(ctx context.Context, b conflictBackend) (ConflictR
 	return res, nil
 }
 
-// refreshSave re-reads a watched save whose bytes on this machine changed, so the copy the guard keeps later holds the bytes the upload will carry.
-func (g *conflictGuard) refreshSave(name string, save *pendingSave) error {
-	if save.reason != "" || !g.mountChanged(name, save) {
-		return nil
-	}
-	if save.byFingerprint {
-		info, err := g.mountStat(name)
-		if err != nil {
-			save.reason = fmt.Sprintf("the save is not in the drive any more: %v", err)
-			return nil
-		}
-		if reason := statReason(info); reason != "" && info.size <= conflictProtectMax {
-			save.reason = reason
-			return nil
-		}
-		if info.size > conflictProtectMax {
-			save.stat = info
-			save.hash = fmt.Sprintf("size:%d:mtime:%d", info.size, info.modTime.UnixNano())
-			return nil
-		}
-		save.byFingerprint = false
-	}
-	reason, err := g.rehash(name, save)
-	if err != nil {
-		return err
-	}
-	if reason != "" {
-		save.reason = reason
-	}
-	return nil
-}
-
 // absorb merges the staged saves into this pass's watch list. A staged save that left the queue before this pass read it drops its baseline: the same rule forgetBaselinesReadAfterUpload applies when a listing read outlasts the upload, and a stale baseline can only be the save's own uploaded bytes, which would let the guard wave a foreign overwrite through as this device's own save (issue #1146).
 func (g *conflictGuard) absorb(inFlight map[string]bool) {
 	g.stageMu.Lock()
 	incoming, order := g.staged, g.stagedOrder
 	g.staged, g.stagedOrder = map[string]*pendingSave{}, nil
+	// merged is marked under this same lock: between emptying staged and marking merged there is no gap in which hold(name) is false and the sight loop could sight the same save a second time.
+	for _, name := range order {
+		g.merged[name] = true
+	}
 	g.stageMu.Unlock()
 	for _, name := range order {
 		if _, ok := g.seen[name]; ok {
 			// The decide pass sighted this save itself before our staged record arrived: its own record is already polling, so ours is redundant.
 			continue
 		}
-		g.admit(name)
 		save := incoming[name]
 		g.seen[name] = save
 		g.order = append(g.order, name)
