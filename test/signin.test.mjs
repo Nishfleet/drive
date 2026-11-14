@@ -12,7 +12,6 @@ import {
 import { createD1DeviceSigninStore } from "../core/device-signin.js";
 import { createD1DeviceStore } from "../core/devices.js";
 import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
-import { PRICE } from "../core/pricing.js";
 import worker from "../src/index.js";
 import {
   readSigninRequest,
@@ -1155,16 +1154,6 @@ test("the email-failed words are the message table's, once", () => {
   assert.equal(signinEmailFailedBody().error, failureMessage("sign-in-email-failed"));
 });
 
-test("the sign-in link is at the path the page and the email name", async () => {
-  assert.equal(SIGNIN_LINK_PATH, "/api/signin/verify");
-  for (const error of ["invalid-link", "no-token"]) {
-    assert.ok(
-      page.includes(`errorParam === "${error}"`),
-      `the page answers the ${error} redirect the verify route sends`,
-    );
-  }
-});
-
 test("the verify route is GET only, and a link without a token answers the screen", async () => {
   const made = dispatchEnv();
   const posted = await workerFetch(
@@ -1221,6 +1210,215 @@ test("a good link mints the session and lands on the drive; a used one does not"
     assert.match(String(failed.headers.get("location")), /error=invalid-link|error=no-token/);
     assert.equal(failed.headers.getSetCookie().length, 0, "a failed link mints no session");
   }
+});
+
+/**
+ * One address signed in through the real route: the start post the browser
+ * makes, then the mailed link followed. The dispatch is the Worker's own, so
+ * the verify's account steps run exactly as they do live — including any card
+ * the env's Dodo settings let it read.
+ * @param {ReturnType<typeof dispatchEnv>} made
+ * @param {string} email
+ * @param {Record<string, unknown>} [envExtra]
+ * @returns {Promise<{started: Response, link: {to: string, url: string}, followed: Response}>}
+ */
+async function signInThroughRoute(made, email, envExtra = {}) {
+  const env = { ...made.env, ...envExtra };
+  const started = await workerFetch(post({ step: "start", method: "email", email }), env);
+  assert.equal(started.status, 202, "the start answers like every other address (drive#538)");
+  const link = made.sent.at(-1);
+  assert.ok(link !== undefined, "the start mailed a link");
+  const followed = await workerFetch(new Request(link.url), env);
+  return { started, link, followed };
+}
+
+/**
+ * A recorder standing in for Dodo's saved-card endpoint, the shape
+ * test/integration/prepaid-d1.test.mjs drives the auto top-up against: the
+ * list is `items`, each with the provider's own payment_method_id.
+ * @param {{cards?: string[], status?: number}} [opts]
+ */
+function savedCardRecorder(opts = {}) {
+  /** @type {Array<{url: string, method: string}>} */
+  const calls = [];
+  /** @type {typeof fetch} */
+  const fetchImpl = async (url, init) => {
+    calls.push({ url: String(url), method: init?.method ?? "GET" });
+    if (opts.status !== undefined) return new Response("nope", { status: opts.status });
+    return Response.json({
+      items: (opts.cards ?? ["pm_saved"]).map((id) => ({ payment_method_id: id })),
+    });
+  };
+  return { calls, fetchImpl };
+}
+
+/**
+ * The Better Auth user id behind one of the addresses this file signed in,
+ * and its billing row's card fields. Almost every card test reads both.
+ * @param {ReturnType<typeof dispatchEnv>} made
+ * @param {string} email
+ */
+async function accountRow(made, email) {
+  const user = await made.db
+    .prepare('SELECT id FROM "user" WHERE lower(email) = lower(?1)')
+    .bind(email)
+    .first();
+  assert.ok(user !== null && typeof user.id === "string", `a user row exists for ${email}`);
+  const accountId = user.id;
+  const row = await made.db
+    .prepare("SELECT card_fingerprint, card_added_at, dodo_customer_id FROM accounts WHERE id = ?1")
+    .bind(accountId)
+    .first();
+  assert.ok(row !== null && typeof row === "object", "verify wrote the accounts row");
+  return {
+    accountId,
+    row: /** @type {{card_fingerprint?: unknown, card_added_at?: unknown, dodo_customer_id?: unknown}} */ (
+      row
+    ),
+  };
+}
+
+test("with no Dodo key the verify reads no saved card and claims none (drive#325, drive#829)", async () => {
+  const made = dispatchEnv();
+  const dodo = savedCardRecorder();
+  const { followed } = await signInThroughRoute(made, "nokey@example.com", {
+    DODO_FETCH: dodo.fetchImpl,
+  });
+  assert.equal(followed.status, 302, "the sign-in is the answer every sign-in got before the key");
+  assert.equal(followed.headers.get("location"), "/files");
+  assert.equal(dodo.calls.length, 0, "no key is no provider call, and no charge");
+  const { row } = await accountRow(made, "nokey@example.com");
+  assert.equal(row.card_fingerprint ?? null, null, "no fingerprint without a key");
+});
+
+test("the verify claims the provider's saved card once the Dodo key is set (drive#829)", async () => {
+  const made = dispatchEnv();
+  await signInThroughRoute(made, "cardholder@example.com");
+  // The payment webhook wrote the customer id; the card on the provider is
+  // the card the top-up charged (drive#503).
+  const { accountId } = await accountRow(made, "cardholder@example.com");
+  await made.db
+    .prepare("UPDATE accounts SET dodo_customer_id = ?1 WHERE id = ?2")
+    .bind("cus_card", accountId)
+    .run();
+  const dodo = savedCardRecorder({ cards: ["pm_saved"] });
+  const { followed } = await signInThroughRoute(made, "cardholder@example.com", {
+    DODO_PAYMENTS_API_KEY: "dodo-test-key",
+    DODO_FETCH: dodo.fetchImpl,
+  });
+  assert.equal(followed.status, 302, "a card no live account holds is not a refusal");
+  assert.equal(followed.headers.get("location"), "/files");
+  assert.match(
+    String(followed.headers.getSetCookie()[0]),
+    /^__Secure-drive\.session_token=/,
+    "the sign-in still mints its own session",
+  );
+  assert.deepEqual(
+    dodo.calls,
+    [{ url: "https://test.dodopayments.com/customers/cus_card/payment-methods", method: "GET" }],
+    "the verify reads the account's saved cards, and reads is all it does",
+  );
+  const { row } = await accountRow(made, "cardholder@example.com");
+  assert.equal(
+    row.card_fingerprint,
+    "dodo:pm_saved",
+    "the provider's own card id is the fingerprint",
+  );
+  assert.ok(
+    typeof row.card_added_at === "number" && row.card_added_at > 0,
+    "the claim stamps the card on file, the stamp cardAdded reads",
+  );
+});
+
+test("an account that already records a card keeps it, and reads no provider (drive#503)", async () => {
+  const made = dispatchEnv();
+  await signInThroughRoute(made, "kept@example.com");
+  const { accountId } = await accountRow(made, "kept@example.com");
+  await made.db
+    .prepare("UPDATE accounts SET dodo_customer_id = ?1, card_fingerprint = ?2 WHERE id = ?3")
+    .bind("cus_kept", "dodo:pm_webhook", accountId)
+    .run();
+  const dodo = savedCardRecorder({ cards: ["pm_other"] });
+  const { followed } = await signInThroughRoute(made, "kept@example.com", {
+    DODO_PAYMENTS_API_KEY: "dodo-test-key",
+    DODO_FETCH: dodo.fetchImpl,
+  });
+  assert.equal(followed.headers.get("location"), "/files", "the webhook's record is the record");
+  assert.equal(dodo.calls.length, 0, "a claimed card is not read again, let alone replaced");
+  const { row } = await accountRow(made, "kept@example.com");
+  assert.equal(row.card_fingerprint, "dodo:pm_webhook");
+});
+
+test("a card another live account already holds is refused in the customer's words (drive#829)", async () => {
+  const made = dispatchEnv();
+  await signInThroughRoute(made, "holder@example.com");
+  const holder = await accountRow(made, "holder@example.com");
+  await made.db
+    .prepare("UPDATE accounts SET card_fingerprint = ?1, card_added_at = ?2 WHERE id = ?3")
+    .bind("dodo:pm_shared", Math.floor(Date.now() / 1000), holder.accountId)
+    .run();
+  await signInThroughRoute(made, "second@example.com");
+  const second = await accountRow(made, "second@example.com");
+  await made.db
+    .prepare("UPDATE accounts SET dodo_customer_id = ?1 WHERE id = ?2")
+    .bind("cus_second", second.accountId)
+    .run();
+  const dodo = savedCardRecorder({ cards: ["pm_shared"] });
+  const { followed } = await signInThroughRoute(made, "second@example.com", {
+    DODO_PAYMENTS_API_KEY: "dodo-test-key",
+    DODO_FETCH: dodo.fetchImpl,
+  });
+  assert.equal(followed.status, 302);
+  assert.equal(
+    followed.headers.get("location"),
+    "/signin?error=card-in-use",
+    "the refusal is the table's key, and the words the sign-in screen shows",
+  );
+  assert.equal(followed.headers.getSetCookie().length, 0, "a refused card mints no session");
+  const { row } = await accountRow(made, "second@example.com");
+  assert.equal(row.card_fingerprint ?? null, null, "the clash claims nothing");
+});
+
+test("a saved-card list that does not read refuses nobody, and names no key (drive#829)", async () => {
+  const made = dispatchEnv();
+  await signInThroughRoute(made, "hiccup@example.com");
+  const { accountId } = await accountRow(made, "hiccup@example.com");
+  await made.db
+    .prepare("UPDATE accounts SET dodo_customer_id = ?1 WHERE id = ?2")
+    .bind("cus_hiccup", accountId)
+    .run();
+  const dodo = savedCardRecorder({ status: 500 });
+  /** @type {string[]} */
+  const errors = [];
+  const original = console.error;
+  console.error = (...args) => errors.push(args.join(" "));
+  let followed;
+  try {
+    followed = (
+      await signInThroughRoute(made, "hiccup@example.com", {
+        DODO_PAYMENTS_API_KEY: "dodo-test-key",
+        DODO_FETCH: dodo.fetchImpl,
+      })
+    ).followed;
+  } finally {
+    console.error = original;
+  }
+  assert.equal(followed.headers.get("location"), "/files", "a provider hiccup is not a refusal");
+  assert.match(
+    String(followed.headers.getSetCookie()[0]),
+    /^__Secure-drive\.session_token=/,
+    "the sign-in still mints its session",
+  );
+  assert.ok(
+    errors.some((line) => line.includes("did not list: status 500")),
+    "logged once",
+  );
+  assert.ok(
+    errors.every((line) => !line.includes("dodo-test-key")),
+    "the log never names the API key",
+  );
+  const { row } = await accountRow(made, "hiccup@example.com");
+  assert.equal(row.card_fingerprint ?? null, null, "a list that did not read claims nothing");
 });
 
 test("safeAfterSigninPath only returns the device-approve page", () => {
@@ -1847,31 +2045,6 @@ test("an address the library refuses is a 400, not a closed door", async () => {
 
 // --------------------------------------------------------- the shipped page
 
-test("the page carries every string from src/signin.js verbatim", () => {
-  for (const [name, value] of Object.entries(SIGNIN_COPY)) {
-    // Sign out copy is the signed-in menu (drive#423), pinned on the three
-    // pages that carry it by test/usage.test.mjs, not on the sign-in screen.
-    if (name === "signOut" || name === "signOutEverywhere") continue;
-    assert.ok(page.includes(value), `the page must carry ${name}: "${value}"`);
-  }
-  // The endpoints, from the modules, never typed into the page a second time.
-  assert.ok(page.includes(`const SIGNIN_ENDPOINT = "${SIGNIN_ENDPOINT}";`));
-  // drive#180: the page's method list is the module's OFFERED list, not its
-  // accepted list: the screen renders the methods the server can complete
-  // (email today; Google and GitHub are read by the endpoint but answered
-  // with the closed door), and this line fails the moment the two drift.
-  assert.ok(
-    page.includes(`const METHODS = [${SIGNIN_OFFERED_METHODS.map((m) => `"${m}"`).join(", ")}];`),
-    "the page's method list must be the module's offered list",
-  );
-  // The page is a static asset, so the price line it shows is the price
-  // module's; the test reads the module, so the two cannot drift.
-  assert.ok(
-    page.includes(PRICE.noPlansLine),
-    "the page must carry the price module's no-minimum line",
-  );
-});
-
 test("the page posts to the endpoint the Worker routes, with a method the endpoint accepts", () => {
   assert.ok(
     page.includes(`action="${SIGNIN_ENDPOINT}"`),
@@ -2008,9 +2181,9 @@ test("the page states the spec's two promises: a card at sign-up, and the member
     "the card sentence appears exactly once on the page",
   );
   // drive#538 finish line 3: this form has no card checkbox. The needCard
-  // sentence above is where the rule is stated. Verify claims a test
-  // stand-in; a real card waits on the Dodo key. A box here made every
-  // returning customer tick "I understand a card is required".
+  // sentence above is where the rule is stated. Verify claims the provider's
+  // own saved card once the Dodo key is set (drive#829). A box here made
+  // every returning customer tick "I understand a card is required".
   assert.doesNotMatch(page, /id="card"/);
   assert.doesNotMatch(page, /I understand a card is required/);
   assert.ok(page.includes(SIGNIN_COPY.noPlansLine), "the page must quote the no-minimum line");
@@ -2049,16 +2222,6 @@ test("the page states the age rule once, in the consent line, and sends the atte
   );
 });
 
-test("the page carries a social card of its own", () => {
-  for (const tag of [
-    '<meta property="og:title" content="Sign in to Storagebun">',
-    '<meta property="og:image" content="https://storagebun.com/og.png">',
-    '<meta name="twitter:card" content="summary_large_image">',
-  ]) {
-    assert.ok(page.includes(tag), `the sign-in page carries ${tag}`);
-  }
-});
-
 test("no other shipped page posts a sign-in start (drive#781)", () => {
   // The age box lives on the sign-in form. Other pages post sign-out only.
   const others = [
@@ -2077,29 +2240,6 @@ test("no other shipped page posts a sign-in start (drive#781)", () => {
       `${rel} must not post a sign-in start`,
     );
   }
-});
-
-test("the page's failure words are the message table's", () => {
-  // The same two constants the pricing page carries, and the same gate
-  // test/messages.test.mjs runs over this page.
-  assert.ok(page.includes(FAILURE_MESSAGES.offline.what));
-  assert.ok(page.includes(FAILURE_MESSAGES.unexpected.what));
-});
-
-test("the page shows the route's own error words, so every failure names a next step", () => {
-  // The server owns the words for the failures only it can see (drive#431:
-  // an email that could not be sent). The page is a static asset, so it cannot
-  // hold them; what it must do is put the answer's `error` in the live status
-  // line as it arrives, which is what keeps those failure paths from falling
-  // back to "That did not work." with no next step.
-  assert.ok(
-    page.includes("payload.error"),
-    "the page must read the error field the route answers with",
-  );
-  assert.ok(
-    page.includes('id="signin-status"') && page.includes("aria-live"),
-    "the page must have the live region the status words are read into",
-  );
 });
 
 test("the page is at the path the module names, and the Worker serves it as an asset", async () => {

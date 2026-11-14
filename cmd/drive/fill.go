@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// rclone reads 128M for the first chunk and doubles for each chunk after.
 const fillChunkSizeLimit = "1G"
 
 const fillMaxAge = "24h"
@@ -75,7 +74,6 @@ func parseSizeSuffix(s string) (int64, error) {
 			break
 		}
 	}
-	// rclone's SizeSuffix: a bare number is bytes, a decimal is a multiple.
 	if i := len(trimmed); i > 0 {
 		if v, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
 			return v * mult, nil

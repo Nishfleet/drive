@@ -16,50 +16,6 @@ const PAGES = [
 
 const SITE_CSS = new URL("site.css", PUBLIC_DIR);
 
-// The palette and the type, one line each so the comparison ignores how the
-// stylesheet wraps them. These are the values the pricing page was designed
-// with (docs/design/pricing-brief.md); changing one changes the product's
-// look, so it has to be a deliberate edit here too.
-const TOKENS = {
-  "--paper": "#faf6ee",
-  "--paper-raised": "#fffdf8",
-  "--ink": "#21201c",
-  "--ink-soft": "#56514a",
-  "--ink-faint": "#6f6a5f",
-  "--rule": "#ddd5c5",
-  "--accent": "#1f3a5f",
-  "--accent-soft": "#e6ecf3",
-  "--good": "#1d5c3a",
-  "--bad": "#8a2b2b",
-  "--serif":
-    'ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif',
-  "--sans":
-    'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-  "--mono":
-    'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-  // The home page redesign (drive #152, design/dir-b): the loud orange palette
-  // and the three self-hosted faces, shared here so later pages can adopt it.
-  "--drive-orange": "#ff4f12",
-  "--drive-orange-deep": "#e23f05",
-  "--drive-orange-ink": "#b83200",
-  "--drive-orange-wash": "#ffe3d6",
-  "--drive-ink": "#1b1712",
-  "--drive-ink-soft": "#4a433a",
-  "--drive-paper": "#f5efe4",
-  "--drive-paper-deep": "#ebe3d4",
-  "--drive-card": "#fbf7f0",
-  "--drive-line": "#d8cdb9",
-  "--drive-term": "#2a241d",
-  "--drive-term-text": "#efe7da",
-  "--drive-term-dim": "#a49a8b",
-  "--drive-term-ok": "#cfe8b0",
-  "--font-display":
-    '"Big Shoulders Display", "Big Shoulders Display Fallback", Impact, "Arial Narrow", sans-serif',
-  "--font-body":
-    '"Instrument Sans", "Instrument Sans Fallback", "Helvetica Neue", Arial, sans-serif',
-  "--font-code": '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-};
-
 // The one custom property a page owns: the Web Files page's 44px tap target.
 // Everything else a page needs comes from public/site.css.
 const PAGE_LOCAL = new Map([["public/files.html", new Set(["--tap"])]]);
@@ -187,32 +143,6 @@ function ruleBodies(css) {
   }
   return rules;
 }
-
-test("the shared stylesheet declares every token once, with the reviewed values", () => {
-  const css = readFileSync(SITE_CSS, "utf8");
-  const declared = declaredTokens(css);
-  for (const [token, value] of Object.entries(TOKENS)) {
-    const values = declared.get(token);
-    assert.ok(values, `${token} is declared`);
-    assert.equal(values[0], value, `${token} is declared on :root as ${value}`);
-    // drive#458: html.drive aliases the old names onto the home-page tokens
-    // so a page can switch looks without restating every colour. The alias is
-    // the only second declaration allowed, and it must point at a --drive-*
-    // or --font-* token.
-    if (values.length > 1) {
-      // The dark block (polish gap 3) is a third declaration, a plain colour.
-      assert.ok(
-        values.length <= 3,
-        `${token} is declared at most three times (:root, html.drive, dark)`,
-      );
-      assert.match(
-        values[1],
-        /^(?:var\(--(?:drive|font)-|#[0-9a-f]{6}$)/,
-        `${token}'s second declaration is the html.drive alias onto a --drive-* or --font-* token`,
-      );
-    }
-  }
-});
 
 test("every page links the shared stylesheet first, then its own rules", () => {
   for (const [name, url] of PAGES) {

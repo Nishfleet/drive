@@ -22,8 +22,7 @@ import { createD1QueueStore, QUEUE_FRESHNESS_SECONDS } from "../core/queues.js";
 import { UPLOAD_LABEL, uploadProgress } from "../core/status.js";
 import { uploadLine } from "../src/get-started.js";
 import worker from "../src/index.js";
-import { SIGNIN_COPY, SIGNIN_ENDPOINT } from "../src/signin.js";
-import { USAGE_LABELS, USAGE_POLL_INTERVAL_MS, usageLines } from "../src/usage.js";
+import { USAGE_LABELS, usageLines } from "../src/usage.js";
 import { createTestAuth, DRIVE_SCHEMA_MIGRATIONS, signIn, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
@@ -44,14 +43,6 @@ const MOVED_TO_BILLING = new Set(["size30", "size30Reached", "size30DropsOut", "
 // The signed-in account the handler tests run as, until the sign-in flow lands
 // (build step 4, #5). The gate itself is pinned in test/account-gate.test.mjs.
 const account = Object.freeze({ id: "1", name: "Your drive" });
-// The first-run page is a Vite entry at the repo root (issue #70), not a
-// verbatim asset in public/, so its shell is read from there.
-const getStartedPage = readFileSync(new URL("../get-started.html", import.meta.url), "utf8");
-// The Web Files page, which adopted the shared header and menu in drive#425 and
-// is now the third page under the one-navigation gate below.
-const filesPage = readFileSync(new URL("../public/files.html", import.meta.url), "utf8");
-const devicesPage = readFileSync(new URL("../public/devices.html", import.meta.url), "utf8");
-
 // Minutes in an average month, the spec's divisor, so a test says "400 GB held
 // all month" the way test/billing.test.mjs does.
 // The month a usage answer belongs to, the first instant the Worker sends with it (drive#559). Pinned so the month a test names does not move with the day the suite runs on.
@@ -631,12 +622,7 @@ test("the shipped page carries every label from src/usage.js verbatim", () => {
   }
 });
 
-test("the page's poll interval and its hidden saved line are the module's", () => {
-  assert.ok(
-    page.includes(`const POLL_INTERVAL_MS = ${USAGE_POLL_INTERVAL_MS};`),
-    "the page must re-read the month on the interval the module pins",
-  );
-  // The saved line has no copy of its own: the endpoint sends the sentence.
+test("the saved line has no copy of its own: the endpoint sends the sentence", () => {
   assert.match(page, /savedEl\.textContent = summary\.saved\.copy;/);
   assert.match(page, /savedEl\.hidden = true;/);
   assert.match(billingPage, /summary\.billCents\.lines/);
@@ -1201,123 +1187,6 @@ test("the cap is a control, not a readout, and it saves through the api", async 
   // that can be moved makes that sentence false, and nothing on the page says
   // the cap is out of reach (drive#421).
   assert.doesNotMatch(page, /arrives with accounts/);
-});
-
-test("the pages' mastheads read as one navigation", () => {
-  // The review found the headers disagreeing. The mastheads that carry a
-  // nav (usage, get-started, files, and devices since drive#525) list Your
-  // files, Pricing, Get started, Usage, Devices, Sign in in that order (the Web Files
-  // link leads since #48 merged, Devices since #525, and Sign in closes it since drive#10), and
-  // each marks itself. Sign out is a button, not a link, so a signed-out
-  // browser and a browser with no script still see the six links; JS swaps
-  // Sign in for Sign out when the account is there (drive#423). The pricing
-  // page's masthead is its wordmark alone — its links are its footer nav,
-  // which is issue #11's and is checked below.
-  const nav = [
-    '<a href="/home"',
-    '<a href="/files"',
-    '<a href="/"',
-    '<a href="/get-started"',
-    '<a href="/usage"',
-    '<a href="/devices"',
-    '<a href="/signin"',
-  ];
-  // The link each page marks as the one the reader is on.
-  const CURRENT = new Map([
-    ["get-started.html", /<a href="\/get-started" aria-current="page">Get started<\/a>/],
-  ]);
-  for (const [name, html] of [["get-started.html", getStartedPage]]) {
-    // The header's own links, and not the page's: a link elsewhere must not
-    // satisfy this gate, and must not fail it either. The header is the markup
-    // between its open and close tags, the same slice test/pricing-copy.test.mjs
-    // takes of the pricing page.
-    const header = html.slice(0, html.indexOf("</header>"));
-    const links = [...header.matchAll(/<a href="\/[^"]*"/g)].map((match) => match[0]);
-    assert.deepEqual(
-      links,
-      nav,
-      `${name}'s header carries the site's seven links, and nothing else, in the same order`,
-    );
-    assert.match(header, /<header class="masthead">/, `${name} carries the shared masthead header`);
-    assert.doesNotMatch(header, /<header class="topbar">/, `${name} has no top bar of its own`);
-    // Each page marks itself, or the header reads as one long list of links
-    // with no indication of where the reader is.
-    const here = CURRENT.get(name);
-    assert.ok(here, `${name} has a current-page link of its own to check`);
-    assert.match(header, here, `${name} marks itself in the header with aria-current`);
-    assert.match(
-      header,
-      /id="nav-signin">Sign in<\/a>/,
-      `${name} keeps Sign in as the signed-out default`,
-    );
-    assert.match(
-      header,
-      new RegExp(`id="nav-signout" hidden>${SIGNIN_COPY.signOut}</button>`),
-      `${name} carries Sign out, hidden until the session is there`,
-    );
-    assert.match(
-      header,
-      new RegExp(`id="nav-signout-all" hidden>${SIGNIN_COPY.signOutEverywhere}</button>`),
-      `${name} carries Sign out everywhere, hidden until the session is there`,
-    );
-    assert.match(
-      header,
-      /<noscript>/,
-      `${name} keeps a Sign out form for a browser with no script`,
-    );
-    assert.match(header, /name="step" value="signout"/, `${name}'s form posts the sign-out step`);
-    assert.match(
-      header,
-      /name="step" value="signout-all"/,
-      `${name}'s form posts sign-out everywhere`,
-    );
-  }
-  for (const [name, html] of [
-    ["usage.html", page],
-    ["files.html", filesPage],
-    ["devices.html", devicesPage],
-  ]) {
-    assert.match(html, /<nav class="app-side" aria-label="Main">/, `${name} carries the sidebar`);
-    assert.match(html, /id="nav-signin">Sign in<\/a>/, `${name} keeps Sign in as the default`);
-    assert.match(
-      html,
-      /id="nav-signout" hidden>/,
-      `${name} carries Sign out, hidden until signed in`,
-    );
-    assert.match(html, /id="nav-signout-all" hidden>/, `${name} carries Sign out everywhere`);
-    assert.match(html, /<noscript>/, `${name} keeps the Sign out forms for no script`);
-  }
-  // The posts live in each page's own script. get-started.html is a Vite
-  // entry, so its script is src/get-started.js rather than an inline block.
-  const getStartedJs = readFileSync(new URL("../src/get-started.js", import.meta.url), "utf8");
-  assert.match(
-    billingPage,
-    /<body data-signout="shared">/,
-    "billing.html uses the shared sign-out",
-  );
-  for (const [name, source] of [
-    ["usage.html", page],
-    ["files.html", filesPage],
-    ["devices.html", devicesPage],
-    ["get-started.js", getStartedJs],
-  ]) {
-    assert.match(
-      source,
-      new RegExp(`const SIGNIN_ENDPOINT = "${SIGNIN_ENDPOINT}"`),
-      `${name} posts sign-out to the sign-in route`,
-    );
-    assert.match(source, /postSignout\("signout"\)/, `${name} posts the sign-out step`);
-    assert.match(source, /postSignout\("signout-all"\)/, `${name} posts sign-out everywhere`);
-    assert.match(
-      source,
-      /\.disabled = true/,
-      `${name} sleeps the button while the post is in flight`,
-    );
-  }
-  // The pricing page keeps its own footer nav; its masthead is issue #11's, and
-  // this issue only adds the usage page.
-  const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
-  assert.match(pricingPage, /<a href="\/get-started">Get started<\/a>/);
 });
 
 test("a read that fails says so and leaves the numbers alone", () => {

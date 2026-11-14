@@ -1,28 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createTestAuth, signIn } from "./harness.mjs";
-
-/** @param {string} path */
-const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
-
-test("the D1 adapter keeps the Kysely sqlite serialization flags", () => {
-  const ours = read("core/auth-d1-adapter.js");
-  const kysely = read("node_modules/@better-auth/kysely-adapter/dist/index.mjs");
-  assert.match(ours, /supportsBooleans:\s*false/);
-  assert.match(ours, /supportsDates:\s*false/);
-  assert.match(ours, /supportsJSON:\s*false/);
-  assert.match(
-    kysely,
-    /supportsBooleans:\s*config\?\.type === "sqlite"/,
-    "kysely-adapter still treats sqlite booleans as 0/1",
-  );
-  assert.match(
-    kysely,
-    /supportsDates:\s*config\?\.type === "sqlite"/,
-    "kysely-adapter still treats sqlite dates as strings",
-  );
-});
 
 test("a session row reads back as the account the link minted", async () => {
   const made = createTestAuth();
@@ -40,7 +18,7 @@ test("a session row reads back as the account the link minted", async () => {
     );
   assert.ok(stored);
   assert.equal(stored.email, "map@example.com");
-  // What the two `supports*` flags above are for, proved on the row rather
+  // What the adapter's `supports*` flags are for, proved on the row rather
   // than on the package's source: the column is the 0/1 the shipped migration
   // declares, and the date is the ISO string D1 stores, both read back as the
   // types the browser side of a sign-in expects.

@@ -16,6 +16,7 @@ last 20 deliveries.
 | --- | --- |
 | `balance.topped_up` | A top-up was paid and added to your balance. |
 | `balance.low` | Your balance fell to $2 or less. Sent once each time it falls that low, like the low-balance email. |
+| `usage.threshold` | The biggest size in your last 30 days passed a new whole 100 GB step. Sent once per step, with `bytes` and `threshold_bytes`. |
 | `webhook.test` | You pressed **Send test**. |
 
 Each call is a `POST` with a JSON body:

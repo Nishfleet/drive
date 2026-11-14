@@ -8,7 +8,7 @@ import {
   size30Window,
   unpackDrawRemainder,
 } from "./billing.js";
-import { resolveDodoUrl } from "./dodo.js";
+import { resolveDodoUrl, savedPaymentMethodId } from "./dodo.js";
 import { sendEmail } from "./email-send.js";
 import {
   appendLedgerEntry,
@@ -26,6 +26,7 @@ import { monthStart, size30Through } from "./meter-usage.js";
 import { pauseAccountKeys } from "./prepaid-pause.js";
 import { unauthorizedResponse } from "./status.js";
 import { formatCents, parseTopUpCents, TOPUP_PURPOSE } from "./topup.js";
+import { emitUsageThresholds } from "./usage-thresholds.js";
 import { emitEvent } from "./webhooks.js";
 
 const PREPAID_PAUSE_ON = "on";
@@ -324,7 +325,7 @@ async function drawForDay(db, accountId, day, now, skipEmpty = false) {
   const cents = centsFromDrawnMillicents(step.drawMillicents, remainderIn.unpostedMillicents);
   const reached =
     size30.reachedHour === null ? null : new Date(size30.reachedHour).toISOString().slice(0, 10);
-  await db
+  const written = await db
     .prepare(
       `INSERT INTO daily_draws (
         account_id, day, size30_bytes, size30_reached, monthly_millicents,
@@ -352,6 +353,7 @@ async function drawForDay(db, accountId, day, now, skipEmpty = false) {
   if (stored === null) {
     throw new Error(`daily_draws row missing after insert for ${accountId} ${day}`);
   }
+  const recorded = Number(written.meta?.changes ?? 0) > 0;
   const drawMillicents = Number(stored.draw_millicents);
   if (!Number.isSafeInteger(drawMillicents) || drawMillicents < 0) {
     throw new TypeError(
@@ -363,6 +365,9 @@ async function drawForDay(db, accountId, day, now, skipEmpty = false) {
     remainderIn.unpostedMillicents,
   ).drawCents;
   if (amountCents === 0) {
+    if (recorded) {
+      await emitUsageThresholds(db, accountId, day, size30.size30Bytes, now);
+    }
     return 0;
   }
   const nextDayStart = dayStart + 24 * HOUR_MS;
@@ -384,6 +389,9 @@ async function drawForDay(db, accountId, day, now, skipEmpty = false) {
     throw new TypeError(`hourly draw count does not parse for ${accountId} ${day}`);
   }
   if (hourlyCount > 0) {
+    if (recorded) {
+      await emitUsageThresholds(db, accountId, day, size30.size30Bytes, now);
+    }
     return 0;
   }
   const { inserted } = await appendLedgerEntry(db, {
@@ -394,6 +402,9 @@ async function drawForDay(db, accountId, day, now, skipEmpty = false) {
     windowStart: dayStart,
     now,
   });
+  if (recorded) {
+    await emitUsageThresholds(db, accountId, day, size30.size30Bytes, now);
+  }
   return inserted ? amountCents : 0;
 }
 
@@ -678,21 +689,20 @@ async function startAutoTopUp(db, accountId, cents, deps, now) {
     authorization: `Bearer ${deps.apiKey}`,
     "content-type": "application/json",
   };
-  const methods = await fetchImpl(
-    resolveDodoUrl(deps.baseUrl, `/customers/${encodeURIComponent(customerId)}/payment-methods`),
-    { headers },
-  );
-  if (!methods.ok) {
-    throw new Error(`auto top-up: listing saved cards failed with status ${methods.status}`);
+  const saved = await savedPaymentMethodId({
+    apiKey: deps.apiKey,
+    baseUrl: deps.baseUrl,
+    customerId,
+    fetch: deps.fetch,
+  });
+  if (!saved.ok) {
+    throw new Error(`auto top-up: listing saved cards failed with status ${saved.status}`);
   }
-  const list = /** @type {{items?: Array<{payment_method_id?: unknown}>}} */ (await methods.json());
-  const paymentMethodId = list.items?.find(
-    (item) => typeof item.payment_method_id === "string" && item.payment_method_id !== "",
-  )?.payment_method_id;
-  if (typeof paymentMethodId !== "string") {
+  if (saved.paymentMethodId === null) {
     console.error("prepaid: auto top-up is on but there is no saved card", `account=${accountId}`);
     return false;
   }
+  const paymentMethodId = saved.paymentMethodId;
   const charged = await fetchImpl(resolveDodoUrl(deps.baseUrl, "/checkouts"), {
     method: "POST",
     headers,

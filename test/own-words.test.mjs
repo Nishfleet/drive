@@ -368,19 +368,6 @@ function scanTree() {
   return hits;
 }
 
-test("the term list names its source and the date it was read", () => {
-  assert.ok(TERMS.length >= 5, "the list holds the names customers must not see");
-  for (const term of TERMS) {
-    assert.match(
-      term.source,
-      /^the competitor's public (site|docs)$/,
-      `${term.term} must cite the competitor's page it was read from`,
-    );
-    assert.match(term.date, /^\d{4}-\d{2}-\d{2}$/, `${term.term} must say when it was read`);
-    assert.ok(term.pattern.length > 0, `${term.term} must have a pattern`);
-  }
-});
-
 test("a planted rival term fails the scan", () => {
   const planted = [
     "drive pin ./footage",

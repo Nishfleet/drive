@@ -8,10 +8,6 @@ import (
 	"testing"
 )
 
-// `drive restore` talks to the two routes core/files-history.js serves. The
-// server here answers with the same JSON, and records what the command sent,
-// so the request and the printed lines are checked against that contract.
-
 type restoreServer struct {
 	versions []EarlierCopy
 	posted   []map[string]string

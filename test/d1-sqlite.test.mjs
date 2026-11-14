@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { test } from "node:test";
-import { MIGRATION_FILES, makeMeteredDB } from "./d1-sqlite.mjs";
+import { sendEmail } from "../core/email-send.js";
+import { at, MIGRATION_FILES, makeMeteredDB } from "./d1-sqlite.mjs";
 import { createTestD1, DRIVE_MIGRATIONS } from "./harness.mjs";
 
 /**
@@ -331,4 +332,101 @@ test("iterate() takes the same expansion as the other reads", () => {
     "SELECT hour FROM usage_minutes WHERE hour >= ?1 AND hour < (?1 + 1500) ORDER BY hour";
   const hours = [...sqlite.prepare(sql).iterate(1500)].map((row) => row.hour);
   assert.deepEqual(hours, [2000]);
+});
+
+// The send ledger (migrations/drive/0060_email_sends.sql, drive#1206), proven
+// against the schema these migrations build, because the whole decision is the
+// database's: the INSERT ... ON CONFLICT DO NOTHING in core/email-send.js is
+// what keeps a second cap warning out of one month, and a stand-in that fakes
+// the upsert would prove nothing about D1.
+test("two cap-warning sends in one month send one mail; the next month sends again", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  /** @type {Array<{to: string, subject: string}>} */
+  const mail = [];
+  const email = {
+    /** @param {{to: string, subject: string}} message */
+    async send(message) {
+      mail.push({ to: message.to, subject: message.subject });
+      return { messageId: `m-${mail.length}` };
+    },
+  };
+  const send = (/** @type {number} */ now) =>
+    sendEmail(email, {
+      to: "person@example.com",
+      from: "drive@drive.test",
+      kind: "cap-warning",
+      data: { capUsd: 4.8 },
+      ledger: { db, accountId: "acct-1", now },
+    });
+
+  const october = at("2026-10-08T12:00:00.000Z");
+  const first = await send(october);
+  assert.equal(first.sent, true);
+  // A second send later the same month claims nothing and mails nothing.
+  const again = await send(at("2026-10-30T23:59:00.000Z"));
+  assert.equal(again.sent, false);
+  assert.equal(mail.length, 1, "the month's second cap-warning mailed");
+
+  // November is a new period: the same send mails again, and the ledger now
+  // holds one row per period, keyed (account_id, kind, period).
+  const nextMonth = await send(at("2026-11-01T00:00:01.000Z"));
+  assert.equal(nextMonth.sent, true);
+  assert.equal(mail.length, 2, "the next month's crossing did not mail");
+  const rows = sqlite
+    .prepare("SELECT account_id, kind, period, sent_at FROM email_sends ORDER BY period")
+    .all();
+  assert.deepEqual(
+    rows.map((row) => [row.account_id, row.kind, row.period]),
+    [
+      ["acct-1", "cap-warning", "2026-10"],
+      ["acct-1", "cap-warning", "2026-11"],
+    ],
+  );
+  assert.equal(rows[0].sent_at, Math.floor(october / 1000));
+});
+
+test("a cap-warning send that throws hands its ledger claim back, so the retry mails", async () => {
+  const { db, sqlite } = makeMeteredDB();
+  const now = at("2026-10-08T12:00:00.000Z");
+  const down = {
+    async send() {
+      throw new Error("the mail provider is down");
+    },
+  };
+  await assert.rejects(
+    () =>
+      sendEmail(down, {
+        to: "person@example.com",
+        from: "drive@drive.test",
+        kind: "cap-warning",
+        data: { capUsd: 4.8 },
+        ledger: { db, accountId: "acct-1", now },
+      }),
+    /mail provider is down/,
+  );
+  assert.deepEqual(
+    sqlite.prepare("SELECT * FROM email_sends").all(),
+    [],
+    "a failed send kept the month's claim, so the notice would never retry",
+  );
+  // The next trip, with the provider back, mails -- the claim was the failed
+  // send's own, and the failed send released it.
+  const mail = [];
+  const email = {
+    /** @param {{to: string, subject: string}} message */
+    async send(message) {
+      mail.push({ to: message.to, subject: message.subject });
+      return { messageId: "m-1" };
+    },
+  };
+  const retried = await sendEmail(email, {
+    to: "person@example.com",
+    from: "drive@drive.test",
+    kind: "cap-warning",
+    data: { capUsd: 4.8 },
+    ledger: { db, accountId: "acct-1", now },
+  });
+  assert.equal(retried.sent, true);
+  assert.equal(mail.length, 1);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM email_sends").get().n, 1);
 });

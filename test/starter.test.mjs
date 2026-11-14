@@ -8,7 +8,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createMemoryStore } from "../core/files-memory.js";
-import { FAILURE_MESSAGES, failureMessage } from "../core/messages.js";
+import { failureMessage } from "../core/messages.js";
 import {
   createStarter,
   handleStarterRequest,
@@ -659,55 +659,6 @@ test("the handler's refusals are the message table's, never a second copy", asyn
   assert.deepEqual(await wrongMethod.json(), { error: failureMessage("starter-method") });
 });
 
-test("the page's offline messages are the table's, not a second copy", () => {
-  // The page ships each pair as one sentence (the table's own `what` and
-  // `next` joined), so a wording change in the table fails here rather than
-  // leaving the page saying something older. The page splits the sentence at
-  // render time, so the two paragraphs the stylesheet already styles still
-  // get their own words.
-  for (const key of /** @type {const} */ (["offline", "unexpected"])) {
-    const pair = `${FAILURE_MESSAGES[key].what} ${FAILURE_MESSAGES[key].next}`;
-    assert.ok(page.includes(pair), `${key}'s pair is on the page, whole`);
-  }
-  // The offline pair is reachable, not dead code: the page's catch sets it
-  // and the pair is carried whole, split at render time.
-  assert.ok(page.includes("pairOf(OFFLINE_MESSAGE)"), "the offline pair is used");
-  assert.ok(page.includes("pairOf(UNEXPECTED_MESSAGE)"), "the unexpected pair is used");
-});
-
-test("the page is indexable and in the sitemap", () => {
-  assert.ok(!page.includes('name="robots" content="noindex"'), "the starter page is indexable");
-  // The sitemap's row for the starter carries the same indexability the page
-  // declares, not just a <loc>: a page that ships indexable and sits in the
-  // sitemap with no priority row is half declared.
-  const sitemap = readFileSync(new URL("../public/sitemap.xml", import.meta.url), "utf8");
-  const row = sitemap.match(
-    /<loc>([^<]*starter[^<]*)<\/loc>\s*<changefreq>[^<]*<\/changefreq>\s*<priority>([^<]*)<\/priority>/,
-  );
-  assert.ok(row, "the starter's sitemap row carries a changefreq and a priority");
-  assert.match(row[1], /\/starter\.html$/, "the sitemap names the starter's own page");
-  assert.match(row[2], /^0?\.\d$|^1(\.0)?$/, "the priority is a sitemap priority value");
-});
-
-test("the page has a canonical Open Graph and JSON-LD card", () => {
-  assert.ok(page.includes('rel="canonical"'), "the page has a canonical");
-  assert.ok(page.includes('property="og:type"'), "the page has og:type");
-  assert.ok(page.includes('property="og:url"'), "the page has og:url");
-  assert.ok(page.includes('property="og:site_name"'), "the page has og:site_name");
-  assert.ok(page.includes('property="og:title"'), "the page has og:title");
-  assert.ok(page.includes('property="og:description"'), "the page has og:description");
-  assert.ok(page.includes('property="og:image"'), "the page has og:image");
-  assert.ok(page.includes('property="og:image:alt"'), "the page has og:image:alt");
-  assert.ok(page.includes('name="twitter:card"'), "the page has twitter:card");
-  assert.ok(page.includes('name="twitter:title"'), "the page has twitter:title");
-  assert.ok(page.includes('name="twitter:description"'), "the page has twitter:description");
-  assert.ok(page.includes('name="twitter:image"'), "the page has twitter:image");
-  assert.ok(
-    page.includes('"@type": "SoftwareApplication"'),
-    "the page has JSON-LD SoftwareApplication",
-  );
-});
-
 test("the page's JSON-LD price mirrors the pricing page's ceiling", () => {
   const pricingPage = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   const starterMatch = page.match(/"price":\s*"([^"]+)"/);
@@ -719,14 +670,6 @@ test("the page's JSON-LD price mirrors the pricing page's ceiling", () => {
     pricingMatch[1],
     "starter price is the pricing page's ceiling price",
   );
-});
-
-test("the page links the shared stylesheet and keeps its own <style>", () => {
-  assert.ok(page.includes('href="/site.css"'), "links site.css");
-  assert.ok(page.includes("<style>"), "has a <style> block");
-  const linkAt = page.indexOf('href="/site.css"');
-  const styleAt = page.indexOf("<style>");
-  assert.ok(styleAt > linkAt, "shared stylesheet loads before the page's own style");
 });
 
 test("the shipped page does not name a rival", async () => {

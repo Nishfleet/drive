@@ -191,7 +191,6 @@ func TestMountPlanUsesVFSFlagsAndPlatformSubcommand(t *testing.T) {
 				t.Errorf("%s: command line missing %q:\n%s", tc.goos, want, line)
 			}
 		}
-		// rclone takes the next argument as the duration when the flag has no value of its own.
 		if args := p.Args(); !hasArgPair(args, "--dir-cache-time", vfsDirCacheTimeValue) {
 			t.Errorf("%s: --dir-cache-time and %s are not adjacent args:\n%v", tc.goos, vfsDirCacheTimeValue, args)
 		}
@@ -479,7 +478,6 @@ func TestRcloneConfigRendersTheSessionTokenWhenThereIsOne(t *testing.T) {
 	if !strings.Contains(got, "no_check_bucket = true") {
 		t.Errorf("a scoped key cannot HeadBucket, so rclone must skip the check:\n%s", got)
 	}
-	// rclone ignores an s3 backend option it does not know and signs without it.
 	if !strings.Contains(got, "type = s3") {
 		t.Errorf("the session token needs the s3 backend to mean anything:\n%s", got)
 	}

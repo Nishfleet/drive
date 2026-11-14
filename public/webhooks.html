@@ -125,6 +125,11 @@ form.add fieldset {
   border: 0;
 }
 
+.hint {
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -249,6 +254,7 @@ form.add fieldset {
         <fieldset>
           <legend>Events (none ticked means all of them)</legend>
           <div id="add-events"></div>
+          <p class="hint">usage.threshold fires when the biggest size in your last 30 days passes each new 100 GB step.</p>
         </fieldset>
         <div><button type="submit" class="btn btn-primary">Add endpoint</button></div>
       </form>

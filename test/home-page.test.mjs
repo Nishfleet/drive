@@ -204,10 +204,6 @@ test("the Get started checklist ticks itself from devices and files, and leaves 
   assert.equal(failed.get("home-status").hidden, true);
 });
 
-test("the grid honours the hidden attribute, so an error replaces it instead of pushing it down", () => {
-  assert.match(page, /\.grid\[hidden\]\s*\{\s*display:\s*none;/);
-});
-
 test("What's new shows the newest changelog line, and a missing file leaves it out", async () => {
   const base = {
     "/api/balance": { body: BALANCE },

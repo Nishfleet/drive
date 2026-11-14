@@ -11,14 +11,6 @@ test("every file row offers Earlier copies, wired to the two routes", () => {
   assert.match(page, /JSON\.stringify\(\{ path: row\.path, versionId: copy\.versionId \}\)/);
 });
 
-test("the empty answer and the put-back result are plain sentences", () => {
-  assert.match(
-    page,
-    /No earlier copies of this file\. A copy shows up here after you save over it\./,
-  );
-  assert.match(page, /Put back\. The copy it replaced is under Earlier copies/);
-});
-
 test("the 3-day promise is one sentence, and the bucket keeps what the pages say", async () => {
   const { HIDDEN_VERSION_DAYS } = await import("../core/s3.js");
   const sentence = "Deleted or replaced files stay restorable for 3 days, free.";

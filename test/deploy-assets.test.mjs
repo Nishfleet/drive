@@ -432,6 +432,75 @@ test("a /v1/* request crosses the service binding unchanged", async () => {
   );
 });
 
+test("a forwarded answer with immutable headers is forwarded, not a 500 (drive#1169)", async () => {
+  // A service binding hands back the Response the target Worker produced, and
+  // that Response's headers are immutable: any `headers.set` on it throws
+  // "Can't modify immutable headers". secureHeaders (src/index-app.js) sets
+  // headers on every answer, so a forwarded reply that is passed on as it is
+  // turns into a 500 on every /v1/* call and on the one /api/* route
+  // forwarded ahead of the gate.
+  //
+  // The api Worker's own replies are built with `new Response(...)`, whose
+  // headers can change, so a stub that returns one hides the bug. This stub
+  // returns the shape a real binding hands back: a Response built by
+  // `fetch()`, whose headers cannot be set.
+  const immutable = (/** @type {BodyInit|null} */ body, /** @type {ResponseInit} */ init) => {
+    const reply = new Response(body, init);
+    // A Response from fetch() has immutable headers; this is that shape.
+    Object.defineProperty(reply, "headers", {
+      value: new Proxy(reply.headers, {
+        get(target, property) {
+          if (property === "set" || property === "append" || property === "delete") {
+            return () => {
+              throw new TypeError("Can't modify immutable headers");
+            };
+          }
+          const value = Reflect.get(target, property);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+    });
+    return reply;
+  };
+
+  for (const [path, method] of [
+    ["/v1/health", "GET"],
+    [REVOKE_PATH, "POST"],
+  ]) {
+    const response = await siteRequest(new Request(`https://drive.test${path}`, { method }), {
+      API: {
+        fetch: () =>
+          Promise.resolve(
+            immutable(JSON.stringify({ ok: true }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+          ),
+      },
+    });
+    assert.equal(
+      response.status,
+      200,
+      `${method} ${path} must answer the api Worker's own status, not a 500 from secureHeaders (drive#1169)`,
+    );
+    assert.deepEqual(
+      await response.json(),
+      { ok: true },
+      `${method} ${path} must answer the api Worker's own body`,
+    );
+    assert.equal(
+      response.headers.get("content-type"),
+      "application/json",
+      "the api Worker's own headers survive the re-wrap",
+    );
+    assert.equal(
+      response.headers.get("x-content-type-options"),
+      "nosniff",
+      "secureHeaders must still set its headers on the forwarded answer",
+    );
+  }
+});
+
 test("a deployment with no api binding is a closed door, not an open one", async () => {
   // drive-api is not deployed yet, so no binding exists: the family answers its
   // closed door instead of falling through to the asset layer, which would

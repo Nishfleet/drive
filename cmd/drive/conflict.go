@@ -75,7 +75,6 @@ func isStockHostname(hostname string) bool {
 	return false
 }
 
-// macOS hostnames are case-insensitive and a resolver can answer ".LOCAL".
 func trimLocal(hostname string) string {
 	h := strings.TrimSpace(hostname)
 	if len(h) >= len(".local") && strings.EqualFold(h[len(h)-len(".local"):], ".local") {
@@ -131,7 +130,6 @@ func machineID() string {
 func platformMachineID() string {
 	switch runtime.GOOS {
 	case "darwin":
-		// ioreg lives in /usr/sbin, which a minimal PATH can leave out.
 		iorg := "/usr/sbin/ioreg"
 		if _, err := os.Stat(iorg); err != nil {
 			iorg = "ioreg"
