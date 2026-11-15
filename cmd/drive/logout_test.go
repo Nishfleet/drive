@@ -393,11 +393,12 @@ func TestLogoutStopsALiveMount(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mountDir, "file.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(8 * time.Second)
-	if q, err := PendingUploads(DefaultCacheDir(home)); err != nil {
-		t.Fatal(err)
-	} else if q.Files != 0 {
-		t.Fatalf("the upload did not finish inside the write-back: %d file(s) still queued", q.Files)
+	if !waitFor(t, 30*time.Second, func() bool {
+		q, err := PendingUploads(DefaultCacheDir(home))
+		return err == nil && q.Files == 0
+	}) {
+		q, err := PendingUploads(DefaultCacheDir(home))
+		t.Fatalf("the upload did not finish: %d file(s) still queued, %v", q.Files, err)
 	}
 
 	ks := newKeyServer(t, home, accessKey, secretKey)

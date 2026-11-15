@@ -6,7 +6,6 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -20,6 +19,7 @@ import { createS3KeyProvider } from "../core/s3-keys.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { killTracked, spawnTracked, startMinioStandin } from "./minio-standin.mjs";
 import { reportSkip } from "./proof-skip.mjs";
+import { waitForExit, waitUntil } from "./wait-for.mjs";
 
 const run = promisify(execFile);
 const TEST_FILE = fileURLToPath(import.meta.url);
@@ -75,13 +75,20 @@ function findRclone() {
  * @param {number} seconds
  */
 async function waitForObject(client, bucket, key, seconds) {
-  const deadline = Date.now() + seconds * 1000;
-  for (;;) {
-    const got = await client.send("GET", { bucket, key });
-    if (got.status === 200) return got;
-    if (Date.now() > deadline) return got;
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(400);
+  try {
+    return await waitUntil(
+      async () => {
+        const got = await client.send("GET", { bucket, key });
+        return got.status === 200 ? got : null;
+      },
+      seconds * 1000,
+      `the object ${key} to be stored`,
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("timed out after")) {
+      return client.send("GET", { bucket, key });
+    }
+    throw error;
   }
 }
 
@@ -141,31 +148,37 @@ async function startMount(rcloneBin, workDir, cred) {
   child.stderr?.on("data", (chunk) => {
     stderr += chunk;
   });
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    if (child.exitCode !== null) {
-      const log = await readFile(logPath, "utf8").catch(() => "");
-      const tail = log.split("\n").slice(-8).join("\n");
-      const err = /** @type {Error & {refusedFuse?: boolean}} */ (
-        new Error(`rclone mount exited ${child.exitCode}\n${stderr}${tail}`)
-      );
-      err.refusedFuse = /Operation not permitted|fusermount:/.test(`${stderr}${tail}`);
-      throw err;
-    }
-    try {
-      await run("findmnt", ["-n", "-M", mountDir]);
-      return { mountDir, cacheDir, logPath, rcSocket, child };
-    } catch {
-      if (Date.now() > deadline) {
-        child.kill("SIGTERM");
+  const attempt = waitUntil(
+    async () => {
+      if (child.exitCode !== null) {
         const log = await readFile(logPath, "utf8").catch(() => "");
-        throw new Error(
-          `rclone mount never came up in 30s\n${stderr}${log.split("\n").slice(-8).join("\n")}`,
+        const tail = log.split("\n").slice(-8).join("\n");
+        const err = /** @type {Error & {refusedFuse?: boolean}} */ (
+          new Error(`rclone mount exited ${child.exitCode}\n${stderr}${tail}`)
         );
+        err.refusedFuse = /Operation not permitted|fusermount:/.test(`${stderr}${tail}`);
+        throw err;
       }
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      await sleep(400);
-    }
+      try {
+        await run("findmnt", ["-n", "-M", mountDir]);
+        return { mountDir, cacheDir, logPath, rcSocket, child };
+      } catch {
+        return null;
+      }
+    },
+    30_000,
+    "rclone mount to come up",
+    () => stderr,
+  );
+  try {
+    return await attempt;
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith("timed out after")) throw error;
+    child.kill("SIGTERM");
+    const log = await readFile(logPath, "utf8").catch(() => "");
+    throw new Error(
+      `rclone mount never came up in 30s\n${stderr}${log.split("\n").slice(-8).join("\n")}`,
+    );
   }
 }
 
@@ -180,30 +193,57 @@ async function startMount(rcloneBin, workDir, cred) {
  * @param {number} seconds
  */
 async function waitForQueued(rcloneBin, m, name, ready, seconds) {
-  const deadline = Date.now() + seconds * 1000;
-  for (;;) {
-    const { stdout } = await run(rcloneBin, ["rc", "--unix-socket", m.rcSocket, "vfs/queue"]);
-    const item = JSON.parse(stdout).queue?.find(
-      (/** @type {{name: string}} */ q) => q.name === name,
+  let last = "";
+  try {
+    return await waitUntil(
+      async () => {
+        const { stdout } = await run(rcloneBin, ["rc", "--unix-socket", m.rcSocket, "vfs/queue"]);
+        last = stdout;
+        const item = JSON.parse(stdout).queue?.find(
+          (/** @type {{name: string}} */ q) => q.name === name,
+        );
+        return item && ready(item) ? item : null;
+      },
+      seconds * 1000,
+      `rclone's upload queue to reach the state for ${name}`,
+      () => last,
     );
-    if (item && ready(item)) return item;
-    if (Date.now() > deadline) {
-      throw new Error(`rclone's upload queue never reached the state for ${name}: ${stdout}`);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("timed out after")) {
+      throw new Error(`rclone's upload queue never reached the state for ${name}: ${last}`);
     }
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(200);
+    throw error;
   }
 }
 
 /** @param {{child: import("node:child_process").ChildProcess, mountDir: string}} m */
 async function stopMount(m) {
   m.child.kill("SIGTERM");
-  const exited = new Promise((resolve) => m.child.once("exit", resolve));
-  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-  await Promise.race([exited, sleep(10_000)]);
+  await waitForExit(m.child, 10_000);
   if (m.child.exitCode === null) killTracked(m.child, "SIGKILL");
   await run("fusermount3", ["-uz", m.mountDir]).catch(() => {});
   await run("fusermount", ["-uz", m.mountDir]).catch(() => {});
+  await waitForUnmounted(m.mountDir);
+}
+
+/**
+ * Wait until the kernel no longer lists a mount point at `mountDir`, the state
+ * a restart needs before the same directory can be mounted again.
+ * @param {string} mountDir
+ */
+async function waitForUnmounted(mountDir) {
+  await waitUntil(
+    async () => {
+      try {
+        await run("findmnt", ["-n", "-M", mountDir]);
+        return false;
+      } catch {
+        return true;
+      }
+    },
+    10_000,
+    `${mountDir} to be unmounted`,
+  );
 }
 
 /**
@@ -345,8 +385,6 @@ async function proof(t, rcloneBin, workDir) {
   t.diagnostic(`cap 0 swapped to ${cappedBody.credential.accessKeyId}`);
 
   await stopMount(mount);
-  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-  await sleep(500);
   mount = await startMount(rcloneBin, workDir, credFor(cappedBody.credential));
   const keptAfter = await readFile(path.join(mount.mountDir, "kept.txt"), "utf8");
   assert.equal(keptAfter, keptBody, "the capped mount still reads the file that was there");
@@ -411,8 +449,6 @@ async function proof(t, rcloneBin, workDir) {
   );
 
   await stopMount(mount);
-  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-  await sleep(500);
   mount = await startMount(rcloneBin, workDir, credFor(raisedBody.credential));
   const pendingAfter = await waitForObject(root, BUCKET, pendingKey, 70);
   if (pendingAfter.status !== 200) {

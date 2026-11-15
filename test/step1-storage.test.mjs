@@ -4,7 +4,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { platform } from "node:os";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import {
   bucketForAccount,
   CAPABILITIES_BY_KIND,
@@ -22,6 +21,7 @@ import { createS3KeyProvider, policyForScope } from "../core/s3-keys.js";
 import { dispatch } from "../workers/api/src/index.js";
 import { startMinioStandin } from "./minio-standin.mjs";
 import { reportSkip } from "./proof-skip.mjs";
+import { waitUntil } from "./wait-for.mjs";
 
 // The last MinIO release, pinned by tag. MinIO's own downloads and Docker Hub
 // images were taken down at the end of 2025 and its GitHub repo is archived;
@@ -508,30 +508,27 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
     assert.ok(savedVersion, "the bucket gives the save a version, so the event can be named by it");
     t.diagnostic(`save ${savedAt}: version ${savedVersion}`);
 
-    const deadline = Date.now() + 30_000;
-    let line = null;
-    for (;;) {
-      const lines = logMock.mock.calls.map((call) => call.arguments.join(" "));
-      // The log line names the event and the version the bucket created, never
-      // the object's path (issue #583), so this save's own line is the one
-      // carrying the version this save was given.
-      line =
-        lines.find(
-          (candidate) =>
-            candidate.includes("storage event s3:ObjectCreated:Put") &&
-            candidate.includes(`version=${savedVersion}`),
-        ) ?? null;
-      if (line !== null) {
-        break;
-      }
-      if (Date.now() > deadline) {
+    // The log line names the event and the version the bucket created, never
+    // the object's path (issue #583), so this save's own line is the one
+    // carrying the version this save was given.
+    const line = await waitUntil(
+      () =>
+        logMock.mock.calls
+          .map((call) => call.arguments.join(" "))
+          .find(
+            (candidate) =>
+              candidate.includes("storage event s3:ObjectCreated:Put") &&
+              candidate.includes(`version=${savedVersion}`),
+          ) ?? null,
+      30_000,
+      `the ObjectCreated event for ${key}`,
+      () => {
+        const lines = logMock.mock.calls.map((call) => call.arguments.join(" "));
         t.diagnostic(`worker log lines after 30s: ${JSON.stringify(lines)}`);
         t.diagnostic(`receiver answers: ${JSON.stringify(receiver.answers)}`);
-        throw new Error(`no ObjectCreated event for ${key} reached the worker in 30s`);
-      }
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      await sleep(500);
-    }
+        return "no ObjectCreated event reached the worker";
+      },
+    );
     t.diagnostic(`worker log: ${line}`);
     assert.ok(!line.includes(key), `the log line must not name the object's path: ${line}`);
 
@@ -605,20 +602,15 @@ test("step 1 on a stock S3 stand-in: scoped keys, a hidden version, and an event
       // Poll receiver.answers (the Worker's own route) rather than the
       // log mock: the route is the contract, and a logger swap breaks
       // this proof, not a silent timeout.
-      const deadline = Date.now() + 30_000;
-      let answer = null;
-      for (;;) {
-        answer = receiver.answers.find((a) => a.body.includes(key)) ?? null;
-        if (answer !== null) {
-          break;
-        }
-        if (Date.now() > deadline) {
+      const answer = await waitUntil(
+        () => receiver.answers.find((a) => a.body.includes(key)) ?? null,
+        30_000,
+        `the ObjectCreated event for ${key}`,
+        () => {
           t.diagnostic(`receiver answers after 30s: ${JSON.stringify(receiver.answers)}`);
-          throw new Error(`no ObjectCreated event for the awkward key reached the worker in 30s`);
-        }
-        // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-        await sleep(500);
-      }
+          return "no ObjectCreated event reached the worker";
+        },
+      );
       t.diagnostic(`receiver answer: ${JSON.stringify(answer.body)}`);
     },
   );

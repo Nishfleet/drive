@@ -180,26 +180,30 @@ func TestTwoSavesSecondsApartInOneWindowBothSurvive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mountA, name), []byte(bodyA), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(2 * time.Second)
+	// The scenario is a second save while the first is still waiting in the
+	// cache, so wait for A's save to be a real pending upload rather than for a
+	// fixed gap to elapse.
+	if !waitFor(t, 15*time.Second, func() bool {
+		pending, err := PendingUploads(DefaultCacheDir(homeA))
+		return err == nil && pending.Files > 0
+	}) {
+		t.Fatal("device A's first save never became a pending upload")
+	}
 	if err := os.WriteFile(filepath.Join(mountB, name), []byte(bodyB), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	candidates := []string{ConflictName(name, deviceA), ConflictName(name, "linux")}
 	var kept string
-	deadline := time.Now().Add(90 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, 90*time.Second, func() bool {
 		for _, n := range candidates {
 			if _, err := os.Stat(filepath.Join(mountA, n)); err == nil {
 				kept = n
 				break
 			}
 		}
-		if kept != "" {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+		return kept != ""
+	})
 	if kept == "" {
 		t.Fatalf("one save was lost: neither %v appeared on device A", candidates)
 	}
@@ -256,16 +260,14 @@ func queueHasName(q Queue, name string) bool {
 
 func releaseSavesTogether(t *testing.T, a, b *rcClient, homeA, homeB, name string) {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
 	seenBoth := false
 	var lastA, lastB error
-	for time.Now().Before(deadline) {
+	waitFor(t, 20*time.Second, func() bool {
 		qa, errA := a.ReadQueue(context.Background())
 		qb, errB := b.ReadQueue(context.Background())
 		lastA, lastB = errA, errB
 		if errA != nil || errB != nil {
-			time.Sleep(100 * time.Millisecond)
-			continue
+			return false
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if queueHasName(qa, name) {
@@ -283,10 +285,10 @@ func releaseSavesTogether(t *testing.T, a, b *rcClient, homeA, homeB, name strin
 		cancel()
 		if queueHasName(qa, name) && queueHasName(qb, name) {
 			seenBoth = true
-			break
+			return true
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return false
+	})
 	if !seenBoth {
 		t.Fatalf("both devices did not queue %s within 20s (A queue err=%v, B queue err=%v)", name, lastA, lastB)
 	}
@@ -325,7 +327,7 @@ func waitGuardPasses(t *testing.T, home string, passes int) {
 			seen++
 			continue
 		}
-		time.Sleep(50 * time.Millisecond)
+		pause(50 * time.Millisecond)
 	}
 	if seen < passes {
 		t.Fatalf("the conflict guard in %s finished %d of %d passes with the saves held in the queue", home, seen, passes)
@@ -350,19 +352,15 @@ func logStandinListing(t *testing.T, root string, cfg StorageConfig) {
 func proveBothSavesKept(t *testing.T, root string, cfg StorageConfig, rcA, rcB *rcClient, mountA, mountB, name, bodyA, bodyB string, candidates []string) string {
 	t.Helper()
 	var kept string
-	deadline := time.Now().Add(90 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, 90*time.Second, func() bool {
 		for _, n := range candidates {
 			if _, err := os.Stat(standinObjectPath(root, cfg, n)); err == nil {
 				kept = n
 				break
 			}
 		}
-		if kept != "" {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+		return kept != ""
+	})
 	if kept == "" {
 		logStandinListing(t, root, cfg)
 		qa, errA := rcA.ReadQueue(context.Background())
@@ -407,31 +405,25 @@ func proveBothSavesKept(t *testing.T, root string, cfg StorageConfig, rcA, rcB *
 
 func waitMountSees(t *testing.T, c *rcClient, dir string, names []string) {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
 	var last error
-	for time.Now().Before(deadline) {
+	if !waitFor(t, 20*time.Second, func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := c.refresh(ctx, false)
 		cancel()
 		if err != nil {
 			last = err
-			time.Sleep(500 * time.Millisecond)
-			continue
+			return false
 		}
-		missing := false
 		for _, n := range names {
 			if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
 				last = err
-				missing = true
-				break
+				return false
 			}
 		}
-		if !missing {
-			return
-		}
-		time.Sleep(500 * time.Millisecond)
+		return true
+	}) {
+		t.Fatalf("mount %s did not show %v: %v", dir, names, last)
 	}
-	t.Fatalf("mount %s did not show %v: %v", dir, names, last)
 }
 
 func logMountLogsOnFailure(t *testing.T, homes ...string) {

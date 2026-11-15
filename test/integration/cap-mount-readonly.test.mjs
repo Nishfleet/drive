@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -18,6 +17,7 @@ import { createS3Client, provisionBucket } from "../../core/s3.js";
 import { createS3KeyProvider } from "../../core/s3-keys.js";
 import { makeMeteredDB } from "../d1-sqlite.mjs";
 import { killTracked, spawnTracked, startMinioStandin } from "../minio-standin.mjs";
+import { waitForExit, waitUntil } from "../wait-for.mjs";
 
 const run = promisify(execFile);
 const TEST_FILE = fileURLToPath(import.meta.url);
@@ -81,6 +81,7 @@ function reportResult(status, detail = "") {
  * @typedef {object} LiveMount
  * @property {string} mountDir
  * @property {string} cacheDir
+ * @property {string} logPath
  * @property {import("node:child_process").ChildProcess} child
  */
 
@@ -150,33 +151,39 @@ async function startMount({ workDir, label, mountDir, cacheDir, cred }) {
     stderr += chunk;
   });
 
-  const deadline = Date.now() + 40_000;
-  for (;;) {
-    if (child.exitCode !== null) {
-      const log = await readFile(logPath, "utf8").catch(() => "");
-      const refused = /Operation not permitted|fusermount/.test(`${stderr}${log}`);
-      const err = /** @type {Error & {refusedFuse?: boolean}} */ (
-        new Error(
-          `rclone mount ${label} exited ${child.exitCode}\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
-        )
-      );
-      if (refused) err.refusedFuse = true;
-      throw err;
-    }
-    try {
-      await run("findmnt", ["-n", "-M", mountDir]);
-      return { mountDir, cacheDir, child };
-    } catch {
-      if (Date.now() > deadline) {
-        child.kill("SIGTERM");
+  const attempt = waitUntil(
+    async () => {
+      if (child.exitCode !== null) {
         const log = await readFile(logPath, "utf8").catch(() => "");
-        throw new Error(
-          `rclone mount ${label} never came up in 40s\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
+        const refused = /Operation not permitted|fusermount/.test(`${stderr}${log}`);
+        const err = /** @type {Error & {refusedFuse?: boolean}} */ (
+          new Error(
+            `rclone mount ${label} exited ${child.exitCode}\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
+          )
         );
+        if (refused) err.refusedFuse = true;
+        throw err;
       }
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      await sleep(500);
-    }
+      try {
+        await run("findmnt", ["-n", "-M", mountDir]);
+        return { mountDir, cacheDir, logPath, child };
+      } catch {
+        return null;
+      }
+    },
+    40_000,
+    `rclone mount ${label} to come up`,
+    () => stderr,
+  );
+  try {
+    return await attempt;
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith("timed out after")) throw error;
+    child.kill("SIGTERM");
+    const log = await readFile(logPath, "utf8").catch(() => "");
+    throw new Error(
+      `rclone mount ${label} never came up in 40s\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
+    );
   }
 }
 
@@ -188,14 +195,11 @@ async function startMount({ workDir, label, mountDir, cacheDir, cred }) {
  */
 async function stopMount(mount) {
   mount.child.kill("SIGTERM");
-  const exited = new Promise((resolve) => mount.child.once("exit", resolve));
-  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-  await Promise.race([exited, sleep(10_000)]);
+  await waitForExit(mount.child, 10_000);
   if (mount.child.exitCode === null) mount.child.kill("SIGKILL");
   await run("fusermount3", ["-uz", mount.mountDir]).catch(() => {});
   await run("fusermount", ["-uz", mount.mountDir]).catch(() => {});
-  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-  await sleep(500);
+  await waitForUnmounted(mount.mountDir);
 }
 
 /**
@@ -209,17 +213,61 @@ async function stopMount(mount) {
  */
 async function killMount(mount) {
   killTracked(mount.child, "SIGKILL");
-  const exited = new Promise((resolve) => mount.child.once("exit", resolve));
-  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-  await Promise.race([exited, sleep(10_000)]);
+  await waitForExit(mount.child, 10_000);
   if (mount.child.exitCode === null) killTracked(mount.child, "SIGKILL");
   // The kernel releases a FUSE point when the last reference to it goes, which
   // a killed process no longer holds; a lazy unmount clears anything the dead
   // mount left behind.
   await run("fusermount3", ["-uz", mount.mountDir]).catch(() => {});
   await run("fusermount", ["-uz", mount.mountDir]).catch(() => {});
-  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-  await sleep(500);
+  await waitForUnmounted(mount.mountDir);
+}
+
+/**
+ * Wait until the kernel no longer lists a mount point at `mountDir`, the state
+ * a restart needs before the same directory can be mounted again.
+ * @param {string} mountDir
+ */
+async function waitForUnmounted(mountDir) {
+  await waitUntil(
+    async () => {
+      try {
+        await run("findmnt", ["-n", "-M", mountDir]);
+        return false;
+      } catch {
+        return true;
+      }
+    },
+    10_000,
+    `${mountDir} to be unmounted`,
+  );
+}
+
+/**
+ * The files rclone's VFS cache holds as dirty, by record name, read from the
+ * same `vfsMeta` records cmd/drive/status.go's PendingUploads reads. A dirty
+ * record is rclone's own statement that the bytes are in the cache and have
+ * not finished uploading, which is what "a real pending upload" means here.
+ * @param {string} cacheDir
+ * @returns {Promise<string[]>}
+ */
+async function dirtyCacheNames(cacheDir) {
+  const entries = await readdir(path.join(cacheDir, "vfsMeta"), {
+    recursive: true,
+    withFileTypes: true,
+  }).catch(() => []);
+  const names = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const raw = await readFile(path.join(entry.parentPath, entry.name), "utf8").catch(() => "");
+    try {
+      const meta = JSON.parse(raw);
+      if (meta.Dirty) names.push(entry.name);
+    } catch {
+      // A record rclone is still writing; the next tick reads it again.
+    }
+  }
+  return names;
 }
 
 /**
@@ -229,16 +277,23 @@ async function killMount(mount) {
  * @returns {Promise<boolean>}
  */
 async function waitForFile(mountDir, name, seconds) {
-  const deadline = Date.now() + seconds * 1000;
-  for (;;) {
-    try {
-      await stat(path.join(mountDir, name));
-      return true;
-    } catch {
-      if (Date.now() > deadline) return false;
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      await sleep(500);
-    }
+  try {
+    await waitUntil(
+      async () => {
+        try {
+          await stat(path.join(mountDir, name));
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      seconds * 1000,
+      `${name} to appear in ${mountDir}`,
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("timed out after")) return false;
+    throw error;
   }
 }
 
@@ -421,9 +476,11 @@ async function proof(t, workDir) {
   // Give rclone's write-back more than its 5s window so the ordinary case is
   // settled (the file is in storage), then confirm it. This proves the happy
   // path writes through BEFORE anything is capped.
-  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-  await sleep(8000);
-  const pendingUploaded = await objectBody(master, bucket, `${prefix}pending.txt`);
+  const pendingUploaded = await waitUntil(
+    () => objectBody(master, bucket, `${prefix}pending.txt`),
+    30_000,
+    "the pending.txt write to reach storage",
+  );
   assert.equal(
     pendingUploaded,
     pending,
@@ -440,10 +497,17 @@ async function proof(t, workDir) {
   const inFlight = "uploaded while the cap was landing\n";
   await writeFile(path.join(mountDir, "in-flight.txt"), inFlight);
   assert.ok(await waitForFile(mountDir, "in-flight.txt", 30), "the file is accepted by the mount");
-  // Spend only a fraction of the 5s write-back, then prove the object is not
-  // in storage yet: it is a real pending upload, not luck.
-  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-  await sleep(1500);
+  // Wait for rclone's own cache record to mark the file dirty: the bytes are in
+  // the VFS cache and the upload has not finished. That is the real pending
+  // state, so the proof does not depend on guessing a fraction of the window.
+  await waitUntil(
+    async () =>
+      (await dirtyCacheNames(/** @type {LiveMount} */ (mount).cacheDir)).some((name) =>
+        name.includes("in-flight.txt"),
+      ),
+    30_000,
+    "rclone to record in-flight.txt as a dirty cache entry",
+  );
   assert.equal(
     await objectBody(master, bucket, `${prefix}in-flight.txt`),
     null,
@@ -598,8 +662,21 @@ async function proof(t, workDir) {
   // cache and fails the upload later, the test that matters is the same: the
   // object is not in storage. A cache that holds it is the spec's promise, not
   // a leak.
-  // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-  await sleep(7000);
+  // Wait for rclone to have tried the upload and been refused, so "never" is
+  // about a real attempt rather than a guessed delay. If FUSE refused the write
+  // itself there is no upload to wait for.
+  if (!readOnlyWriteRefused) {
+    await waitUntil(
+      async () => {
+        const log = await readFile(/** @type {LiveMount} */ (mount).logPath, "utf8").catch(
+          () => "",
+        );
+        return /after-cap\.txt.*(?:Failed to copy|403|AccessDenied|Forbidden)/i.test(log);
+      },
+      60_000,
+      "the read-only mount's upload of after-cap.txt to be refused",
+    );
+  }
   assert.equal(
     (await objectBody(master, bucket, `${prefix}after-cap.txt`)) ?? null,
     null,
@@ -670,19 +747,12 @@ async function proof(t, workDir) {
   await writeFile(path.join(mountDir, "restored.txt"), afterRaiseBody);
   assert.ok(await waitForFile(mountDir, "restored.txt", 30), "the restored mount takes a new file");
   // The write-back, not the cache, is what "writing again" means.
-  const deadline = Date.now() + 45_000;
-  for (;;) {
-    const body = await objectBody(master, bucket, `${prefix}restored.txt`);
-    if (body !== null) {
-      assert.equal(body, afterRaiseBody, "and the new file reaches storage byte for byte");
-      break;
-    }
-    if (Date.now() > deadline) {
-      assert.fail("the restored mount's new file never reached storage in 45s");
-    }
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(1000);
-  }
+  const restoredBody = await waitUntil(
+    () => objectBody(master, bucket, `${prefix}restored.txt`),
+    45_000,
+    "the restored mount's new file to reach storage",
+  );
+  assert.equal(restoredBody, afterRaiseBody, "and the new file reaches storage byte for byte");
 
   // The upload that waited through the cap goes up too when the drive can write
   // again — the promise the spec makes is "until the cap is raised", and this
@@ -690,19 +760,12 @@ async function proof(t, workDir) {
   // upload was stranded in the cache at the cap and still was not in storage
   // under the read-only key; after the raise the same cache dir is reused, so
   // rclone's pending upload from phase 1 is what lands now.
-  const pendingDeadline = Date.now() + 60_000;
-  for (;;) {
-    const body = await objectBody(master, bucket, `${prefix}in-flight.txt`);
-    if (body !== null) {
-      assert.equal(body, inFlight, "the upload that waited through the cap is not lost");
-      break;
-    }
-    if (Date.now() > pendingDeadline) {
-      assert.fail("the upload that waited through the cap never reached storage");
-    }
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(1000);
-  }
+  const inFlightBody = await waitUntil(
+    () => objectBody(master, bucket, `${prefix}in-flight.txt`),
+    60_000,
+    "the upload that waited through the cap to reach storage",
+  );
+  assert.equal(inFlightBody, inFlight, "the upload that waited through the cap is not lost");
 
   // And the file that predates the cap is still there, after the whole cycle.
   assert.equal(

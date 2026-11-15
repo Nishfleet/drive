@@ -532,13 +532,12 @@ func TestWindowsMountProof(t *testing.T) {
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
-	time.Sleep(8 * time.Second)
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	if string(got) != string(body) {
-		t.Errorf("read back %q, want %q", got, body)
+	var got []byte
+	if !waitFor(t, 20*time.Second, func() bool {
+		got, err = os.ReadFile(path)
+		return err == nil && string(got) == string(body)
+	}) {
+		t.Fatalf("read back %q, %v, want %q", got, err, body)
 	}
 
 	if out, err := exec.Command(bin, "unmount", "--home", home).CombinedOutput(); err != nil {

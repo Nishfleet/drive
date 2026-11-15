@@ -248,14 +248,7 @@ func (h *benchStandin) objectSize(name string) int64 {
 }
 
 func (h *benchStandin) waitStored(name string, want int64, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if h.objectSize(name) == want {
-			return true
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return false
+	return waitUntil(time.Now().Add(timeout), func() bool { return h.objectSize(name) == want })
 }
 
 func (h *benchStandin) storageName() string {
@@ -388,7 +381,9 @@ func BenchmarkListFolder(b *testing.B) {
 	if err := h.seedFolder(folder, h.sizes.listN); err != nil {
 		b.Fatal(err)
 	}
-	time.Sleep(6 * time.Second)
+	if !waitPath(filepath.Join(h.mountDir, folder), 20*time.Second, func(err error) bool { return err == nil }) {
+		b.Fatalf("the seeded %s never appeared through the mount", folder)
+	}
 	start := time.Now()
 	entries, err := os.ReadDir(filepath.Join(h.mountDir, folder))
 	if err != nil {
@@ -648,7 +643,9 @@ func BenchmarkBigFolderRename(b *testing.B) {
 	if err := h.seedFolder(src, h.sizes.listN); err != nil {
 		b.Fatal(err)
 	}
-	time.Sleep(6 * time.Second)
+	if !waitPath(filepath.Join(h.mountDir, src), 20*time.Second, func(err error) bool { return err == nil }) {
+		b.Fatalf("the seeded %s never appeared through the mount", src)
+	}
 	start := time.Now()
 	if err := os.Rename(filepath.Join(h.mountDir, src), filepath.Join(h.mountDir, "bench-rename-dst")); err != nil {
 		b.Fatalf("rename the folder through the mount: %v", err)
@@ -710,27 +707,17 @@ func BenchmarkCLIColdStart(b *testing.B) {
 }
 
 func waitPath(path string, timeout time.Duration, check func(error) bool) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	return waitUntil(time.Now().Add(timeout), func() bool {
 		_, err := os.Stat(path)
-		if check(err) {
-			return true
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return false
+		return check(err)
+	})
 }
 
 func waitFileEquals(path, want string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	return waitUntil(time.Now().Add(timeout), func() bool {
 		got, err := os.ReadFile(path)
-		if err == nil && string(got) == want {
-			return true
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return false
+		return err == nil && string(got) == want
+	})
 }
 
 func BenchmarkPrefetchCLIColdStart(b *testing.B) {
@@ -803,8 +790,12 @@ func BenchmarkPrefetchBrowse(b *testing.B) {
 	if _, err := h.rclone("copy", local, RemoteFor(h.cfg)+"/browse"); err != nil {
 		b.Fatal(err)
 	}
-	time.Sleep(6 * time.Second)
 	parent := filepath.Join(h.mountDir, "browse")
+	for _, name := range []string{"small-a.bin", "small-b.bin"} {
+		if !waitPath(filepath.Join(parent, name), 20*time.Second, func(err error) bool { return err == nil }) {
+			b.Fatalf("the copied %s never appeared through the mount", name)
+		}
+	}
 	if _, err := os.ReadDir(parent); err != nil {
 		b.Fatalf("list parent: %v", err)
 	}
@@ -893,8 +884,12 @@ func BenchmarkReadDuringPrefetch(b *testing.B) {
 	if _, err := h.rclone("copy", local, RemoteFor(h.cfg)+"/busy"); err != nil {
 		b.Fatal(err)
 	}
-	time.Sleep(6 * time.Second)
 	busy := filepath.Join(h.mountDir, "busy")
+	for _, name := range []string{"user-a.bin", "user-b.bin"} {
+		if !waitPath(filepath.Join(busy, name), 20*time.Second, func(err error) bool { return err == nil }) {
+			b.Fatalf("the copied %s never appeared through the mount", name)
+		}
+	}
 	done := make(chan struct{})
 	go func() {
 		_ = prefetchOnce(busy)

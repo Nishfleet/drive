@@ -6,12 +6,12 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { killTracked, spawnTracked } from "./minio-standin.mjs";
 import { reportSkip } from "./proof-skip.mjs";
 import { rivalHits } from "./rival-terms.mjs";
+import { waitForExit, waitUntil } from "./wait-for.mjs";
 
 const run = promisify(execFile);
 const TEST_FILE = fileURLToPath(import.meta.url);
@@ -165,21 +165,27 @@ async function startStandin(dir, configPath) {
   server.stderr?.on("data", (chunk) => {
     stderr += chunk;
   });
-  const deadline = Date.now() + 20_000;
-  for (;;) {
-    if (server.exitCode !== null)
-      throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
-    try {
-      await run("bash", ["-c", `exec 3<>/dev/tcp/127.0.0.1/${port}`]);
-      break;
-    } catch {
-      if (Date.now() > deadline) {
-        killTracked(server);
-        throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
-      }
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      await sleep(300);
-    }
+  try {
+    await waitUntil(
+      async () => {
+        if (server.exitCode !== null) {
+          throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
+        }
+        try {
+          await run("bash", ["-c", `exec 3<>/dev/tcp/127.0.0.1/${port}`]);
+          return true;
+        } catch {
+          // Not listening yet.
+          return false;
+        }
+      },
+      20_000,
+      "rclone serve s3 to listen",
+      () => stderr,
+    );
+  } catch (error) {
+    killTracked(server);
+    throw error;
   }
   return {
     endpoint: `http://127.0.0.1:${port}`,
@@ -247,37 +253,33 @@ async function startDrive(workDir, cfg) {
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
   });
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    if (child.exitCode !== null) {
-      const log = await readFile(logPath, "utf8").catch(() => "");
-      const refused = /Operation not permitted|fusermount:/.test(`${stderr}${log}`);
-      const err = /** @type {Error & {refusedFuse?: boolean}} */ (
-        new Error(
-          `rclone mount exited ${child.exitCode}\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
-        )
-      );
-      if (refused) err.refusedFuse = true;
-      throw err;
-    }
-    // A live mount is a mount point in the kernel's table; an empty directory
-    // rclone has not mounted lists identically, so findmnt is the probe (the
-    // same check cmd/drive/mount.go's Mounted() uses).
-    try {
-      await run("findmnt", ["-n", "-M", mountDir]);
-      return { mountDir, child };
-    } catch {
-      if (Date.now() > deadline) {
-        child.kill("SIGTERM");
+  return waitUntil(
+    async () => {
+      if (child.exitCode !== null) {
         const log = await readFile(logPath, "utf8").catch(() => "");
-        throw new Error(
-          `rclone mount never came up in 30s\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
+        const refused = /Operation not permitted|fusermount:/.test(`${stderr}${log}`);
+        const err = /** @type {Error & {refusedFuse?: boolean}} */ (
+          new Error(
+            `rclone mount exited ${child.exitCode}\n${stderr}${log.split("\n").slice(-6).join("\n")}`,
+          )
         );
+        if (refused) err.refusedFuse = true;
+        throw err;
       }
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      await sleep(500);
-    }
-  }
+      // A live mount is a mount point in the kernel's table; an empty directory
+      // rclone has not mounted lists identically, so findmnt is the probe (the
+      // same check cmd/drive/mount.go's Mounted() uses).
+      try {
+        await run("findmnt", ["-n", "-M", mountDir]);
+        return { mountDir, child };
+      } catch {
+        return null;
+      }
+    },
+    30_000,
+    "rclone mount to come up",
+    () => stderr,
+  );
 }
 
 // --- demo 1: an agent reads and edits files on the drive ---------------------
@@ -743,8 +745,7 @@ async function proof(t, workDir) {
   const cleanup = async () => {
     if (drive) {
       drive.child.kill("SIGTERM");
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      await Promise.race([new Promise((r) => drive?.child.once("exit", r)), sleep(10_000)]);
+      await waitForExit(drive.child, 10_000);
       if (drive.child.exitCode === null) drive.child.kill("SIGKILL");
       await run("fusermount3", ["-uz", drive.mountDir]).catch(() => {});
       await run("fusermount", ["-uz", drive.mountDir]).catch(() => {});

@@ -25,18 +25,20 @@ export const HISTORY_ENDPOINT = "/api/history";
 const HISTORY_WINDOWS = Object.freeze([HIDDEN_VERSION_DAYS, 30, 365]);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-// biome-ignore lint/plugin: constant lookup table, never written, so per-isolate state is harmless
-const LABELS = new Map([
-  [HIDDEN_VERSION_DAYS, "Keep history 3 days"],
-  [30, "Keep history 30 days"],
-  [365, "Keep history 1 year"],
-]);
-// biome-ignore lint/plugin: constant lookup table, never written, so per-isolate state is harmless
-const WORDS = new Map([
-  [HIDDEN_VERSION_DAYS, `${HIDDEN_VERSION_DAYS} days`],
-  [30, "30 days"],
-  [365, "1 year"],
-]);
+// The labels and words are constant lookup tables: plain records, never
+// written, so there is no per-isolate state to lose.
+/** @type {Readonly<Record<number, string>>} */
+const LABELS = Object.freeze({
+  [HIDDEN_VERSION_DAYS]: "Keep history 3 days",
+  30: "Keep history 30 days",
+  365: "Keep history 1 year",
+});
+/** @type {Readonly<Record<number, string>>} */
+const WORDS = Object.freeze({
+  [HIDDEN_VERSION_DAYS]: `${HIDDEN_VERSION_DAYS} days`,
+  30: "30 days",
+  365: "1 year",
+});
 
 /**
  * The sentence shown beside a window before it is turned on: what is kept, and
@@ -46,14 +48,14 @@ const WORDS = new Map([
  */
 function priceLine(days, extraCents) {
   if (days <= HIDDEN_VERSION_DAYS) {
-    return `Deleted and replaced files stay restorable for ${WORDS.get(days)}, free.`;
+    return `Deleted and replaced files stay restorable for ${WORDS[days]}, free.`;
   }
   const per100 = formatCents(monthBillCents({ size30Bytes: 100_000_000_000 }).totalCents);
   const now =
     extraCents > 0
       ? `At your current rate of change that adds about ${formatCents(extraCents)} a month${days > 30 ? " (an estimate)" : ""}.`
       : "At your current rate of change that adds nothing yet.";
-  return `Deleted and replaced files stay restorable for ${WORDS.get(days)}. Old copies count toward your size, so ${now.charAt(0).toLowerCase()}${now.slice(1)} Each 100 GB of old copies adds ${per100} a month, never more than $15 per TB.`;
+  return `Deleted and replaced files stay restorable for ${WORDS[days]}. Old copies count toward your size, so ${now.charAt(0).toLowerCase()}${now.slice(1)} Each 100 GB of old copies adds ${per100} a month, never more than $15 per TB.`;
 }
 
 /**
@@ -133,7 +135,7 @@ export async function handleHistoryRequest(request, account, db, options = {}) {
         const impact = priceImpact(window, size30Bytes, oldBytes30);
         return {
           days: window,
-          label: LABELS.get(window),
+          label: LABELS[window],
           free: window === HIDDEN_VERSION_DAYS,
           ...impact,
           estimate: window > 30,

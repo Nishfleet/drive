@@ -22,7 +22,7 @@
 // kill the process groups on that path. `t.after` is still the normal teardown.
 
 import { spawn, spawnSync } from "node:child_process";
-import { setTimeout as sleep } from "node:timers/promises";
+import { waitUntil } from "./wait-for.mjs";
 
 /**
  * A container a run started is left behind when its owner died without
@@ -179,23 +179,17 @@ async function boundPort(engine, name, port) {
   if (port !== 0) {
     return port;
   }
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    const logs = spawnSync(engine, ["logs", name], { encoding: "utf8" });
-    const logged = /API:[^\n]*https?:\/\/(?:127\.0\.0\.1|0\.0\.0\.0):(\d+)/.exec(
-      `${logs.stdout}${logs.stderr}`,
-    );
-    if (logged) {
-      return Number(logged[1]);
-    }
-    if (Date.now() > deadline) {
-      throw new Error(
-        `the stand-in ${name} logged no "API:" address on 127.0.0.1 or 0.0.0.0 in 30s:\n${logs.stdout}${logs.stderr}`,
+  return waitUntil(
+    () => {
+      const logs = spawnSync(engine, ["logs", name], { encoding: "utf8" });
+      const logged = /API:[^\n]*https?:\/\/(?:127\.0\.0\.1|0\.0\.0\.0):(\d+)/.exec(
+        `${logs.stdout}${logs.stderr}`,
       );
-    }
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(250);
-  }
+      return logged ? Number(logged[1]) : null;
+    },
+    30_000,
+    `the stand-in ${name} to log its API address`,
+  );
 }
 
 /**
@@ -266,25 +260,23 @@ export async function startMinioStandin({ name, environment, port }, t) {
     throw new Error(`\`${engine} run\` exited ${status}: ${stderr}`);
   }
   const endpoint = `http://127.0.0.1:${await boundPort(engine, name, port)}`;
-  const deadline = Date.now() + 60_000;
-  for (;;) {
-    try {
-      const response = await fetch(`${endpoint}/minio/health/live`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      if (response.ok) {
-        t.diagnostic(`started ${MINIO_IMAGE} as ${name} on ${endpoint}`);
-        return { endpoint };
+  await waitUntil(
+    async () => {
+      try {
+        const response = await fetch(`${endpoint}/minio/health/live`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        return response.ok;
+      } catch {
+        // still starting
+        return false;
       }
-    } catch {
-      // still starting
-    }
-    if (Date.now() > deadline) {
-      throw new Error(`the S3 stand-in at ${endpoint} never answered /minio/health/live in 60s`);
-    }
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(500);
-  }
+    },
+    60_000,
+    `the S3 stand-in at ${endpoint} to answer /minio/health/live`,
+  );
+  t.diagnostic(`started ${MINIO_IMAGE} as ${name} on ${endpoint}`);
+  return { endpoint };
 }
 
 /**

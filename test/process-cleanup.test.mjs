@@ -4,8 +4,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { containerEngine } from "./minio-standin.mjs";
+import { waitForExit, waitUntil } from "./wait-for.mjs";
 
 /** @param {string} bin */
 const has = (bin) => spawnSync(bin, ["version"], { stdio: "ignore" }).status === 0;
@@ -67,21 +67,6 @@ const removeContainer = (engine, name) => {
   if (engine && name) spawnSync(engine, ["rm", "-f", "-v", name], { stdio: "ignore" });
 };
 
-/**
- * @param {() => boolean} predicate
- * @param {number} ms
- * @param {string} what
- */
-const waitUntil = async (predicate, ms, what) => {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    if (predicate()) return;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(200);
-  }
-};
-
 test("a signalled test process leaves no container and no rclone serve behind", {
   timeout: 180_000,
   skip: has("rclone") ? false : "rclone is not installed",
@@ -104,9 +89,7 @@ test("a signalled test process leaves no container and no rclone serve behind", 
   t.after(async () => {
     if (typeof child.pid === "number" && alive(child.pid)) {
       child.kill("SIGTERM");
-      const deadline = Date.now() + 15_000;
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      while (alive(child.pid) && Date.now() < deadline) await sleep(200);
+      await waitForExit(child, 15_000);
       if (alive(child.pid)) child.kill("SIGKILL");
     }
     if (rclonePid) {

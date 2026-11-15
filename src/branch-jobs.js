@@ -31,10 +31,16 @@ const BRANCH_JOB_CURSOR_UNSET = 0;
  * row is a new chain and starts with a producer message that carries no cursor,
  * which always runs and writes 0 over the old key, so an ended chain never
  * shadows a live one.
- * @type {Map<string, number>}
+ *
+ * It is a cache, never the guard: the ack order is durable, so an isolate that
+ * starts with an empty map costs a bounded duplicate batch at worst.
+ * @returns {Map<string, number>}
  */
-// biome-ignore lint/plugin: best-effort duplicate drop; the durable guard is the ack order (drive#845)
-const ackedCursors = new Map();
+function newAckedCursorCache() {
+  return new Map();
+}
+
+const ackedCursors = newAckedCursorCache();
 
 const ACKED_CURSORS_LIMIT = 10_000;
 

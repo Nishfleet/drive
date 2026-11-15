@@ -3,7 +3,6 @@ import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { platform } from "node:os";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { parseListVersions } from "../core/files.js";
 import { bucketForAccount } from "../core/keyprovider.js";
 import { createMemoryStore } from "../core/keystore.js";
@@ -18,6 +17,7 @@ import { dispatch } from "../workers/api/src/index.js";
 import { makeMeteredDB } from "./d1-sqlite.mjs";
 import { startMinioStandin } from "./minio-standin.mjs";
 import { reportSkip } from "./proof-skip.mjs";
+import { waitUntil } from "./wait-for.mjs";
 
 // No bucket is named at module level: the bucket this proof provisions is the
 // account's own (`drv-<accountId>`, keyprovider.js `bucketForAccount`),
@@ -324,19 +324,13 @@ test("a full day of GB-minutes matches the storage provider's own report within 
   /** @param {number} count
    * @param {number} seconds */
   const waitFor = async (count, seconds) => {
-    const deadline = Date.now() + seconds * 1000;
-    for (;;) {
-      if (receiver.answers.length >= count) {
-        return;
-      }
-      if (Date.now() > deadline) {
-        throw new Error(
-          `only ${receiver.answers.length} of ${count} deliveries arrived in ${seconds}s: ${JSON.stringify(receiver.answers.map((/** @type {{status: number}} */ a) => a.status))}`,
-        );
-      }
-      // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-      await sleep(250);
-    }
+    await waitUntil(
+      () => receiver.answers.length >= count,
+      seconds * 1000,
+      `${count} webhook deliveries`,
+      () =>
+        `only ${receiver.answers.length} arrived: ${JSON.stringify(receiver.answers.map((/** @type {{status: number}} */ a) => a.status))}`,
+    );
   };
   await waitFor(3, 60);
 

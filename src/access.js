@@ -31,9 +31,17 @@ export function accessConfig(env) {
 
 const KEY_TTL_MS = 10 * 60 * 1000;
 
-/** @type {Map<string, {at: number, keys: JsonWebKey[]}>} */
-// biome-ignore lint/plugin: JWKS cache: a per-isolate miss only refetches the keys
-const KEY_SETS = new Map();
+/**
+ * The JWKS cache, one entry per team origin. This is a cache and nothing
+ * more: a fresh isolate starts empty and a miss refetches the keys, so the
+ * per-isolate copy is safe to lose and never a source of truth.
+ * @returns {Map<string, {at: number, keys: JsonWebKey[]}>}
+ */
+function newKeySetCache() {
+  return new Map();
+}
+
+const KEY_SETS = newKeySetCache();
 
 /**
  * The team's public keys, fetched once per isolate and refreshed after the

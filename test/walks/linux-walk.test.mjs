@@ -17,7 +17,6 @@ import { createServer } from "node:http";
 import { platform, tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { authFor } from "../../core/auth.js";
 import { createD1DeviceStore } from "../../core/devices.js";
@@ -44,6 +43,7 @@ import {
   TEST_SECRET,
 } from "../harness.mjs";
 import { killTracked, spawnTracked, startMinioStandin } from "../minio-standin.mjs";
+import { waitUntil } from "../wait-for.mjs";
 
 const REGION = process.env.DRIVE_STANDIN_REGION ?? "us-east-1";
 const PORT = Number(process.env.DRIVE_STANDIN_PORT ?? 0);
@@ -855,13 +855,13 @@ function cacheInventory(root) {
  * @param {number} timeoutMs
  */
 async function waitFor(predicate, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return true;
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(100);
+  try {
+    await waitUntil(predicate, timeoutMs);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("timed out after")) return false;
+    throw error;
   }
-  return predicate();
 }
 
 /**

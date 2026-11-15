@@ -7,12 +7,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { createS3Store } from "../core/files-s3.js";
 import { scopeStore } from "../core/files-scope.js";
 import { reconcileIndex, searchDrive, withIndex } from "../src/search.js";
 import { sqliteBoundValues, sqlitePlaceholders } from "./harness.mjs";
 import { killTracked, spawnTracked } from "./minio-standin.mjs";
+import { waitUntil } from "./wait-for.mjs";
 
 const ACCOUNT = { id: "1", name: "Your drive" };
 const FOLDERS = 20;
@@ -401,25 +401,28 @@ async function startStorage(t) {
     stderr += chunk;
   });
   t.after(() => killTracked(server));
-  const deadline = Date.now() + 20_000;
-  for (;;) {
-    if (server.exitCode !== null)
-      throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:${port}/${bucket}?list-type=2&prefix=u%2F${ACCOUNT.id}%2Ffolder-0%2F&delimiter=%2F`,
-      );
-      if (response.ok) {
-        await response.text();
-        break;
+  await waitUntil(
+    async () => {
+      if (server.exitCode !== null) {
+        throw new Error(`rclone serve s3 exited ${server.exitCode}: ${stderr}`);
       }
-    } catch {
-      // Not listening yet.
-    }
-    if (Date.now() > deadline) throw new Error(`rclone serve s3 never listened in 20s: ${stderr}`);
-    // biome-ignore lint/plugin: real-time wait on a child process or mount; baselined for a follow-up to wait on the event
-    await sleep(250);
-  }
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:${port}/${bucket}?list-type=2&prefix=u%2F${ACCOUNT.id}%2Ffolder-0%2F&delimiter=%2F`,
+        );
+        if (response.ok) {
+          await response.text();
+          return true;
+        }
+      } catch {
+        // Not listening yet.
+      }
+      return false;
+    },
+    20_000,
+    "rclone serve s3 to listen",
+    () => stderr,
+  );
   return { endpoint: `http://127.0.0.1:${port}`, bucket, real: false, stop: async () => {} };
 }
 

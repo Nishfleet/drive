@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -328,7 +329,9 @@ func TestTwoStatusRunsPrintOneNotice(t *testing.T) {
 	now, _ := stepClock(t, time.Unix(1_700_000_000, 0))
 	inside := make(chan struct{}, 8)
 	gate := make(chan struct{})
+	var entered atomic.Int32
 	newer := func() (bool, error) {
+		entered.Add(1)
 		inside <- struct{}{}
 		<-gate
 		return true, nil
@@ -351,7 +354,10 @@ func TestTwoStatusRunsPrintOneNotice(t *testing.T) {
 	run(&first)
 	<-inside
 	run(&second)
-	time.Sleep(100 * time.Millisecond)
+	// Hold the first run inside its check until the second has reached the same
+	// check (or finished on the first's lock): that is the overlap the test is
+	// about, not a fixed gap.
+	waitFor(t, 2*time.Second, func() bool { return entered.Load() >= 2 })
 	close(gate)
 	wg.Wait()
 	if count := strings.Count(first.String(), updateNoticeWords) + strings.Count(second.String(), updateNoticeWords); count != 1 {
