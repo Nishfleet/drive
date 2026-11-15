@@ -1,4 +1,4 @@
-import { monthBillCents } from "./billing.js";
+import { BILLING_CONFIG, monthBillCents } from "./billing.js";
 
 const DAYS_PER_MONTH = 30;
 const LONG_RUNWAY_MONTHS = 36;
@@ -12,7 +12,11 @@ const LONG_RUNWAY_MONTHS = 36;
  */
 export function runway(balanceCents, size30Bytes) {
   if (!Number.isFinite(balanceCents) || balanceCents <= 0) return null;
-  const monthlyCents = monthBillCents({ size30Bytes }).totalCents;
+  const monthlyCents = monthBillCents({
+    size30Bytes: /** @type {number|bigint} */ (size30Bytes),
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  }).totalCents;
   if (monthlyCents <= 0) return null;
   const days = Math.floor((balanceCents / monthlyCents) * DAYS_PER_MONTH);
   return { months: days / DAYS_PER_MONTH, days, monthlyCents };

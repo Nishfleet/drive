@@ -1,4 +1,4 @@
-import { monthBillCents, size30Window } from "./billing.js";
+import { BILLING_CONFIG, monthBillCents, size30Window } from "./billing.js";
 import { fetchWithTimeoutAndRetry } from "./fetch-retry.js";
 import { HOUR_MS, hourStart } from "./meter.js";
 import { monthStart, size30Through } from "./meter-usage.js";
@@ -384,6 +384,7 @@ export async function pushBillingHours(db, hours, options = {}) {
       const bill = monthBillCents({
         size30Bytes: size30.size30Bytes,
         downloadBytes: size30.downloadBytes,
+        config: BILLING_CONFIG,
       });
       const previously = running.get(accountId) ?? 0;
       const amountUnits = Math.max(0, bill.totalCents - previously);

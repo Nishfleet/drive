@@ -1,4 +1,4 @@
-import { monthBillCents } from "../core/billing.js";
+import { BILLING_CONFIG, monthBillCents } from "../core/billing.js";
 import { sendEmail } from "../core/email-send.js";
 import { formatCents } from "../core/topup.js";
 import { unsubscribeUrl } from "../core/unsubscribe.js";
@@ -43,8 +43,16 @@ export async function runBillDropNotices(input) {
       const now = Number(row.size30);
       const seen = row.seen === null ? null : Number(row.seen);
       if (seen === now) continue;
-      const before = seen === null ? null : monthBillCents({ size30Bytes: seen }).totalCents;
-      const after = monthBillCents({ size30Bytes: now }).totalCents;
+      const before =
+        seen === null
+          ? null
+          : monthBillCents({ size30Bytes: seen, downloadBytes: 0, config: BILLING_CONFIG })
+              .totalCents;
+      const after = monthBillCents({
+        size30Bytes: now,
+        downloadBytes: 0,
+        config: BILLING_CONFIG,
+      }).totalCents;
       const dropped = before !== null && before - after >= MIN_DROP_CENTS && row.off === null;
       await input.db
         .prepare("UPDATE accounts SET peak_seen_bytes = ?1 WHERE id = ?2")

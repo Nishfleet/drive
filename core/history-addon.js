@@ -10,7 +10,7 @@
 //                       free 3 days needs accept_price: true, which the page sends
 //                       only after it has shown the number.
 
-import { monthBillCents } from "./billing.js";
+import { BILLING_CONFIG, monthBillCents } from "./billing.js";
 import { all, first, run } from "./db.js";
 import { errorResponse, json, readJsonObject } from "./http.js";
 import { failureMessage } from "./messages.js";
@@ -48,7 +48,10 @@ function priceLine(days, extraCents) {
   if (days <= HIDDEN_VERSION_DAYS) {
     return `Deleted and replaced files stay restorable for ${WORDS.get(days)}, free.`;
   }
-  const per100 = formatCents(monthBillCents({ size30Bytes: 100_000_000_000 }).totalCents);
+  const per100 = formatCents(
+    monthBillCents({ size30Bytes: 100_000_000_000, downloadBytes: 0, config: BILLING_CONFIG })
+      .totalCents,
+  );
   const now =
     extraCents > 0
       ? `At your current rate of change that adds about ${formatCents(extraCents)} a month${days > 30 ? " (an estimate)" : ""}.`
@@ -105,8 +108,12 @@ async function oldCopyBytesLast30Days(db, accountId, now) {
 export function priceImpact(days, size30Bytes, oldBytes30) {
   if (days <= HIDDEN_VERSION_DAYS) return { extraBytes: 0, extraCents: 0 };
   const extraBytes = Math.ceil((oldBytes30 * days) / 30);
-  const base = monthBillCents({ size30Bytes }).totalCents;
-  const withCopies = monthBillCents({ size30Bytes: size30Bytes + extraBytes }).totalCents;
+  const base = monthBillCents({ size30Bytes, downloadBytes: 0, config: BILLING_CONFIG }).totalCents;
+  const withCopies = monthBillCents({
+    size30Bytes: size30Bytes + extraBytes,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  }).totalCents;
   return { extraBytes, extraCents: Math.max(0, withCopies - base) };
 }
 

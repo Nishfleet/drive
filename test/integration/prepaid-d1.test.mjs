@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  BILLING_CONFIG,
   DRAW_DAYS,
   dailyDrawMillicents,
   MILLICENTS_PER_CENT,
@@ -120,6 +121,7 @@ async function dayDrawCents(db, hour) {
   const monthly = monthBillCents({
     size30Bytes: size30.size30Bytes,
     downloadBytes: size30.downloadBytes,
+    config: BILLING_CONFIG,
   }).totalMillicents;
   return Math.trunc(dailyDrawMillicents(monthly, 0).drawMillicents / 1000);
 }
@@ -1190,7 +1192,11 @@ test("thirty real days draw the month's millicents exactly and carry the remaind
   const { sqlite, db } = makeMeteredDB();
   await putAccount(db, ACCOUNT);
   const firstDay = Date.parse("2026-10-01T00:00:00Z");
-  const monthly = monthBillCents({ size30Bytes: 200 * BYTES_PER_GB }).totalMillicents;
+  const monthly = monthBillCents({
+    size30Bytes: 200 * BYTES_PER_GB,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  }).totalMillicents;
   assert.equal(monthly % DRAW_DAYS, 10, "200 GB a month is not a whole number of days");
   for (let day = 0; day < DRAW_DAYS; day += 1) {
     await storeHours(db, 200, 1, firstDay + day * 24 * HOUR_MS);
@@ -1228,7 +1234,11 @@ test("a day past the window writes no row and charges nothing", async () => {
   await putAccount(db, ACCOUNT);
   const peakDay = Date.parse("2026-12-10T00:00:00Z");
   await storeHours(db, 200, 1, peakDay);
-  const monthly = monthBillCents({ size30Bytes: 200 * BYTES_PER_GB }).totalMillicents;
+  const monthly = monthBillCents({
+    size30Bytes: 200 * BYTES_PER_GB,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  }).totalMillicents;
   const throughPeak = peakDay + 23 * HOUR_MS;
   const peak = await drawAccountPending(db, ACCOUNT, {
     through: throughPeak,

@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { monthBillCents } from "../core/billing.js";
+import { BILLING_CONFIG, monthBillCents } from "../core/billing.js";
 import { handleHistoryRequest, historyDaysFor, priceImpact } from "../core/history-addon.js";
 import { createS3Client, HIDDEN_VERSION_DAYS, provisionBucket } from "../core/s3.js";
 import { createTestD1 } from "./harness.mjs";
@@ -42,8 +42,9 @@ test("the free window adds nothing and a longer one is the bill with the copies 
   assert.equal(month.extraBytes, 10 * GB);
   assert.equal(
     month.extraCents,
-    monthBillCents({ size30Bytes: 110 * GB }).totalCents -
-      monthBillCents({ size30Bytes: 100 * GB }).totalCents,
+    monthBillCents({ size30Bytes: 110 * GB, downloadBytes: 0, config: BILLING_CONFIG }).totalCents -
+      monthBillCents({ size30Bytes: 100 * GB, downloadBytes: 0, config: BILLING_CONFIG })
+        .totalCents,
   );
   assert.ok(month.extraCents > 0);
   // A year holds that rate for 365 days, so it costs more than 30 days.

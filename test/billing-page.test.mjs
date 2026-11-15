@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
-import { monthBillCents, size30DropsOutDay } from "../core/billing.js";
+import { BILLING_CONFIG, monthBillCents, size30DropsOutDay } from "../core/billing.js";
 import { usageSummary } from "../core/billing-report.js";
 import { PRICE } from "../core/pricing.js";
 
@@ -88,7 +88,7 @@ async function runPage({ status = 200, body }) {
 const pair = (row) => row.appended.map((/** @type {any} */ cell) => cell.textContent);
 
 test("the cost and the bill lines on the page are monthBillCents for the month, nothing else", async () => {
-  const bill = monthBillCents(FIXED_MONTH);
+  const bill = monthBillCents({ ...FIXED_MONTH, config: BILLING_CONFIG });
   assert.equal(bill.totalCents, 1100);
   const elements = await runPage({ body: fixedSummary() });
   assert.equal(elements.get("peak-body").hidden, false);

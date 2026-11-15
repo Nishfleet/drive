@@ -39,7 +39,11 @@ const shipped = (name) => readFileSync(new URL(name, siteDir), "utf8");
 /** @param {number} tb */
 function billFor(tb) {
   const gb = tb * GB_PER_TB;
-  return monthBillCents({ size30Bytes: Math.round(gb * 1e9) });
+  return monthBillCents({
+    size30Bytes: Math.round(gb * 1e9),
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
 }
 
 /** @param {number} amount */

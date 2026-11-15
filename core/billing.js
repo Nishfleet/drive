@@ -157,7 +157,10 @@ export function gbMonths(gbMinutes, monthMinutes) {
  * @param {BillingConfig} [config]
  */
 export function meteredMonthlyBillUsd(size30Bytes, config = BILLING_CONFIG) {
-  return monthBillCents({ size30Bytes, config: billingConfig(config) }).meteredCents / 100;
+  return (
+    monthBillCents({ size30Bytes, config: billingConfig(config), downloadBytes: 0 }).meteredCents /
+    100
+  );
 }
 
 /**
@@ -173,6 +176,7 @@ export function monthlyMaximumUsd(size30Gb, config = BILLING_CONFIG) {
     monthBillCents({
       size30Bytes: Math.round(size * BYTES_PER_GB),
       config: billingConfig(config),
+      downloadBytes: 0,
     }).maximumCents / 100
   );
 }
@@ -184,7 +188,10 @@ export function monthlyMaximumUsd(size30Gb, config = BILLING_CONFIG) {
  * @param {BillingConfig} [config=BILLING_CONFIG]
  */
 export function monthlyStorageBillUsd(size30Bytes, config = BILLING_CONFIG) {
-  return monthBillCents({ size30Bytes, config: billingConfig(config) }).storageCents / 100;
+  return (
+    monthBillCents({ size30Bytes, config: billingConfig(config), downloadBytes: 0 }).storageCents /
+    100
+  );
 }
 
 /**
@@ -216,6 +223,7 @@ export function monthlyBillForStoredTb(tb, config = BILLING_CONFIG) {
   const bill = monthBillCents({
     size30Bytes: size30BytesFromTb(size),
     config: billingConfig(config),
+    downloadBytes: 0,
   });
   return Object.freeze({
     storageUsd: bill.storageCents / 100,
@@ -473,6 +481,15 @@ export function size30DropsOutDay(reachedDay) {
 }
 
 /**
+ * The inputs of one month's bill. None is optional: pass `downloadBytes: 0`
+ * for a month with no downloads and `config: BILLING_CONFIG` for the list price.
+ * @typedef {object} BillMonth
+ * @property {number|bigint} size30Bytes the biggest size in the last 30 days, in whole bytes
+ * @property {number} downloadBytes whole bytes downloaded in the month
+ * @property {BillingConfig} config the prices the bill is worked from
+ */
+
+/**
  * The month's bill, in integer millicents and cents (drive#642): the one
  * function the invoice, the usage page and the cap all read.
  *
@@ -485,7 +502,12 @@ export function size30DropsOutDay(reachedDay) {
  * Millicents are the money unit (10 MB a month is 20 millicents). The cent
  * fields are millicents / 1000, truncated, so a caller cannot hand Dodo a
  * fractional cent. `lines` is the invoice: storage and downloads.
- * @param {unknown} month
+ *
+ * Every input is required by the type, so a caller that drops one fails
+ * `npm run typecheck` rather than billing on a silent default. The runtime
+ * still throws on a missing size30Bytes and falls back on the others, for
+ * callers the type checker does not see.
+ * @param {BillMonth} month
  */
 export function monthBillCents(month) {
   if (typeof month !== "object" || month === null) {

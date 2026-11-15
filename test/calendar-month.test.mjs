@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { gbMonths, minutesInMonth, monthBillCents, size30Window } from "../core/billing.js";
+import {
+  BILLING_CONFIG,
+  gbMonths,
+  minutesInMonth,
+  monthBillCents,
+  size30Window,
+} from "../core/billing.js";
 import { capStatus } from "../core/billing-report.js";
 
 const MONTHS = Object.freeze([
@@ -20,7 +26,7 @@ test("minutesInMonth is the UTC calendar month's own length", () => {
 
 test("1 TB as size30 bills $15.00 in a 28, 29, 30 or 31-day month", () => {
   for (const { at, days } of MONTHS) {
-    const bill = monthBillCents({ size30Bytes: TB });
+    const bill = monthBillCents({ size30Bytes: TB, downloadBytes: 0, config: BILLING_CONFIG });
     assert.equal(bill.totalCents, 1500, `1 TB size30 in a ${days}-day month is $15.00`);
     assert.equal(bill.maximumCents, 1500);
     const window = size30Window(Date.parse(at));
@@ -29,22 +35,35 @@ test("1 TB as size30 bills $15.00 in a 28, 29, 30 or 31-day month", () => {
 });
 
 test("2 TB and 100 GB as size30 bill $30.00 and $2.00", () => {
-  assert.equal(monthBillCents({ size30Bytes: 2000 * 1e9 }).totalCents, 3000);
-  assert.equal(monthBillCents({ size30Bytes: 100 * 1e9 }).totalCents, 200);
+  assert.equal(
+    monthBillCents({ size30Bytes: 2000 * 1e9, downloadBytes: 0, config: BILLING_CONFIG })
+      .totalCents,
+    3000,
+  );
+  assert.equal(
+    monthBillCents({ size30Bytes: 100 * 1e9, downloadBytes: 0, config: BILLING_CONFIG }).totalCents,
+    200,
+  );
 });
 
 test("750 GB as size30 is exactly the $15 maximum", () => {
-  const bill = monthBillCents({ size30Bytes: 750 * 1e9 });
+  const bill = monthBillCents({ size30Bytes: 750 * 1e9, downloadBytes: 0, config: BILLING_CONFIG });
   assert.equal(bill.meteredCents, 1500);
   assert.equal(bill.storageCents, 1500);
-  const under = monthBillCents({ size30Bytes: 749 * 1e9 });
+  const under = monthBillCents({
+    size30Bytes: 749 * 1e9,
+    downloadBytes: 0,
+    config: BILLING_CONFIG,
+  });
   assert.equal(under.storageCents, 1498);
   assert.ok(under.storageCents < under.maximumCents);
 });
 
 test("gbMinutes is refused, never billed as an average", () => {
+  // @ts-expect-error gbMinutes is retired: refused at runtime, and by the type
   assert.throws(() => monthBillCents({ gbMinutes: 1000 }), /size30Bytes/);
   assert.throws(
+    // @ts-expect-error gbMinutes is retired: refused at runtime, and by the type
     () => monthBillCents({ gbMinutes: 1000, monthMinutes: 43800 }),
     /size30Bytes|gbMinutes/,
   );
