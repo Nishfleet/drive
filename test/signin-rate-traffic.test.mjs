@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import worker from "../src/index.js";
-import { SIGNIN_ACCOUNT_SEND_MAX } from "../src/signin-send-limit.js";
+import { SIGNIN_ACCOUNT_SEND_MAX, SIGNIN_SEND_HOURLY_MAX } from "../src/signin-send-limit.js";
 import { createTestAuth, TEST_BASE_URL, TEST_SECRET } from "./harness.mjs";
 
 /** The ExportedHandler type makes fetch optional and declares the runtime's
@@ -392,32 +392,38 @@ test("both ceilings are whole numbers the binding can take", () => {
 
 // ---------------------------------------------------------- what a customer meets
 
-test("the per-IP send bound a customer meets is the library's, not this edge's", async () => {
-  // The finding of drive issue #202, measured here so the next reader sees the
-  // number instead of re-deriving it: raising the two edge ceilings does NOT by
-  // itself free a shared office. Better Auth keys its own `/sign-in/magic-link`
-  // rule on the same client IP (core/auth.js: max 3 per 60s, D1-backed, so the
-  // counter is one per IP across every isolate), and that rule runs AFTER both
-  // edge bindings, so it refuses first.
-  //
-  // This test drives the real route twice with the edge layer held wide open —
-  // so the only thing that can refuse is the library's rule — and answers how
-  // many emails one shared office address actually causes.
-  const servedWithEdgeHeldOpen = await servedBehindOneNat();
-  assert.ok(
-    servedWithEdgeHeldOpen < OFFICE.people,
-    `an office behind one NAT is refused by the library's own per-IP rule: ${servedWithEdgeHeldOpen} of ${OFFICE.people} served with the edge layer held open, so raising the edge ceilings alone cannot reach the people behind a shared address`,
+test("everyone behind one office address gets their own sign-in link", async () => {
+  const emails = Array.from(
+    { length: OFFICE.people },
+    (_, person) => `nat-office-${person}@example.com`,
+  );
+  const { statuses, sent } = await startsBehindOneNat(OFFICE.ip, emails);
+  assert.deepEqual(
+    statuses,
+    emails.map(() => 202),
+  );
+  assert.deepEqual(
+    sent.map((link) => link.to),
+    emails,
   );
 });
 
+test("one address asked for again and again from one office address gets at most its send bound", async () => {
+  const emails = Array.from({ length: OFFICE.people }, () => "same-person@example.com");
+  const { statuses, sent } = await startsBehindOneNat(OFFICE_RETRYING.ip, emails);
+  assert.deepEqual(
+    statuses,
+    emails.map(() => 202),
+  );
+  assert.equal(sent.length, SIGNIN_SEND_HOURLY_MAX);
+});
+
 /**
- * How many sign-in links one shared office address actually gets, with the
- * edge layer held wide open so the library's own per-IP rule is the only thing
- * that can refuse. This is the measurement behind the test above and the
- * comment beside the bindings in cloudflare.config.ts.
- * @returns {Promise<number>}
+ * @param {string} ip
+ * @param {string[]} emails
+ * @returns {Promise<{statuses: number[], sent: {to: string, url: string}[]}>}
  */
-async function servedBehindOneNat() {
+async function startsBehindOneNat(ip, emails) {
   const made = createTestAuth();
   const open = { limit: async () => ({ success: true }) };
   const env = {
@@ -431,19 +437,17 @@ async function servedBehindOneNat() {
     SIGNIN_RATE_LIMITER: open,
     SIGNIN_GLOBAL_RATE_LIMITER: open,
   };
-  for (let person = 0; person < OFFICE.people; person += 1) {
-    await workerFetch(
+  const statuses = [];
+  for (const email of emails) {
+    const response = await workerFetch(
       new Request(`${TEST_BASE_URL}/api/signin`, {
         method: "POST",
-        headers: { "content-type": "application/json", "cf-connecting-ip": OFFICE.ip },
-        body: JSON.stringify({
-          step: "start",
-          method: "email",
-          email: `nat-office-${person}@example.com`,
-        }),
+        headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+        body: JSON.stringify({ step: "start", method: "email", email }),
       }),
       env,
     );
+    statuses.push(response.status);
   }
-  return made.sent.length;
+  return { statuses, sent: made.sent };
 }

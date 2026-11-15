@@ -301,7 +301,7 @@ export default defineConfig(({ isPreview }) => ({
           //
           //   25 people behind one office router, arriving together   25/min
           //   the same office, each pressing 3 times (a mistyped     75/min
-          //     link) — 3 is Better Auth's own per-IP rule (core/auth.js)
+          //     link)
           //   200 people behind one campus NAT, arriving together   200/min
           //
           // Worst realistic NAT case = 200/min. The SIGNIN_RATE_LIMITER ceiling is
@@ -334,16 +334,12 @@ export default defineConfig(({ isPreview }) => ({
           // this bucket moves, so it caps a single-location flood from many
           // addresses and nothing wider.
           //
-          // MEASURED, NOT YET FIXED, and it is the finding of issue #202: raising
-          // these two numbers does not by itself free a shared office. Better Auth
-          // keys its own `/sign-in/magic-link` rule on the same client IP
-          // (core/auth.js, max 3 per 60s, D1-backed), and it runs after these two,
-          // so an office behind one NAT still gets 3 links out of 25 at any edge
-          // ceiling: measured at 10/min and at 400/min alike, 3 of 25 served both
-          // times. The per-IP send bound a customer actually meets is the
-          // library's, and widening it trades mail cost for shared-egress access,
-          // which is a decision #202's scope explicitly excludes. It is tracked as
-          // issue #876 rather than changed here.
+          // Better Auth keys its own `/sign-in/magic-link` rule on the same
+          // client IP (core/auth.js, D1-backed, so one counter per IP in every
+          // location). Its max is this binding's 500 per 60s, so a shared office
+          // gets every link (issue #876). The mail bound per address is
+          // signinSendOutcome's (src/signin-send-limit.js), which runs before
+          // the library and caps one address however many IPs ask.
           //
           // Each binding needs its own namespace: Cloudflare wants a positive
           // integer string, and a namespace another binding already uses fails
